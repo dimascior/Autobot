@@ -1,0 +1,55 @@
+[paths]
+# Machine paths are resolved by discover.py from authoritative sources
+# (~/.claude/settings.json, $AUTOSWARM_HOME, PATH). Leave blank to auto-discover;
+# pin in config.local.toml (gitignored) to override. Explicit values here win.
+autoswarm_home = ""   # else $AUTOSWARM_HOME, else %LOCALAPPDATA%\autoswarm
+findings_dir   = ""   # defaults to the luna workspace
+gate_root      = ""   # parsed from the settings.json PreToolUse hook
+backlog_file = "backlog.toml"
+ledger_db = "coordinator.db"
+
+[caps]
+max_concurrent = 3
+max_dispatches_per_cycle = 5
+max_cycles_per_hour = 6
+daily_ceiling = 50
+
+[cooldowns]
+default_minutes = 30
+failed_retry_minutes = 60
+# An in-progress dispatch with no result after this long becomes `stale`
+# (flagged for reconciliation, NOT auto-redispatched).
+stale_threshold_minutes = 120
+
+[models]
+# The planner's own reasoning model. Runs through the `claude` CLI
+# (subscription auth) -- never the billed API. Must be a claude-* model;
+# a gpt/codex planner would have to route through `autoswarm run --agent codex`.
+planner = "claude-opus-4-6"
+
+# Dispatch routes: each maps to a subscription CLI via `autoswarm run --agent`.
+# No API keys anywhere -- codex uses the codex CLI, claude uses the claude CLI.
+[routes.luna]
+agent = "codex"
+model = "gpt-6-luna"
+effort = "max"                 # luna tops out at max (no ultra)
+# danger-full-access is required or the run stalls writing gate files outside
+# its workspace (the luna-008 stall); ask-for-approval=never so an autonomous
+# run never blocks waiting on a parent approval.
+provider_args = ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]
+workspace = ""                 # no system pointer -- set in config.local.toml (the one required local value)
+
+[routes.opus]
+agent = "claude-code"
+model = "claude-opus-4-6[1m]"
+provider_args = ["--dangerously-skip-permissions"]
+workspace = ""                 # auto: parent of gate_root; MUST contain a .command-gate (deferred passthrough)
+
+[triggers]
+timer_floor_minutes = 15
+
+[safety]
+dry_run = true
+planner_in_dry_run = false     # true = exercise the real LLM planner in dry-run (previews the brain; still dispatches nothing)
+stop_file = "STOP"
+require_approval = ["modify", "rebaseline", "reset", "rewrite"]

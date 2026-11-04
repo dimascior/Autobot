@@ -1,0 +1,35 @@
+# Curated backlog -- the real open threads the coordinator may dispatch.
+#
+# These are the ONLY dispatchable work items. Everything the coordinator sweeps
+# from the autoswarm calls, findings files and the gate tree is historical
+# EVIDENCE, not work to redo. Add or retire threads by editing this file; ids
+# are stable so re-ingesting is idempotent (no duplicate tasks).
+#
+# Fields: id, domain, title, description, task_class (investigate|verify|modify),
+# route (luna|opus), priority (higher = more urgent), evidence (why this is real,
+# with source refs), depends_on (ids that must be `completed` first).
+#
+# Copy this file to backlog.toml (gitignored) and replace these samples with
+# your own threads.
+
+[[task]]
+id = "sample-investigate"
+domain = "example"
+title = "Investigate an open question in your system"
+description = "Describe the concrete question the dispatched agent should answer and what evidence would resolve it. Keep it read-only for an 'investigate' task."
+task_class = "investigate"
+route = "luna"
+priority = 5
+evidence = "Why this is a real open thread -- point at a finding, a ticket, or a prior run."
+depends_on = []
+
+[[task]]
+id = "sample-modify"
+domain = "example"
+title = "Apply a reviewed fix"
+description = "Describe the change. A 'modify' task alters real state, so it parks for human approval (see safety.require_approval in config.toml) rather than auto-dispatching."
+task_class = "modify"
+route = "opus"
+priority = 7
+evidence = "Where the fix was specified or measured."
+depends_on = ["sample-investigate"]

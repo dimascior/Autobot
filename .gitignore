@@ -1,0 +1,14 @@
+# Machine-specific config (absolute paths) -- never publish
+config.local.toml
+
+# Live backlog holds real internal threads -- ship backlog.example.toml instead
+backlog.toml
+
+# Local state / ledger (and its backups)
+*.db
+*.db.bak*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
