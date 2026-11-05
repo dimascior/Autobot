@@ -17,7 +17,7 @@ what is missing.
 | **Helios** (command-gate) | PreToolUse/PostToolUse gate over every `Bash\|PowerShell` command; schema + policy + manifest + ledger + evidence | `github.com/dimascior/Helios-` | **required substrate** (always on) | `gate_root` from `~/.claude/settings.json` |
 | **Akashic** | Installs / activates / validates / rebaselines / restores / audits the Helios runtime | `github.com/dimascior/Akashic` | **accommodation** (Helios prerequisite) | `systems.akashic_dir` / `AKASHIC_DIR` (reported only) |
 | **hdb / HeliosEvidenceCatalog** | The evidence/digest catalog DB; `hdb read/status/digestsearch/tree …` is its query CLI | own repo | **accommodation** (child-session data source) | `systems.evidence_catalog_dir` / `EVIDENCE_CATALOG_DIR`; `hdb` via `PATH` |
-| **HeliosEntitlementAuthority** | Reference implementation; also the luna route's `--cwd` | own repo | **param** (a workspace, not a dependency) | `routes.luna.workspace` / `LUNA_WORKSPACE` |
+| *(route workspace)* | The child's `--cwd` — a target repo, **not a program** to install | — | **param** (never a dependency) | discovered: claude-code → parent of `gate_root`; codex → latest autoswarm-child session `cwd` (`~/.codex/sessions`) |
 
 ## The codex chain, in order
 

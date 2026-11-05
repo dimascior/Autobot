@@ -378,5 +378,48 @@ class DiscoveryTierTests(unittest.TestCase):
             self.assertIn(k, d)
 
 
+class WorkspaceResolutionTests(unittest.TestCase):
+    """The codex route workspace is discovered from the agent's own session
+    history -- the cwd of the latest `autoswarm-child` session -- not hand-set."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name) / "sessions"
+        (self.base / "2026" / "11").mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _rollout(self, name, *, originator, cwd):
+        meta = {"type": "session_meta",
+                "payload": {"originator": originator, "cwd": cwd}}
+        (self.base / "2026" / "11" / name).write_text(
+            json.dumps(meta) + "\n", encoding="utf-8")
+
+    def test_picks_latest_autoswarm_child_over_newer_adhoc_run(self):
+        # a NEWER ad-hoc codex_exec run must be ignored in favour of the latest
+        # autoswarm-child dispatch, even though its filename sorts later.
+        self._rollout("rollout-2026-11-05T10-00-00-aaaa.jsonl",
+                      originator="codex_exec", cwd="E:\\Users\\dimas")
+        self._rollout("rollout-2026-11-04T10-00-00-bbbb.jsonl",
+                      originator="autoswarm-child", cwd="C:\\repo\\target")
+        got = discover_mod.latest_autoswarm_workspace("codex", sessions_dir=self.base)
+        self.assertEqual(got, Path("C:\\repo\\target"))
+
+    def test_non_codex_agent_and_missing_dir_return_none(self):
+        self._rollout("rollout-2026-11-04T10-00-00-bbbb.jsonl",
+                      originator="autoswarm-child", cwd="C:\\repo\\target")
+        self.assertIsNone(
+            discover_mod.latest_autoswarm_workspace("claude-code", sessions_dir=self.base))
+        self.assertIsNone(
+            discover_mod.latest_autoswarm_workspace("codex", sessions_dir=self.base / "nope"))
+
+    def test_no_autoswarm_child_on_record_returns_none(self):
+        self._rollout("rollout-2026-11-05T10-00-00-aaaa.jsonl",
+                      originator="codex_exec", cwd="E:\\Users\\dimas")
+        self.assertIsNone(
+            discover_mod.latest_autoswarm_workspace("codex", sessions_dir=self.base))
+
+
 if __name__ == "__main__":
     unittest.main()

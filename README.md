@@ -20,10 +20,11 @@ It never closes a task on its own — completed work parks for a human authority
 - **Approval-gated mutations.** `modify` / `rebaseline` / `reset` / `rewrite`
   tasks park for explicit human approval (`authorize.py`) rather than
   auto-dispatching.
-- **Zero-config paths.** `discover.py` resolves machine paths from authoritative
-  sources (`settings.json`, `~/.codex/hooks.json`, codex-handoff's config,
-  `$AUTOSWARM_HOME`, `PATH`), tiered per route; only the values with no system
-  pointer go in a gitignored `config.local.toml`.
+- **Zero-config paths.** `discover.py` resolves every machine path from
+  authoritative sources (`settings.json`, `~/.codex/hooks.json`, codex-handoff's
+  config, `$AUTOSWARM_HOME`, `PATH`, and `~/.codex/sessions` for a route's `--cwd`),
+  tiered per route. Nothing is hardcoded; a gitignored `config.local.toml` is only
+  for overrides you choose to pin.
 - **Explicit child governance.** When routes run under a PreToolUse command-gate,
   `verify_enforcement.py` reports, per route, whether a child's shell calls are
   actually governed — evidence, not assumption.
@@ -34,7 +35,7 @@ It never closes a task on its own — completed work parks for a human authority
 swarm-coordinator/
 ├── pyproject.toml            # package + console scripts (coordinator, -discover, -authorize, -verify)
 ├── config.toml               # committed config (machine paths blank → discovered); [systems] names the chain
-├── config.local.toml         # gitignored machine values (you create this)
+├── config.local.toml         # gitignored; OPTIONAL overrides (discovery fills the rest)
 ├── backlog.example.toml      # sample backlog; copy to backlog.toml
 ├── docs/                     # ARCHITECTURE.md · SYSTEMS.md · ROUTES.md
 ├── src/
@@ -120,7 +121,7 @@ entry point, what it consumes, and what it produces (its endpoint).
 | Module | Entry point | Consumes | Produces (endpoint) |
 |---|---|---|---|
 | `loop.py` | `main()`; `one_cycle()` | `config.toml` (+ `.local`), the ledger | orchestrates the pipeline; `coordinator.db`; printed summary |
-| `discover.py` | `main()`; `apply_to_config()` / `resolve_all()` (lib) | `settings.json`, `~/.codex/hooks.json`, codex-handoff config, `$AUTOSWARM_HOME`, `PATH` | resolved-paths dict / readiness table; fills `cfg` paths |
+| `discover.py` | `main()`; `apply_to_config()` / `resolve_all()` (lib) | `settings.json`, `~/.codex/hooks.json`, codex-handoff config, `$AUTOSWARM_HOME`, `PATH`, `~/.codex/sessions` | resolved-paths dict / readiness table; fills `cfg` paths |
 | `ingest.py` | `ingest(ledger, …)` | `backlog.toml`, `calls/`, `findings_dir`, gate tree | ledger items (`task`/`execution`/`finding`/`gate`), quarantine rows |
 | `state.py` | `compute_state(ledger, …)` | ledger items + dispatches | status transitions; ranked state summary |
 | `planner.py` | `plan(ledger, state, …)` | state summary; `claude` CLI | a dispatch batch `[{id, model, prompt}]` |
@@ -148,8 +149,10 @@ pulls in a chain:
 | Helios command-gate | gates every shell command | always (gate is on) |
 | CODEAPI · Akashic · hdb/HeliosEvidenceCatalog | terminal routing · gate installer · evidence DB | accommodations (reported, never block) |
 
-Route **workspaces are a child's `--cwd`, not a dependency** — an unset one
-never blocks startup. Run `python discover.py --check` for a per-tier,
+Route **workspaces are a child's `--cwd`, not a dependency** — resolved
+programmatically (claude-code → parent of `gate_root`; codex → the latest
+autoswarm session's `cwd`), never hand-set; an unresolved one never blocks
+startup. Run `coordinator-discover --check` for a per-tier,
 per-route readiness table. Full detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 [docs/SYSTEMS.md](docs/SYSTEMS.md), [docs/ROUTES.md](docs/ROUTES.md).
 
@@ -163,14 +166,15 @@ pip install -e .                           # installs the `coordinator` package 
 cp backlog.example.toml backlog.toml       # your dispatchable threads (gitignored)
 ```
 
-Create `config.local.toml` (gitignored) for the paths with no system pointer —
-at minimum the luna workspace; everything else is auto-discovered:
+Everything is auto-discovered, so `config.local.toml` is **optional** — create it
+(gitignored) only to override what discovery gets wrong or to pin a value:
 
 ```toml
 [paths]
-autoswarm_home = '...'   # or rely on $AUTOSWARM_HOME, else %LOCALAPPDATA%\autoswarm
+autoswarm_home = '...'   # only if $AUTOSWARM_HOME is unset and the probe misses
 [routes.luna]
-workspace = '...'        # the one path discovery cannot find
+workspace = '...'        # only to pin a --cwd; else resolved from the latest
+                         # autoswarm codex session
 ```
 
 Then confirm resolution and run one dry cycle:

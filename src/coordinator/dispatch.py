@@ -39,7 +39,7 @@ def _build_run_cmd(autoswarm: str, route_cfg: dict) -> list[str]:
     - --no-parent keeps the run standalone (no callback to a parent session that
       may not be alive); with ask-for-approval=never it never needs one.
     - provider_args carry the per-provider accommodations verbatim, e.g.
-      --sandbox danger-full-access for codex (or the luna-008 stall returns).
+      --sandbox danger-full-access for codex (else it stalls writing gate files).
     """
     cmd = [
         autoswarm, "run",

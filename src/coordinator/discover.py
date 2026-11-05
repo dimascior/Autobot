@@ -12,6 +12,8 @@ resolution tries, in order:
                       - devtools_dir / codeapi <- codex-handoff's own config.json
                       - autoswarm_home         <- $AUTOSWARM_HOME
                       - the CLIs               <- PATH (shutil.which)
+                      - a route's workspace    <- the route agent's last
+                                                  autoswarm-child session cwd
   3. probe          a well-known conventional location
                     (%LOCALAPPDATA%\\autoswarm, ~/.codex, ~/.claude)
   4. unresolved     reported with the exact fix to apply
@@ -30,8 +32,10 @@ only when a route that uses it is enabled:
   accommodation  used by the dispatched child SESSIONS or by the codex chain,
                  not called by the coordinator directly; reported, never blocks
                  (codeapi, evidence_catalog/hdb, akashic, findings_dir)
-  param          a per-dispatch parameter -- a child's --cwd; NEVER a
-                 dependency (the route workspaces)
+  param          a per-dispatch parameter -- a child's --cwd; NEVER a dependency.
+                 Resolved programmatically, never hand-set (claude-code: the
+                 gate-bearing dir, parent of gate_root; codex: where AutoSwarm
+                 last ran it -- its latest autoswarm-child session cwd)
   info           informational (the devtool config homes)
 
 The route workspaces are `param`, so an unset workspace never blocks the
@@ -64,6 +68,7 @@ except ModuleNotFoundError:  # pragma: no cover
 HOME = Path.home()
 SETTINGS = HOME / ".claude" / "settings.json"
 CODEX_HOOKS = HOME / ".codex" / "hooks.json"
+CODEX_SESSIONS = HOME / ".codex" / "sessions"
 
 # Tiers (see module docstring).
 REQUIRED = "required"
@@ -203,6 +208,44 @@ def handoff_config(env=None) -> tuple[dict, Path]:
         return json.loads(p.read_text(encoding="utf-8")), p
     except (OSError, json.JSONDecodeError):
         return {}, p
+
+
+def latest_autoswarm_workspace(agent: str, sessions_dir: Path = CODEX_SESSIONS,
+                               scan_limit: int = 80) -> Path | None:
+    """Where `autoswarm run --agent <agent>` last executed, read from the agent's
+    own session history -- the authoritative record of the route's --cwd, with no
+    workspace name hardcoded or hand-set.
+
+    For a codex route: the `cwd` of the most recent ~/.codex/sessions rollout whose
+    session_meta `originator` is "autoswarm-child" (an AutoSwarm dispatch, not an
+    ad-hoc `codex_exec` run). Returns None if there is no such record. Read-only and
+    stdlib-only: scans plain .jsonl rollouts newest-first (compressed .zst history is
+    skipped), reads only each file's first line, and stops at the first match."""
+    if agent != "codex" or not sessions_dir.is_dir():
+        return None
+    try:
+        rollouts = sorted(sessions_dir.rglob("rollout-*.jsonl"),
+                          key=lambda p: p.name, reverse=True)
+    except OSError:
+        return None
+    for p in rollouts[:scan_limit]:
+        try:
+            with p.open("r", encoding="utf-8") as fh:
+                first = fh.readline(1_000_000)  # session_meta; cap a pathological line
+        except OSError:
+            continue
+        try:
+            meta = json.loads(first)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(meta, dict) or meta.get("type") != "session_meta":
+            continue
+        payload = meta.get("payload") or {}
+        if isinstance(payload, dict) and payload.get("originator") == "autoswarm-child":
+            cwd = payload.get("cwd")
+            if isinstance(cwd, str) and cwd.strip():
+                return Path(cwd.strip())
+    return None
 
 
 # ── overrides from an already-loaded config ───────────────────────────────
@@ -360,25 +403,10 @@ def resolve_all(cfg: dict | None = None) -> dict[str, Resolved]:
                  adetail + "; set systems.akashic_dir or AKASHIC_DIR to report it",
                  ACCOMMODATION))
 
-    # ---- findings_dir : an input the coordinator reads (defaults to a CWD) --
-    v = _env("FINDINGS_DIR") or ov.get("findings_dir")
-    if v:
-        R["findings_dir"] = Resolved("findings_dir", Path(v), "override", "env/config",
-                                     ACCOMMODATION)
-    else:
-        # defaults to a codex route's workspace (resolved below); may be unset,
-        # in which case the findings sweep simply ingests nothing.
-        lw = (_env("LUNA_WORKSPACE") or ov.get("luna_workspace"))
-        R["findings_dir"] = (
-            Resolved("findings_dir", Path(lw), "authoritative",
-                     "defaults to the luna workspace", ACCOMMODATION)
-            if lw else
-            Resolved("findings_dir", None, "MISSING",
-                     "no findings dir set and no luna workspace to default to; "
-                     "set FINDINGS_DIR or paths.findings_dir (the sweep ingests nothing "
-                     "until then)", ACCOMMODATION))
-
     # ---- route workspaces : per-dispatch --cwd (param, never blocks) -------
+    # Resolved programmatically, never hand-set: an explicit override wins, else a
+    # claude-code route uses the gate-bearing dir (parent of gate_root) and a codex
+    # route uses where AutoSwarm last ran it (its latest autoswarm-child session cwd).
     routes = (cfg.get("routes") or {}) if cfg else {"luna": {"agent": "codex"}, "opus": {"agent": "claude-code"}}
     for rname, rc in routes.items():
         agent = (rc or {}).get("agent")
@@ -386,15 +414,45 @@ def resolve_all(cfg: dict | None = None) -> dict[str, Resolved]:
         v = _env(f"{rname.upper()}_WORKSPACE") or ov.get(key)
         if v:
             R[key] = Resolved(key, Path(v), "override", "env/config", PARAM, agent)
-        elif agent == "claude-code" and R["gate_root"].value is not None:
+            continue
+        if agent == "claude-code" and R["gate_root"].value is not None:
             R[key] = Resolved(key, R["gate_root"].value.parent, "authoritative",
                               "parent of gate_root (a gate-bearing workspace)", PARAM, agent)
-        else:
-            R[key] = Resolved(
-                key, None, "MISSING",
-                f"a per-dispatch --cwd with no system pointer; set routes.{rname}.workspace "
-                f"or {rname.upper()}_WORKSPACE to dispatch this route (not needed to start)",
-                PARAM, agent)
+            continue
+        ws = latest_autoswarm_workspace(agent)
+        if ws is not None:
+            R[key] = Resolved(key, ws, "authoritative",
+                              f"cwd of the latest AutoSwarm {agent} session "
+                              "(~/.codex/sessions, originator autoswarm-child)",
+                              PARAM, agent)
+            continue
+        R[key] = Resolved(
+            key, None, "MISSING",
+            f"no override and no AutoSwarm {agent} session on record to infer a --cwd "
+            f"from; run the route once so it is recorded, or set routes.{rname}.workspace "
+            f"/ {rname.upper()}_WORKSPACE (a per-dispatch --cwd; not needed to start)",
+            PARAM, agent)
+
+    # ---- findings_dir : an input the coordinator reads; defaults to a codex
+    #      route's resolved workspace (above). Unset -> the sweep ingests nothing.
+    v = _env("FINDINGS_DIR") or ov.get("findings_dir")
+    if v:
+        R["findings_dir"] = Resolved("findings_dir", Path(v), "override", "env/config",
+                                     ACCOMMODATION)
+    else:
+        codex_ws = next(
+            (R[f"{rn}_workspace"].value for rn, rc in routes.items()
+             if (rc or {}).get("agent") == "codex"
+             and f"{rn}_workspace" in R and R[f"{rn}_workspace"].value is not None),
+            None)
+        R["findings_dir"] = (
+            Resolved("findings_dir", codex_ws, "authoritative",
+                     "defaults to the codex route's workspace", ACCOMMODATION)
+            if codex_ws is not None else
+            Resolved("findings_dir", None, "MISSING",
+                     "no findings dir set and no codex workspace to default to; set "
+                     "FINDINGS_DIR or paths.findings_dir (the sweep ingests nothing "
+                     "until then)", ACCOMMODATION))
 
     # ---- devtool homes (informational) -------------------------------------
     R["claude_home"] = Resolved("claude_home", HOME / ".claude", "authoritative",

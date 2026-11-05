@@ -3,7 +3,7 @@
 # (~/.claude/settings.json, $AUTOSWARM_HOME, PATH). Leave blank to auto-discover;
 # pin in config.local.toml (gitignored) to override. Explicit values here win.
 autoswarm_home = ""   # else $AUTOSWARM_HOME, else %LOCALAPPDATA%\autoswarm
-findings_dir   = ""   # defaults to the luna workspace
+findings_dir   = ""   # defaults to the codex route's resolved workspace
 gate_root      = ""   # parsed from the settings.json PreToolUse hook
 backlog_file = "backlog.toml"
 ledger_db = "coordinator.db"
@@ -49,11 +49,13 @@ planner = "claude-opus-4-6"
 agent = "codex"
 model = "gpt-6-luna"
 effort = "max"                 # luna tops out at max (no ultra)
-# danger-full-access is required or the run stalls writing gate files outside
-# its workspace (the luna-008 stall); ask-for-approval=never so an autonomous
-# run never blocks waiting on a parent approval.
+# danger-full-access is required or a codex run stalls writing gate files outside
+# its workspace; ask-for-approval=never so an autonomous run never blocks waiting
+# on a parent approval.
 provider_args = ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]
-workspace = ""                 # no system pointer -- set in config.local.toml (the one required local value)
+# Discovered: the cwd of the latest autoswarm codex session (~/.codex/sessions).
+# Leave blank to auto-resolve; set a path only to pin a specific --cwd.
+workspace = ""
 
 [routes.opus]
 agent = "claude-code"

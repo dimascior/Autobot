@@ -43,7 +43,7 @@ Helios command-gate ──[ installed / validated / rebaselined / restored / aud
 | 3 Continuity | **codex-handoff** | Codex `PreCompact`/`SessionStart` hooks that hand Luna its state back across compaction |
 | 4 Bridges | **Codex Claude DevTools**, **CODEAPI** | session export (`codex-export.v1`) and VS Code HTTP/PTY terminal control |
 | 5 Governance | **Helios**, **Akashic**, **hdb/HeliosEvidenceCatalog** | the gate, its installer/validator, and the evidence DB the children query |
-| — Reference | **HeliosEntitlementAuthority** | reference implementation + the luna route's `--cwd` (a workspace) |
+| — Workspace | *(the route's `--cwd`)* | a target repo the child runs in — **discovered, not a dependency** (claude-code → parent of `gate_root`; codex → latest autoswarm session `cwd`) |
 
 ## Interconnections (each at the layer where it intersects)
 
@@ -97,6 +97,7 @@ path is hardcoded (run it as `coordinator-discover --check`, or
 - `codeapi` ← `~/.codex-handoff/config.json` `codeapi`
 - `autoswarm_home` ← `$AUTOSWARM_HOME` → `%LOCALAPPDATA%\autoswarm`
 - the CLIs ← `PATH`
+- a route's **workspace** ← an explicit override, else **parent of `gate_root`** (claude-code) or the **latest autoswarm-child session `cwd`** from `~/.codex/sessions` (codex)
 
 `--check` groups the report by tier, shows a per-route section for each enabled
 agent, and exits non-zero only when a **required** dependency (for an enabled
