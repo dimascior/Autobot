@@ -13,6 +13,17 @@
 # your own threads.
 
 [[task]]
+id = "sample-long-run"
+domain = "example"
+title = "Start a worker and its monitor through AutoSwarm"
+description = "You are the swarm orchestrator. Read the file <path to task file> with your file-reading tool and carry out its steps exactly, in order. Keep this instruction and that file path word for word in the prompt."
+task_class = "investigate"
+route = "opus"
+priority = 10
+evidence = "Why this run exists. See 'Start a long run through Autobot' in README.md."
+depends_on = []
+
+[[task]]
 id = "sample-investigate"
 domain = "example"
 title = "Investigate an open question in your system"
@@ -21,7 +32,7 @@ task_class = "investigate"
 route = "luna"
 priority = 5
 evidence = "Why this is a real open thread -- point at a finding, a ticket, or a prior run."
-depends_on = []
+depends_on = ["sample-long-run"]    # held back until sample-long-run is closed
 
 [[task]]
 id = "sample-modify"

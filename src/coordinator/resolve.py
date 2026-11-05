@@ -82,12 +82,20 @@ def _collect_authoritative_evidence(ledger: Ledger, item: dict, dispatch: dict,
     if not findings_dir.is_dir():
         return refs, hashes
     dispatched_utc = (dispatch or {}).get("dispatched_utc", "")
+    dispatch_ts = None
+    if dispatched_utc:
+        try:
+            from datetime import datetime
+            dispatch_ts = datetime.fromisoformat(
+                dispatched_utc.replace("Z", "+00:00")).timestamp()
+        except (ValueError, OSError):
+            pass
     for md in sorted(findings_dir.glob("helios-findings-*.md")):
-        # crude recency filter: findings whose id-stamp sorts at/after the
-        # dispatch time are candidate corroboration for this run.
         try:
             mtime = md.stat().st_mtime
         except OSError:
+            continue
+        if dispatch_ts is not None and mtime < dispatch_ts:
             continue
         refs.append({"type": "findings_file", "path": str(md), "mtime": mtime})
         try:

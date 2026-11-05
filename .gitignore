@@ -1,6 +1,9 @@
 # Machine-specific config (absolute paths) -- never publish
 config.local.toml
 
+# One-cycle live configs (dry_run = false) -- never make these the default
+config.*-run.toml
+
 # Live backlog holds real internal threads -- ship backlog.example.toml instead
 backlog.toml
 

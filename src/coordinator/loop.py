@@ -83,6 +83,10 @@ def one_cycle(ledger: Ledger, cfg: dict, trigger: str = "manual") -> dict:
     result = {"cycle_id": cycle_id, "trigger": trigger, "dry_run": dry_run}
 
     try:
+        # Read results BEFORE the cap check: otherwise a full cap blocks the
+        # result read and the cycle deadlocks after the first full batch.
+        sync_active_dispatches(ledger, autoswarm_home)
+
         slots = run_safety_checks(
             ledger,
             stop_file=stop_file,
@@ -101,10 +105,6 @@ def one_cycle(ledger: Ledger, cfg: dict, trigger: str = "manual") -> dict:
             backlog_file=backlog_file,
         )
         ledger.log_audit(cycle_id, "ingest", output_data=ingest_summary)
-
-        # reconcile any outstanding real dispatches against their results
-        # (a completed run parks its task at awaiting_resolution -- never completed)
-        sync_active_dispatches(ledger, autoswarm_home)
 
         # stage 2b: resolution evaluator -- PROPOSE evidence-backed verdicts for
         # anything parked at awaiting_resolution. This never closes a task; the
@@ -138,13 +138,35 @@ def one_cycle(ledger: Ledger, cfg: dict, trigger: str = "manual") -> dict:
                          output_data={"batch": plan_result.get("batch", []),
                                       "planner": plan_result.get("planner")})
 
-        # enrich batch items with the ledger's authoritative class/route
-        batch = plan_result.get("batch", [])
-        for item in batch:
+        # Validate and enrich: the planner (especially the LLM) may return
+        # items that are no longer dispatchable, non-task items, or more auto
+        # items than the available slots.  Filter against the ledger's truth.
+        raw_batch = plan_result.get("batch", [])
+        batch = []
+        auto_count = 0
+        require_approval_set = set(safety_cfg.get("require_approval", []))
+        for item in raw_batch:
             db_item = ledger.get_item(item["id"])
-            if db_item:
-                item["task_class"] = db_item.get("task_class", "investigate")
-                item["route"] = db_item.get("route", "luna")
+            if not db_item:
+                log.warning("planner proposed unknown item %s — dropped", item["id"])
+                continue
+            if db_item["kind"] != "task":
+                log.warning("planner proposed non-task %s (kind=%s) — dropped",
+                            item["id"], db_item["kind"])
+                continue
+            if db_item["status"] not in ("open",):
+                log.warning("planner proposed non-open task %s (status=%s) — dropped",
+                            item["id"], db_item["status"])
+                continue
+            item["task_class"] = db_item.get("task_class", "investigate")
+            item["route"] = db_item.get("route", "luna")
+            is_approval = item["task_class"] in require_approval_set
+            if not is_approval:
+                if auto_count >= slots:
+                    log.info("planner batch trimmed: auto slots exhausted (%d)", slots)
+                    continue
+                auto_count += 1
+            batch.append(item)
 
         # safety gate: park approval-class work, pass the rest
         auto, parked = gate_batch(batch, safety_cfg.get("require_approval", []),

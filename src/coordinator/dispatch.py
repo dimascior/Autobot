@@ -70,20 +70,18 @@ def _parse_call_id(stdout: str) -> str:
 
 
 def _warn_if_ungoverned(route_cfg: dict) -> None:
-    """A claude-code child runs ungated ONLY if its --cwd holds a local
-    .command-gate (the settings.json wrapper then defers). If an overridden
-    workspace lacks one, the child silently routes to the global gate instead,
-    whose timeout / fail-open policy then governs the outcome -- not the deferred
-    passthrough the opus route assumes. Codex routes are exempt (codex does not
-    load the settings.json hooks at all)."""
+    """Flag a claude-code workspace with no .command-gate of its own. Its child is
+    still gated, but through the global gate instead of the workspace's own hook,
+    so the global hook's timeout and fail-open policy apply. Codex routes are exempt:
+    ~/.codex/hooks.json wires their gate whatever the workspace."""
     if route_cfg.get("agent") != "claude-code":
         return
     ws = route_cfg.get("workspace", "")
     if ws and not (Path(ws) / ".command-gate").is_dir():
         log.warning(
-            "route governance: claude-code workspace %r has NO local "
-            ".command-gate -- its child shell routes to the global gate, NOT "
-            "the deferred passthrough this route assumes", ws)
+            "route governance: claude-code workspace %r has no local "
+            ".command-gate -- its child shell uses the global gate, not a "
+            "workspace hook", ws)
 
 
 def dispatch_item(

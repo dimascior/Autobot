@@ -41,7 +41,7 @@ stale_threshold_minutes = 120
 # The planner's own reasoning model. Runs through the `claude` CLI
 # (subscription auth) -- never the billed API. Must be a claude-* model;
 # a gpt/codex planner would have to route through `autoswarm run --agent codex`.
-planner = "claude-opus-4-6"
+planner = "claude-opus-4-6[1m]"
 
 # Dispatch routes: each maps to a subscription CLI via `autoswarm run --agent`.
 # No API keys anywhere -- codex uses the codex CLI, claude uses the claude CLI.
@@ -61,7 +61,7 @@ workspace = ""
 agent = "claude-code"
 model = "claude-opus-4-6[1m]"
 provider_args = ["--dangerously-skip-permissions"]
-workspace = ""                 # auto: parent of gate_root; MUST contain a .command-gate (deferred passthrough)
+workspace = ""                 # auto: parent of gate_root, whose own hook runs the gate
 
 [triggers]
 timer_floor_minutes = 15

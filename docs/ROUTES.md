@@ -30,7 +30,7 @@ maintain a separate list:
 | `agent` | Required programs (block `--check` when a route of this agent is enabled) | Governance precondition |
 |---|---|---|
 | `codex` | `codex` CLI, **codex-handoff**, **Codex Claude DevTools** (`devtoolsDir`) | runs under the gate via `~/.codex/hooks.json`; needs `--sandbox danger-full-access` (or it stalls writing gate files) |
-| `claude-code` | `claude` CLI | its `workspace` **must contain a local `.command-gate`** so the `~/.claude/settings.json` wrapper defers (the gate passthrough the route assumes); otherwise its shell routes to the global gate |
+| `claude-code` | `claude` CLI | gated either way: a `workspace` with its own `.command-gate` uses that workspace's hook in `.claude/settings.json` (the `~/.claude/settings.json` wrapper hands off to it), and any other workspace uses the global gate. Run `coordinator-verify` to see which applies |
 
 Accommodations (CODEAPI, hdb/HeliosEvidenceCatalog, Akashic) are reported by
 `--check` but never block — see [SYSTEMS.md](SYSTEMS.md).
@@ -39,7 +39,7 @@ Accommodations (CODEAPI, hdb/HeliosEvidenceCatalog, Akashic) are reported by
 
 1. Add a `[routes.<name>]` block with its `agent`, `model` and any `provider_args`; leave `workspace` blank.
 2. The `workspace` resolves automatically — a `claude-code` route from the gate-bearing dir, a `codex` route from its latest AutoSwarm session's `cwd`. For a brand-new route with no run on record yet, pin the first `--cwd` with `routes.<name>.workspace` (in `config.local.toml`, gitignored) or `<NAME>_WORKSPACE`.
-3. If `agent = "claude-code"`, make sure that workspace has a local `.command-gate` (governance precondition above).
+3. Run `coordinator-verify` to confirm the new route's shell calls reach the gate.
 4. Run `coordinator-discover --check` — it will add a `route:<agent>` section and tell you if that agent's required chain is missing.
 5. Tag backlog items with `route = "<name>"`.
 

@@ -13,16 +13,20 @@ Covers the pre-live acceptance checks that don't need the live gate:
 """
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from coordinator.ledger import Ledger, _add_missing_columns
+from coordinator.loop import one_cycle
 import coordinator.resolve as resolve_mod
 import coordinator.dispatch as dispatch_mod
 import coordinator.state as state_mod
 import coordinator.discover as discover_mod
+import coordinator.verify_enforcement as verify_mod
 from coordinator.discover import Resolved, is_blocking, REQUIRED, ROUTE, ACCOMMODATION, PARAM, INFO
 
 
@@ -400,7 +404,7 @@ class WorkspaceResolutionTests(unittest.TestCase):
         # a NEWER ad-hoc codex_exec run must be ignored in favour of the latest
         # autoswarm-child dispatch, even though its filename sorts later.
         self._rollout("rollout-2026-11-05T10-00-00-aaaa.jsonl",
-                      originator="codex_exec", cwd="E:\\Users\\dimas")
+                      originator="codex_exec", cwd="C:\\repo\\elsewhere")
         self._rollout("rollout-2026-11-04T10-00-00-bbbb.jsonl",
                       originator="autoswarm-child", cwd="C:\\repo\\target")
         got = discover_mod.latest_autoswarm_workspace("codex", sessions_dir=self.base)
@@ -416,9 +420,148 @@ class WorkspaceResolutionTests(unittest.TestCase):
 
     def test_no_autoswarm_child_on_record_returns_none(self):
         self._rollout("rollout-2026-11-05T10-00-00-aaaa.jsonl",
-                      originator="codex_exec", cwd="E:\\Users\\dimas")
+                      originator="codex_exec", cwd="C:\\repo\\elsewhere")
         self.assertIsNone(
             discover_mod.latest_autoswarm_workspace("codex", sessions_dir=self.base))
+
+
+class CycleTests(unittest.TestCase):
+    """one_cycle end to end on temp paths, with no agent launched."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.ledger = Ledger(self.root / "t.db")
+        self.home = self.root / "home"
+        self.findings = self.root / "findings"
+        self.home.mkdir()
+        self.findings.mkdir()
+
+    def tearDown(self):
+        self.ledger.close()
+        self.tmp.cleanup()
+
+    def _cfg(self):
+        return {
+            "paths": {"autoswarm_home": str(self.home), "findings_dir": str(self.findings),
+                      "gate_root": str(self.root / "gate"),
+                      "backlog_file": str(self.root / "backlog.toml"), "ledger_db": "unused"},
+            "caps": {"max_concurrent": 1, "max_dispatches_per_cycle": 5,
+                     "max_cycles_per_hour": 100, "daily_ceiling": 100},
+            "cooldowns": {"stale_threshold_minutes": 120},
+            "models": {"planner": "claude-opus-4-6"},
+            "routes": {"luna": {"agent": "codex", "model": "m", "workspace": "w"},
+                       "opus": {"agent": "claude-code", "model": "m", "workspace": "w"}},
+            "safety": {"dry_run": True, "stop_file": str(self.root / "STOP"),
+                       "require_approval": ["modify"]},
+        }
+
+    def _task(self, tid, **kw):
+        self.ledger.upsert_item(id=tid, kind="task", domain="d", title=tid,
+                                source="backlog", **kw)
+
+    def _running_dispatch_with_result(self, tid):
+        cycle = self.ledger.start_cycle("test")
+        did = self.ledger.reserve_dispatch(item_id=tid, cycle_id=cycle, model="m", prompt="p")
+        self.ledger.mark_dispatch_launched(did, "call-x")
+        call = self.home / "calls" / "call-x"
+        call.mkdir(parents=True)
+        (call / "result.json").write_text(
+            json.dumps({"outcome": "completed", "content": "done"}), encoding="utf-8")
+
+    def test_full_cap_still_reads_results(self):
+        """A full cap must not stop the cycle reading the result that frees it."""
+        self._task("t")
+        self._running_dispatch_with_result("t")
+        result = one_cycle(self.ledger, self._cfg())
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(self.ledger.get_item("t")["status"], "awaiting_resolution")
+
+    def test_findings_older_than_dispatch_do_not_corroborate(self):
+        self._task("t")
+        self._running_dispatch_with_result("t")
+        dispatch_mod.sync_active_dispatches(self.ledger, self.home)
+        old = self.findings / "helios-findings-20000101-0000.md"
+        old.write_text("old run", encoding="utf-8")
+        os.utime(old, (1000, 1000))
+        out = resolve_mod.evaluate_awaiting(self.ledger, findings_dir=self.findings,
+                                            autoswarm_home=self.home)
+        self.assertEqual(out["review"], 1)
+        self.assertEqual(out["resolved"], 0)
+
+    def test_planner_output_is_checked_against_the_ledger(self):
+        self._task("a", priority=2)
+        self._task("b", priority=1)
+        self._task("done")
+        self.ledger.set_status("done", "completed")
+        self.ledger.upsert_item(id="f1", kind="finding", domain="d", title="f1",
+                                source="test", status="completed")
+        batch = [{"id": i, "model": "m", "prompt": "p"}
+                 for i in ("ghost", "f1", "done", "a", "b")]
+        planned = {"batch": batch, "planner": "llm", "planner_input": {}}
+        with mock.patch("coordinator.loop.plan", return_value=planned):
+            result = one_cycle(self.ledger, self._cfg())
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["planned"], 1)      # only "a": one free slot
+        self.assertEqual(result["dispatched"], 1)   # dry-run counts as dispatched
+
+
+class VerifyEnforcementTests(unittest.TestCase):
+    """Per-route gate verdicts, including the workspace-hook hand-off."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name) / "ws"
+        self.workspace.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _workspace_hook(self):
+        (self.workspace / ".claude").mkdir()
+        settings = {"hooks": {"PreToolUse": [{
+            "matcher": "Bash|PowerShell",
+            "hooks": [{"type": "command",
+                       "command": "& (Join-Path $PWD '.command-gate\\hooks\\gate.ps1')"}],
+        }]}}
+        (self.workspace / ".claude" / "settings.json").write_text(
+            json.dumps(settings), encoding="utf-8")
+
+    def _claude_verdict(self, hook_present=True, hands_off=True):
+        verdict, _ = verify_mod._route_verdict("claude-code", self.workspace,
+                                               hook_present, hands_off)
+        return verdict
+
+    def test_codex_verdict_follows_its_hooks_file(self):
+        with mock.patch("coordinator.discover.codex_hooks", return_value={"gate": Path("g")}):
+            self.assertEqual(verify_mod._route_verdict("codex", self.workspace, False, False)[0],
+                             verify_mod.GATED)
+        with mock.patch("coordinator.discover.codex_hooks", return_value={"gate": None}):
+            self.assertEqual(verify_mod._route_verdict("codex", self.workspace, False, False)[0],
+                             verify_mod.NOT_GATED)
+
+    def test_local_gate_with_workspace_hook_is_gated(self):
+        (self.workspace / ".command-gate").mkdir()
+        self._workspace_hook()
+        self.assertEqual(self._claude_verdict(), verify_mod.GATED)
+
+    def test_local_gate_without_workspace_hook_is_not_gated(self):
+        (self.workspace / ".command-gate").mkdir()
+        self.assertEqual(self._claude_verdict(), verify_mod.NOT_GATED)
+
+    def test_no_local_gate_uses_the_global_hook(self):
+        self.assertEqual(self._claude_verdict(), verify_mod.GATED)
+
+    def test_no_hook_at_all_is_not_gated(self):
+        self.assertEqual(self._claude_verdict(hook_present=False, hands_off=False),
+                         verify_mod.NOT_GATED)
+
+    def test_report_uses_the_routes_resolved_workspace(self):
+        cfg = {"routes": {"opus": {"agent": "claude-code", "workspace": str(self.workspace)},
+                          "blank": {"agent": "claude-code", "workspace": ""}}}
+        rows = {r["name"]: r for r in verify_mod.route_report(cfg, {})}
+        self.assertEqual(rows["opus"]["workspace"], str(self.workspace))
+        self.assertEqual(rows["blank"]["verdict"], verify_mod.UNKNOWN)
 
 
 if __name__ == "__main__":

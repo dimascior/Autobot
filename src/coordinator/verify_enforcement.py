@@ -1,136 +1,142 @@
-"""Verify whether the command-gate actually governs the CHILD execution path.
+"""Report, per route, whether a child's shell calls reach the command gate.
 
-The coordinator's own `autoswarm run ...` launch may be gated by a PreToolUse
-hook, but that does NOT imply the shell commands a child agent runs are gated.
-This checker inspects the real configuration and reports, per route, whether the
-gate is authoritative over that child's shell calls -- so the answer is evidence,
-not assumption.
+A child reaches the gate one of three ways. This checker reads the real
+configuration and says which one applies, so the answer is evidence, not
+assumption:
 
-How it decides:
+1. codex: does not read ~/.claude/settings.json. ~/.codex/hooks.json wires the
+   gate for Codex sessions, including AutoSwarm children.
+2. claude-code, workspace with its own `.command-gate`: the wrapper in
+   ~/.claude/settings.json emits '{}' and leaves the call to the workspace's own
+   hook in `<workspace>/.claude/settings.json`. That hand-off does not mean
+   ungated: the child is gated unless the workspace has no such hook.
+3. claude-code, no local `.command-gate`: the wrapper runs the global gate named
+   in settings.json.
 
-1. The PreToolUse hook matcher is `Bash|PowerShell`, and the settings.json
-   wrapper is of the form:
-       if (Test-Path (Join-Path $PWD '.command-gate')) { '{}' }   # local override: defer
-       else { & <global-gate-hook> }                              # default route
-   A local `.command-gate` in cwd is the override that defers (the child's shell
-   runs ungated). With NO local `.command-gate`, the wrapper routes to the global
-   gate named in settings.json.
-
-2. Codex does not load Claude Code's ~/.claude/settings.json hooks, so a codex
-   child's shell calls never reach the gate -- any compliance is prompt-level
-   (voluntary), not enforced.
-
-3. Reaching the gate is not the same as being blocked by it. If the gate's hook
-   exceeds its configured timeout it is cancelled, and the outcome then depends
-   on your hook's fail-open / fail-closed policy -- verify that policy.
+Reaching the gate is not the same as being blocked by it. If a hook exceeds its
+timeout it is cancelled, and the outcome then depends on that hook's
+fail-open / fail-closed policy, so check that too.
 
 Run:
-    uv run --no-project --python 3.12 python verify_enforcement.py
+    coordinator-verify    (or: python -m coordinator.verify_enforcement)
 """
 
 import json
 import sys
-import tomllib
 from pathlib import Path
 
-from coordinator import PROJECT_ROOT
+from coordinator import PROJECT_ROOT, discover
+from coordinator.loop import load_config
 
 SETTINGS = Path.home() / ".claude" / "settings.json"
 
+GATED = "GATED"
+NOT_GATED = "NOT GATED"
+UNKNOWN = "UNKNOWN"
 
-def _load_settings():
+
+def _read_json(path: Path) -> dict:
     try:
-        return json.loads(SETTINGS.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return {"_error": str(exc)}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
-def _pretooluse_shell_hook(settings: dict):
-    """Return (matches_shell, passthrough_on_command_gate, raw_command)."""
+def _shell_hook_commands(settings: dict) -> list[str]:
+    """Every PreToolUse hook command whose matcher covers Bash and PowerShell."""
+    commands = []
     for entry in settings.get("hooks", {}).get("PreToolUse", []):
         matcher = entry.get("matcher", "")
         if "Bash" in matcher and "PowerShell" in matcher:
-            for h in entry.get("hooks", []):
-                cmd = h.get("command", "")
-                passthrough = (".command-gate" in cmd and "'{}'" in cmd)
-                return True, passthrough, cmd
-    return False, False, ""
+            commands.extend(h.get("command", "") for h in entry.get("hooks", []))
+    return commands
 
 
-def _route_verdict(agent: str, workspace: Path, hook_present: bool,
-                   passthrough_on_gate: bool):
-    has_gate_dir = (workspace / ".command-gate").is_dir()
+def _global_wrapper(settings: dict) -> tuple[bool, bool, str]:
+    """Return (hook_present, hands_off_to_local_gate, raw_command)."""
+    commands = _shell_hook_commands(settings)
+    if not commands:
+        return False, False, ""
+    raw = commands[0]
+    return True, (".command-gate" in raw and "'{}'" in raw), raw
+
+
+def _workspace_hook_runs_gate(workspace: Path) -> bool:
+    """True if the workspace's own Claude settings run a gate hook."""
+    for name in ("settings.json", "settings.local.json"):
+        settings = _read_json(workspace / ".claude" / name)
+        if any(".command-gate" in c for c in _shell_hook_commands(settings)):
+            return True
+    return False
+
+
+def _route_verdict(agent: str, workspace, hook_present: bool,
+                   hands_off: bool) -> tuple[str, str]:
     if agent == "codex":
-        return ("NOT HOOK-GOVERNED",
-                "Codex does not load Claude Code settings.json hooks; the child's "
-                "shell calls never reach the gate hook. Gate compliance is "
-                "prompt-level only (voluntary).")
-    if agent == "claude-code":
-        if not hook_present:
-            return ("NOT HOOK-GOVERNED",
-                    "no PreToolUse Bash|PowerShell hook found in settings.json")
-        if passthrough_on_gate and has_gate_dir:
-            return ("PASSTHROUGH (ungated)",
-                    f"workspace contains .command-gate, so the settings.json wrapper "
-                    f"emits '{{}}' and the gate script never runs for this child's "
-                    f"shell calls. ({workspace}\\.command-gate present)")
-        return ("ROUTED TO GLOBAL GATE (enforced only if the hook completes in time)",
-                "no local .command-gate, so by design the wrapper routes this child's "
-                "shell calls to the global gate named in settings.json. Reaching the "
-                "gate is not the same as being blocked by it: if the gate's hook "
-                "exceeds its configured timeout it is cancelled, and your hook's "
-                "fail-open/closed policy then decides the outcome. Confirm that policy.")
-    return ("UNKNOWN AGENT", f"unrecognized agent '{agent}'")
+        gate = discover.codex_hooks().get("gate")
+        if gate:
+            return (GATED, f"~/.codex/hooks.json runs the gate at {gate}.")
+        return (NOT_GATED, "~/.codex/hooks.json has no PreToolUse/PostToolUse gate, "
+                           "so the child's shell calls never reach one.")
+    if agent != "claude-code":
+        return (UNKNOWN, f"unrecognized agent '{agent}'")
+    if not workspace:
+        return (UNKNOWN, "the route has no workspace (--cwd) resolved")
+    workspace = Path(workspace)
+    if hands_off and (workspace / ".command-gate").is_dir():
+        if _workspace_hook_runs_gate(workspace):
+            return (GATED, "the settings.json wrapper hands off to the workspace's "
+                           "own hook in .claude/settings.json, which runs the gate.")
+        return (NOT_GATED, "the settings.json wrapper hands off to the workspace, but "
+                           "its .claude settings run no gate hook.")
+    if hook_present:
+        return (GATED, "settings.json runs the global gate for this workspace.")
+    return (NOT_GATED, "no PreToolUse Bash|PowerShell hook found in settings.json")
 
 
-def main():
-    here = PROJECT_ROOT
-    cfg = tomllib.loads((here / "config.toml").read_text(encoding="utf-8"))
-    settings = _load_settings()
-    if "_error" in settings:
-        print(f"could not read {SETTINGS}: {settings['_error']}")
-        return 1
+def route_report(cfg: dict, settings: dict) -> list[dict]:
+    """One verdict per route, using each route's resolved workspace."""
+    hook_present, hands_off, _ = _global_wrapper(settings)
+    rows = []
+    for name, route in (cfg.get("routes") or {}).items():
+        agent = route.get("agent", "")
+        workspace = route.get("workspace") or None
+        verdict, why = _route_verdict(agent, workspace, hook_present, hands_off)
+        rows.append({"name": name, "agent": agent, "workspace": workspace,
+                     "verdict": verdict, "why": why})
+    return rows
 
-    hook_present, passthrough, raw = _pretooluse_shell_hook(settings)
+
+def main() -> int:
+    cfg = load_config(PROJECT_ROOT / "config.toml")
+    settings = _read_json(SETTINGS)
+    hook_present, hands_off, raw = _global_wrapper(settings)
 
     print("=== command-gate child-path enforcement ===\n")
     print(f"settings.json: {SETTINGS}")
     print(f"  PreToolUse Bash|PowerShell hook present: {hook_present}")
-    print(f"  passthrough when cwd has .command-gate:  {passthrough}")
+    print(f"  hands off when cwd has .command-gate:    {hands_off}")
     if raw:
-        print(f"  wrapper: {raw[:160]}{'…' if len(raw) > 160 else ''}")
-
-    # the operator's own launch command (this coordinator dir)
-    op_gated = not (here / ".command-gate").is_dir()
-    print(f"\ncoordinator launch dir: {here}")
-    print(f"  operator's `autoswarm run` launch is itself gated: {op_gated} "
-          f"({'no' if op_gated else 'has'} .command-gate in cwd)")
+        print(f"  wrapper: {raw[:160]}{'...' if len(raw) > 160 else ''}")
 
     print("\nper-route child governance:")
-    any_governed = False
-    for name, rc in cfg.get("routes", {}).items():
-        agent = rc.get("agent", "")
-        ws = Path(rc.get("workspace", ""))
-        verdict, why = _route_verdict(agent, ws, hook_present, passthrough)
-        if verdict == "HOOK-GOVERNED":
-            any_governed = True
-        print(f"\n  [{name}] agent={agent} workspace={ws}")
-        print(f"      verdict: {verdict}")
-        print(f"      reason:  {why}")
+    rows = route_report(cfg, settings)
+    for row in rows:
+        print(f"\n  [{row['name']}] agent={row['agent']} workspace={row['workspace']}")
+        print(f"      verdict: {row['verdict']}")
+        print(f"      reason:  {row['why']}")
 
+    ungoverned = [r["name"] for r in rows if r["verdict"] != GATED]
     print("\n=== conclusion ===")
-    if any_governed:
-        print("At least one route is hook-governed along the child path.")
+    if ungoverned:
+        print(f"Not confirmed gated: {', '.join(ungoverned)}.")
     else:
-        print("Child-path routing is by design: codex children are not hooked "
-              "(voluntary), a local .command-gate defers, and a no-local-gate\n"
-              "claude-code child is routed to the global gate named in settings.json.\n"
-              "Note that reaching the gate is not the same as being blocked by it: if\n"
-              "the gate's hook exceeds its configured timeout it is cancelled, and the\n"
-              "outcome depends on your hook's fail-open/closed policy. If you need hard\n"
-              "enforcement, confirm the hook fails closed on timeout or add an\n"
-              "OS/sandbox boundary.")
-    return 0
+        print("Every route's shell calls reach the gate.")
+    print("Reaching the gate is not the same as being blocked by it: a hook that "
+          "exceeds its timeout\nis cancelled, and its fail-open/closed policy then "
+          "decides the outcome. Check that policy.")
+    return 1 if ungoverned else 0
 
 
 if __name__ == "__main__":
