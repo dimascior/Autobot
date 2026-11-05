@@ -19,7 +19,8 @@ import json
 import tomllib
 from pathlib import Path
 
-from ledger import Ledger
+from coordinator import PROJECT_ROOT
+from coordinator.ledger import Ledger
 
 
 def _ledger_from_config(config_path: Path) -> Ledger:
@@ -72,7 +73,7 @@ def main():
     g.add_argument("--reject", action="store_true", help="reject the proposal")
     args = ap.parse_args()
 
-    here = Path(__file__).parent
+    here = PROJECT_ROOT
     config_path = Path(args.config)
     if not config_path.is_absolute():
         config_path = here / config_path

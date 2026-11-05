@@ -33,6 +33,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from coordinator import PROJECT_ROOT
+
 SETTINGS = Path.home() / ".claude" / "settings.json"
 
 
@@ -82,7 +84,7 @@ def _route_verdict(agent: str, workspace: Path, hook_present: bool,
 
 
 def main():
-    here = Path(__file__).parent
+    here = PROJECT_ROOT
     cfg = tomllib.loads((here / "config.toml").read_text(encoding="utf-8"))
     settings = _load_settings()
     if "_error" in settings:

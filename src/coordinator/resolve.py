@@ -24,7 +24,7 @@ import json
 import logging
 from pathlib import Path
 
-from ledger import Ledger
+from coordinator.ledger import Ledger
 
 log = logging.getLogger(__name__)
 

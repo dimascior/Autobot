@@ -7,14 +7,14 @@ import time
 import tomllib
 from pathlib import Path
 
-import discover
-from ledger import Ledger
-from ingest import ingest
-from state import compute_state
-from planner import plan
-from resolve import evaluate_awaiting
-from safety import SafetyViolation, gate_batch, run_safety_checks
-from dispatch import dispatch_batch, sync_active_dispatches
+from coordinator import PROJECT_ROOT, discover
+from coordinator.ledger import Ledger
+from coordinator.ingest import ingest
+from coordinator.state import compute_state
+from coordinator.planner import plan
+from coordinator.resolve import evaluate_awaiting
+from coordinator.safety import SafetyViolation, gate_batch, run_safety_checks
+from coordinator.dispatch import dispatch_batch, sync_active_dispatches
 
 log = logging.getLogger("coordinator")
 
@@ -43,8 +43,11 @@ def load_config(config_path: Path) -> dict:
     discover.apply_to_config(cfg)
     # Export the resolved home so the whole subprocess tree (dispatched children
     # and anything they spawn) agrees on where runs land -- without clobbering an
-    # AUTOSWARM_HOME the launching shell already set.
-    os.environ.setdefault("AUTOSWARM_HOME", cfg["paths"]["autoswarm_home"])
+    # AUTOSWARM_HOME the launching shell already set, and only when discovery
+    # actually found one (an unset home must never export an empty var).
+    home = cfg["paths"].get("autoswarm_home")
+    if home:
+        os.environ.setdefault("AUTOSWARM_HOME", home)
     return cfg
 
 
@@ -54,7 +57,7 @@ def _resolve(base: Path, value: str) -> Path:
 
 
 def one_cycle(ledger: Ledger, cfg: dict, trigger: str = "manual") -> dict:
-    here = Path(__file__).parent
+    here = PROJECT_ROOT
     paths = cfg["paths"]
     caps = cfg["caps"]
     cooldowns = cfg["cooldowns"]
@@ -65,7 +68,16 @@ def one_cycle(ledger: Ledger, cfg: dict, trigger: str = "manual") -> dict:
 
     stop_file = _resolve(here, safety_cfg["stop_file"])
     backlog_file = _resolve(here, paths["backlog_file"])
-    autoswarm_home = Path(paths["autoswarm_home"])
+
+    # autoswarm_home / findings_dir / gate_root are non-blocking inputs: an unset
+    # one resolves to a path that does not exist, and every ingest sweep guards
+    # with .is_dir(), so the cycle runs (ingesting nothing from that source)
+    # instead of crashing. `discover.py --check` is where unreadiness is flagged.
+    def _dir(value):
+        return Path(value) if value else here / "__unset__"
+    autoswarm_home = _dir(paths.get("autoswarm_home"))
+    findings_dir = _dir(paths.get("findings_dir"))
+    gate_root = _dir(paths.get("gate_root"))
 
     cycle_id = ledger.start_cycle(trigger, dry_run=dry_run)
     result = {"cycle_id": cycle_id, "trigger": trigger, "dry_run": dry_run}
@@ -84,8 +96,8 @@ def one_cycle(ledger: Ledger, cfg: dict, trigger: str = "manual") -> dict:
         ingest_summary = ingest(
             ledger,
             autoswarm_home=autoswarm_home,
-            findings_dir=Path(paths["findings_dir"]),
-            gate_root=Path(paths["gate_root"]),
+            findings_dir=findings_dir,
+            gate_root=gate_root,
             backlog_file=backlog_file,
         )
         ledger.log_audit(cycle_id, "ingest", output_data=ingest_summary)
@@ -99,7 +111,7 @@ def one_cycle(ledger: Ledger, cfg: dict, trigger: str = "manual") -> dict:
         # designated authority does that via authorize.py.
         resolution_summary = evaluate_awaiting(
             ledger,
-            findings_dir=Path(paths["findings_dir"]),
+            findings_dir=findings_dir,
             autoswarm_home=autoswarm_home,
         )
         ledger.log_audit(cycle_id, "resolve", output_data=resolution_summary)
@@ -189,7 +201,7 @@ def one_cycle(ledger: Ledger, cfg: dict, trigger: str = "manual") -> dict:
 
 
 def run_loop(cfg: dict, once: bool = False):
-    db_path = _resolve(Path(__file__).parent, cfg["paths"]["ledger_db"])
+    db_path = _resolve(PROJECT_ROOT, cfg["paths"]["ledger_db"])
     ledger = Ledger(db_path)
     timer_floor = cfg["triggers"]["timer_floor_minutes"] * 60
 
@@ -273,7 +285,7 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    cfg = load_config(_resolve(Path(__file__).parent, args.config))
+    cfg = load_config(_resolve(PROJECT_ROOT, args.config))
     if args.dry_run:
         cfg["safety"]["dry_run"] = True
 

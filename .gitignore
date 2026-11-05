@@ -12,3 +12,8 @@ backlog.toml
 __pycache__/
 *.pyc
 .venv/
+
+# Build / editable-install artifacts
+*.egg-info/
+build/
+dist/

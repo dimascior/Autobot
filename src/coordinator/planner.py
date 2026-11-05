@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from typing import Optional
 
-from ledger import Ledger
+from coordinator.ledger import Ledger
 
 log = logging.getLogger(__name__)
 

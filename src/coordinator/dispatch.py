@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from ledger import Ledger
+from coordinator.ledger import Ledger
 
 log = logging.getLogger(__name__)
 
@@ -114,6 +114,15 @@ def dispatch_item(
         log.info("DRY RUN -- would dispatch: item=%s agent=%s model=%s prompt=%.140s",
                  item_id, route_cfg.get("agent"), model, prompt)
         return {"status": "dry-run", "item_id": item_id, "model": model}
+
+    # A route's workspace is the child's --cwd: a per-dispatch parameter, not a
+    # system dependency, so the loop starts without it. A real dispatch, though,
+    # cannot launch a child with no working directory -- skip rather than pass "".
+    if not route_cfg.get("workspace"):
+        log.error("skip %s: route (agent=%s) has no workspace (--cwd) set -- set "
+                  "routes.<name>.workspace or <NAME>_WORKSPACE", item_id,
+                  route_cfg.get("agent"))
+        return {"status": "error", "reason": "no workspace (--cwd) configured for route"}
 
     autoswarm = _find_autoswarm()
     if not autoswarm:

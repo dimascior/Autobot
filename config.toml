@@ -8,6 +8,22 @@ gate_root      = ""   # parsed from the settings.json PreToolUse hook
 backlog_file = "backlog.toml"
 ledger_db = "coordinator.db"
 
+[systems]
+# Programs `discover.py --check` verifies. Blank = resolved at runtime from
+# authoritative sources, never hardcoded (so this file stays safe to publish):
+#   codex_handoff_dir  <- ~/.codex/hooks.json (PreCompact/SessionStart)
+#   devtools_dir       <- $CODEX_HANDOFF_DEVTOOLS or ~/.codex-handoff/config.json
+#   codeapi_ports      <- ~/.codex-handoff/config.json (codeapi.ports)
+# Requiredness is PER ROUTE: a `codex` route needs codex_cli + codex_handoff +
+# devtools_dir; a `claude-code` route needs claude_cli; the gate is always
+# required; CODEAPI / hdb / Akashic are accommodations (reported, never block).
+# See docs/ARCHITECTURE.md. Set a value only to override discovery.
+codex_handoff_dir    = ""   # codex-handoff checkout's bin/handoff.mjs (or its dir)
+devtools_dir         = ""   # Codex_claude_devtools checkout (has scripts/codex-export.ts)
+codeapi_ports        = ""   # CODEAPI band, e.g. "47337-47400", or "off"
+evidence_catalog_dir = ""   # hdb / HeliosEvidenceCatalog root (child-session data source)
+akashic_dir          = ""   # Akashic checkout (installs/validates the Helios runtime)
+
 [caps]
 max_concurrent = 3
 max_dispatches_per_cycle = 5

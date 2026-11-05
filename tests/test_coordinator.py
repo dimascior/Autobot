@@ -1,6 +1,8 @@
 """Behaviour tests for the coordinator ledger + state logic.
 
-Run: uv run --no-project --python 3.12 python test_coordinator.py -v
+Run from the repo root with the package importable, e.g.:
+    PYTHONPATH=src python -m unittest discover -s tests
+  or:  pip install -e . && python -m unittest discover -s tests
 
 Covers the pre-live acceptance checks that don't need the live gate:
   - re-ingest idempotency, dispatch exclusion by kind/status, missing-predecessor
@@ -16,10 +18,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ledger import Ledger, _add_missing_columns
-import resolve as resolve_mod
-import dispatch as dispatch_mod
-import state as state_mod
+from coordinator.ledger import Ledger, _add_missing_columns
+import coordinator.resolve as resolve_mod
+import coordinator.dispatch as dispatch_mod
+import coordinator.state as state_mod
+import coordinator.discover as discover_mod
+from coordinator.discover import Resolved, is_blocking, REQUIRED, ROUTE, ACCOMMODATION, PARAM, INFO
 
 
 class CoordinatorTests(unittest.TestCase):
@@ -327,6 +331,51 @@ class MigrationTests(unittest.TestCase):
         again = _add_missing_columns(c, "t", {"extra": "TEXT DEFAULT ''"})
         self.assertEqual(again, [])                           # idempotent
         c.close()
+
+
+class DiscoveryTierTests(unittest.TestCase):
+    """The per-route required-vs-accommodated model: workspaces (params) and
+    accommodations never block; a route program blocks only when its agent is
+    enabled; apply_to_config never raises on an unset workspace or path."""
+
+    def test_required_blocks_only_when_unresolved(self):
+        self.assertTrue(is_blocking(
+            Resolved("autoswarm_home", None, "MISSING", "x", REQUIRED), set()))
+        self.assertFalse(is_blocking(
+            Resolved("autoswarm_home", Path("/x"), "override", "x", REQUIRED), set()))
+
+    def test_route_program_blocks_only_when_its_agent_is_enabled(self):
+        r = Resolved("codex_handoff", None, "MISSING", "x", ROUTE, "codex")
+        self.assertTrue(is_blocking(r, {"codex"}))            # codex route on -> blocks
+        self.assertFalse(is_blocking(r, {"claude-code"}))     # codex route off -> N/A
+        self.assertFalse(is_blocking(r, set()))
+
+    def test_params_and_accommodations_never_block(self):
+        for r in (
+            Resolved("luna_workspace", None, "MISSING", "x", PARAM, "codex"),
+            Resolved("codeapi", None, "MISSING", "x", ACCOMMODATION, "codex"),
+            Resolved("findings_dir", None, "MISSING", "x", ACCOMMODATION),
+            Resolved("codex_home", None, "MISSING", "x", INFO),
+        ):
+            self.assertFalse(is_blocking(r, {"codex", "claude-code"}), r.key)
+
+    def test_apply_to_config_never_raises_and_fills_path_strings(self):
+        cfg = {
+            "paths": {"autoswarm_home": "", "gate_root": "", "findings_dir": "",
+                      "backlog_file": "backlog.toml", "ledger_db": "coordinator.db"},
+            "routes": {"luna": {"agent": "codex", "workspace": ""},
+                       "opus": {"agent": "claude-code", "workspace": ""}},
+        }
+        out = discover_mod.apply_to_config(cfg)               # must not raise
+        for k in ("autoswarm_home", "gate_root", "findings_dir"):
+            self.assertIsInstance(out["paths"][k], str)       # loop.py can always read these
+
+    def test_resolve_paths_nonstrict_reports_the_codex_chain(self):
+        d = discover_mod.resolve_paths({"routes": {"luna": {"agent": "codex"}}},
+                                       strict=False)           # must not raise
+        for k in ("autoswarm_home", "gate_root", "codex_handoff", "devtools_dir",
+                  "luna_workspace", "codeapi"):
+            self.assertIn(k, d)
 
 
 if __name__ == "__main__":

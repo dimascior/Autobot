@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from ledger import Ledger
+from coordinator.ledger import Ledger
 
 log = logging.getLogger(__name__)
 
