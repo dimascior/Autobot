@@ -6,7 +6,7 @@ It uses the agent CLIs' own subscription logins, never API keys, and it launches
 
 **If you're an agent, read [Read this first](#read-this-first) before you do anything else.** Most mistakes made in this system came from an agent drawing the wrong picture of it and then building confidently on that picture.
 
-**Status:** the launch chain below has run live once, from one `--once` cycle. The timer loop has not run live, and the [known limits](#known-limits) still apply.
+**Status:** the launch chain below has run live twice, each from one `--once` cycle. The second run had [Remote Control](#follow-a-run-with-remote-control) on both Claude sessions. The timer loop has not run live, and the [known limits](#known-limits) still apply.
 
 ## Read this first
 
@@ -24,7 +24,7 @@ you or a timer
 Each layer has one job:
 
 - **Autobot** decides a task should run and starts a session for it. It doesn't do the task, and it only tracks the session it started.
-- **Autobot's Claude session** is the orchestrator. It's an AutoSwarm child, not an interactive session. For a long run it starts the worker and the monitor through AutoSwarm, then ends.
+- **Autobot's Claude session** is the orchestrator. It's an AutoSwarm child, not an interactive session. For a long run it starts the worker and a separate monitor session through AutoSwarm. Then it stays connected until the worker's call ends, so you can reach it over Remote Control for the whole run. It never monitors the worker; the monitor session does that.
 - **AutoSwarm** runs each child. With `--input <file>` it reads the prompt file and sends the text as the child's first message.
 
 The point of this arrangement is that a run starts with **no manual step** once Autobot is running. AutoSwarm on its own is already proven. Autobot starting the run is what this repo adds.
@@ -42,6 +42,7 @@ Each of these was made by an agent that was sure it understood the system.
 | Pick a model yourself | The models are part of the design | Use `[routes.*]` and `[models]` in `config.toml` |
 | Tell a cold Codex session to read its instructions from a file | Its shell is gated and it doesn't yet know the gate | Send the whole prompt as message text |
 | Move helpers into a file to shrink a prompt | The prompt that worked cold carried everything itself, and a file read added a new way to fail | Keep it self-contained until a file read is proven in that runtime |
+| Offer to watch the worker yourself, or give Autobot's session check-ins | Watching is the monitor session's job. Autobot's session launches the worker and the monitor | Leave watching to the monitor. Autobot's session only waits for the worker's call to end |
 | Believe a monitor's diagnosis | A monitor called a harmless cleanup error a write failure, and a fix was built for a problem that never happened | Check the session records yourself ([Reading a run](#reading-a-run)) |
 | Assume a local `.command-gate` means ungated | That workspace's own hook runs the gate | See [The gate](#the-gate) |
 | Say "ready" after reading the code | Reading proves nothing about a live path | Run the tests and a cycle, and say what you ran |
@@ -87,8 +88,16 @@ Follow [Writing a prompt for a cold session](#writing-a-prompt-for-a-cold-sessio
 ### 2. Write a task file for Autobot's Claude session
 
 ```text
-You are the swarm orchestrator for one run. Autobot started you through AutoSwarm.
-No human is watching, so don't ask questions. Do these steps in order, report, and end.
+You are the swarm orchestrator for one run. Autobot started you through AutoSwarm, with
+Remote Control on. You start the worker and a separate monitor session, then stay
+connected until the worker's call ends. You don't monitor the worker; the monitor does.
+
+You run headless: a reply without a tool call ends this session. Until the final
+report, every reply makes a tool call. Don't ask questions.
+
+When the user messages you over Remote Control, answer in a few lines and make your
+next tool call in the same reply. Do what they ask. To stop the run, cancel the
+worker's call and the monitor's: autoswarm cancel <call id>
 
 Your shell is gated. Each command returns a gate template the first time. Complete it
 for that command. If a command is refused for any other reason, stop and report the text.
@@ -102,14 +111,23 @@ for that command. If a command is refused for any other reason, stop and report 
 3. Start the monitor, with the call ID on the first line of its prompt:
    ("WORKER_CALL_ID=<call id>`r`n" + (Get-Content -Raw '<monitor prompt file>')) | autoswarm run --agent claude-code --model <model> --cwd <gate-bearing workspace> --background --no-parent --provider-arg=--dangerously-skip-permissions --remote-control=<monitor name> --input -
 
-4. Confirm calls/<call id>/handle.json exists for both. In the monitor's, read remote_control.state.
+4. Confirm calls/<call id>/handle.json exists for both. In the monitor's, read
+   remote_control.state and remote_control.response.session_url.
 
-5. End with both call IDs, the monitor's Remote Control state, and any step that failed. Don't wait for the worker.
+5. Until calls/<worker call id>/result.json exists: note whether the monitor's call
+   has a result.json, then run Start-Sleep -Seconds 180 with a tool timeout of
+   200000 ms. Each sleep needs a new gate with a new correlation_id. Stop after 30 sleeps.
+
+6. End with the worker's outcome from its result.json, the monitor's state and link,
+   each message from the user and what you did about it, and any step that failed.
 ```
 
-Leave out `--remote-control=<monitor name>` if you don't want to follow the monitor from claude.ai. See [Follow a run with Remote Control](#follow-a-run-with-remote-control).
+Leave out `--remote-control=<monitor name>` if you don't want to follow the monitor from claude.ai. Autobot's own session gets Remote Control from its route's `remote_control`, not from this file. See [Follow a run with Remote Control](#follow-a-run-with-remote-control).
 
-Background runs keep going after this session ends. `AUTOSWARM_HOME` is inherited from Autobot.
+- **Concurrency:** while the session waits, its dispatch stays `running` and counts against `max_concurrent`.
+- **Staleness:** keep the sleep cap under `stale_threshold_minutes`, 120 by default, so a long wait isn't marked stale.
+- **After it ends:** if it stops at the cap, the worker and the monitor keep running.
+- **Environment:** `AUTOSWARM_HOME` is inherited from Autobot.
 
 ### 3. Add one backlog task
 
@@ -163,11 +181,15 @@ A healthy live summary reads `Status: completed`, `Dry run: False`, `Dispatched:
 
 ### 7. Confirm it came up
 
-Use the log line `dispatched <task> -> call_id=<id>`, then check [the run's records](#reading-a-run). Read the `result.json` of Autobot's Claude session, and confirm a new call folder exists for the worker and for the monitor.
+Use the log line `dispatched <task> -> call_id=<id>`, then check [the run's records](#reading-a-run).
+
+- **Autobot's Claude session:** read its `handle.json`. Its `result.json` appears only when the session ends: after the worker's call ends, or at the sleep cap.
+- **Worker and monitor:** confirm a new call folder exists for each.
+- **Links:** each Claude session's link is at `remote_control.response.session_url` in its `handle.json`.
 
 ### 8. Close it
 
-Autobot tracks only the session it dispatched, not the worker that session started, so its verdict says nothing about the worker. Read the worker's own result first.
+Autobot tracks only the session it dispatched. With the step 2 template, that session ends with the worker's outcome, but Autobot's verdict doesn't check it. Read the worker's own `result.json` first.
 
 ```powershell
 uv run --no-project --python 3.12 python -m coordinator.loop --once --dry-run
@@ -208,7 +230,7 @@ The public docs don't cover headless sessions. This comes from the strings in th
 - **Autobot:**
   - A `claude-code` route can set `remote_control = true`. Dispatch then adds `--remote-control=autobot <task id>`, so the session shows up under that name on claude.ai. A string value replaces the `autobot` prefix.
   - It's off in `config.toml`. Turn it on in your run config (step 5).
-- **Task file:** start the monitor with `--remote-control=<name>` and report whether it connected. The template in step 2 does both.
+- **Task file:** start the monitor with `--remote-control=<name>`, report whether it connected, and keep Autobot's session connected until the worker's call ends. The template in step 2 does all three.
 - **Monitor prompt:** if you message the monitor from claude.ai, it must answer and make its next tool call in the same reply. A reply with no tool call ends a headless session, which is how an earlier monitor ended.
 - **Codex workers:** Codex has no Remote Control. AutoSwarm refuses `--remote-control` for a codex child. Dispatch skips the setting on a codex route and logs a warning.
 
@@ -244,7 +266,7 @@ A refusal doesn't stop the run. It just goes on without the mirror.
 
 What changes for a headless child:
 
-- Its mirror goes offline when the child ends.
+- Its mirror goes offline when the child ends. That's why the step 2 template keeps Autobot's session waiting until the worker ends, instead of ending after it launches.
 - A message sent from claude.ai arrives as a user message. The child still ends the moment it replies without a tool call, so a monitor prompt must tell it to answer and make its next tool call in the same reply.
 - Anyone who can open your claude.ai account can type into the session, so treat it like the terminal.
 
@@ -256,7 +278,9 @@ Tested on 2026-11-05 with `claude` 2.1.318:
 - **Autobot:** 41 of 41 tests pass.
 - **Live run:** one `claude-code` child started directly with `autoswarm run --remote-control` reached `enabled`, with a `session_url`, before its 18-second turn ended. The run completed normally.
 
-Not tried yet: a full Autobot cycle with `remote_control = true`, and opening a mirrored session on claude.ai.
+An Autobot cycle on 2026-11-06 dispatched Autobot's session with `--remote-control=autobot <task id>`. That session and the monitor it started both reached `enabled`. The session then ended 3.5 minutes in, after launching both, and its mirror went offline. That's why the step 2 template now keeps it connected. The monitor's session ended at 02:18 UTC, 24 minutes before the worker's call completed: its turn was interrupted during a `Monitor` timer call, and AutoSwarm recorded the call as failed. Where the interrupt came from hasn't been traced.
+
+Not tried yet: the stay-connected template.
 
 ## Writing a prompt for a cold session
 
@@ -387,7 +411,7 @@ Reasoning is encrypted, so read the agent messages for the why. Responses are la
 - **Removed tasks stay open.** Deleting a task from `backlog.toml` leaves it `open` in the ledger, so it can still launch unless it's approval-class.
 - **Verdicts are crude.** A `resolved` proposal means the run completed and a findings file appeared after dispatch, even one from an unrelated run. A `review` verdict can't be closed through `authorize` yet.
 - **The timer loop is unproven.** Only one-shot `--once` cycles have run live.
-- **Remote Control is proven on one child only.** A child started directly with `autoswarm run` connected. No Autobot cycle has used `remote_control = true` yet, and nobody has opened a mirrored session on claude.ai.
+- **Remote Control has run in one Autobot cycle.** Both Claude sessions connected, but the monitor's session ended early on an interrupt, and the stay-connected task file in step 2 hasn't run yet.
 
 ## How a cycle works
 
