@@ -28,7 +28,24 @@ def _find_autoswarm() -> Optional[str]:
     return None
 
 
-def _build_run_cmd(autoswarm: str, route_cfg: dict) -> list[str]:
+def _remote_control_name(route_cfg: dict, item_id: str) -> Optional[str]:
+    """Session name for a route's Remote Control, or None when it is off.
+
+    `remote_control = true` names the session "autobot <item>"; a string is used
+    as the prefix instead. Remote Control is a Claude Code feature, so a codex
+    route that sets it is skipped with a warning (AutoSwarm would refuse it)."""
+    value = route_cfg.get("remote_control")
+    if not value:
+        return None
+    if route_cfg.get("agent") != "claude-code":
+        log.warning("route remote_control ignored: agent %r is not claude-code",
+                    route_cfg.get("agent"))
+        return None
+    prefix = value.strip() if isinstance(value, str) and value.strip() else "autobot"
+    return f"{prefix} {item_id}".strip()
+
+
+def _build_run_cmd(autoswarm: str, route_cfg: dict, item_id: str = "") -> list[str]:
     """autoswarm run invocation for a route -- subscription CLI via --agent.
 
     - --agent selects the provider's own CLI (codex / claude-code), which uses
@@ -40,6 +57,9 @@ def _build_run_cmd(autoswarm: str, route_cfg: dict) -> list[str]:
       may not be alive); with ask-for-approval=never it never needs one.
     - provider_args carry the per-provider accommodations verbatim, e.g.
       --sandbox danger-full-access for codex (else it stalls writing gate files).
+    - remote_control (claude-code routes) adds --remote-control=<name>, so the
+      child can be followed from claude.ai/code and the Claude app. It needs an
+      AutoSwarm that has the --remote-control option.
     """
     cmd = [
         autoswarm, "run",
@@ -53,6 +73,9 @@ def _build_run_cmd(autoswarm: str, route_cfg: dict) -> list[str]:
         cmd += ["--effort", route_cfg["effort"]]
     for arg in route_cfg.get("provider_args", []):
         cmd.append("--provider-arg=" + arg)
+    name = _remote_control_name(route_cfg, item_id)
+    if name:
+        cmd.append("--remote-control=" + name)
     return cmd
 
 
@@ -135,7 +158,7 @@ def dispatch_item(
         item_id=item_id, cycle_id=cycle_id, model=model, prompt=prompt,
     )
 
-    cmd = _build_run_cmd(autoswarm, route_cfg)
+    cmd = _build_run_cmd(autoswarm, route_cfg, item_id)
     env = os.environ.copy()
     env["AUTOSWARM_HOME"] = str(autoswarm_home)  # dispatched run lands in the home we ingest from
 

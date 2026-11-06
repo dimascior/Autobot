@@ -100,12 +100,14 @@ for that command. If a command is refused for any other reason, stop and report 
    The call ID is at .data.call_id. If there is none, stop and report.
 
 3. Start the monitor, with the call ID on the first line of its prompt:
-   ("WORKER_CALL_ID=<call id>`r`n" + (Get-Content -Raw '<monitor prompt file>')) | autoswarm run --agent claude-code --model <model> --cwd <gate-bearing workspace> --background --no-parent --provider-arg=--dangerously-skip-permissions --input -
+   ("WORKER_CALL_ID=<call id>`r`n" + (Get-Content -Raw '<monitor prompt file>')) | autoswarm run --agent claude-code --model <model> --cwd <gate-bearing workspace> --background --no-parent --provider-arg=--dangerously-skip-permissions --remote-control=<monitor name> --input -
 
-4. Confirm calls/<call id>/handle.json exists for both.
+4. Confirm calls/<call id>/handle.json exists for both. In the monitor's, read remote_control.state.
 
-5. End with both call IDs and any step that failed. Don't wait for the worker.
+5. End with both call IDs, the monitor's Remote Control state, and any step that failed. Don't wait for the worker.
 ```
+
+Leave out `--remote-control=<monitor name>` if you don't want to follow the monitor from claude.ai. See [Follow a run with Remote Control](#follow-a-run-with-remote-control).
 
 Background runs keep going after this session ends. `AUTOSWARM_HOME` is inherited from Autobot.
 
@@ -143,9 +145,12 @@ max_dispatches_per_cycle = 1
 
 [safety]
 dry_run = false
+
+[routes.opus]
+remote_control = true   # optional: follow Autobot's Claude session from claude.ai
 ```
 
-`config.toml` stays dry, so nothing else goes live by accident. `config.local.toml` still layers on top.
+`config.toml` stays dry, so nothing else goes live by accident. `config.local.toml` still layers on top. The copy doesn't layer over `config.toml`, so set `remote_control` inside the copy's existing `[routes.opus]` table. A second `[routes.opus]` table is a TOML error.
 
 ### 6. Preview, then run
 
@@ -171,6 +176,87 @@ uv run --no-project --python 3.12 python -m coordinator.authorize --resolution <
 ```
 
 The first command reads the result and proposes a verdict. Only an authority's approval closes a task, and closing it unblocks whatever you held back in step 4.
+
+### Run it again with new prompts
+
+The prompts reach AutoSwarm through four layers. Each layer names the next, so you only edit the layer that changed:
+
+1. **The backlog task's `description`** gives the path of the task file that Autobot's Claude session reads.
+2. **`[routes.opus]`** sets how Autobot starts that session: model, folder, flags, and `remote_control`.
+3. **The task file** (step 2) holds the exact `autoswarm run` lines. Each child's prompt file is named in its `--input`, and its flags sit on the same line. This is where you point at new prompts.
+4. **The prompt files** hold the work itself.
+
+For a run with new prompts, update the `--input` paths in the task file. Then add a backlog task with a new `id`. Once a task has run, Autobot doesn't dispatch it again, even after it's closed.
+
+## Follow a run with Remote Control
+
+Claude Code's Remote Control mirrors a running session to claude.ai/code and the Claude app. You can read it there and send it messages.
+
+### Why AutoSwarm needed a change
+
+AutoSwarm runs its Claude children headless, as `claude -p` with stream-json input. `claude`'s `--remote-control` flag only starts an interactive session, so passing it with `--provider-arg` doesn't do anything. A headless session turns Remote Control on only when the program running it sends a `remote_control` control message, the way VS Code does. So the switch had to go into AutoSwarm itself.
+
+The public docs don't cover headless sessions. This comes from the strings in the `claude` 2.1.318 binary, which also show that the `remoteControlAtStartup` setting doesn't apply to them.
+
+### What each layer does
+
+- **AutoSwarm:**
+  - `autoswarm run --remote-control=NAME` sends that message after the handshake and before the first prompt, so the mirror starts with the prompt. It works only for claude-code children.
+  - The result goes into the call's `handle.json` as `remote_control`, with state `requested`, `enabled` or `failed`. A refusal doesn't stop the run.
+  - Resumed calls and children woken by mail keep the setting.
+  - The change is in `native.py`, plus `cli.py`, `engine.py` and `messages.py`, with new tests and a matching test fixture. Upstream HKUDS/AutoSwarm doesn't have it yet.
+- **Autobot:**
+  - A `claude-code` route can set `remote_control = true`. Dispatch then adds `--remote-control=autobot <task id>`, so the session shows up under that name on claude.ai. A string value replaces the `autobot` prefix.
+  - It's off in `config.toml`. Turn it on in your run config (step 5).
+- **Task file:** start the monitor with `--remote-control=<name>` and report whether it connected. The template in step 2 does both.
+- **Monitor prompt:** if you message the monitor from claude.ai, it must answer and make its next tool call in the same reply. A reply with no tool call ends a headless session, which is how an earlier monitor ended.
+- **Codex workers:** Codex has no Remote Control. AutoSwarm refuses `--remote-control` for a codex child. Dispatch skips the setting on a codex route and logs a warning.
+
+### Install the AutoSwarm change
+
+`uv tool install` copies the package, so edits to an AutoSwarm checkout don't reach the installed `autoswarm` until you reinstall. Use `--reinstall`. It rebuilds the package, where `--force` alone can install a wheel uv built earlier from the same folder.
+
+```powershell
+uv tool install --reinstall --python 3.12 <path to your AutoSwarm checkout>
+autoswarm run --help
+```
+
+The help should list `--remote-control [NAME]`. Until then, a launch that passes the flag fails with `unrecognized arguments: --remote-control`, and Autobot logs that error and releases the task.
+
+On Windows, `--reinstall` removes the old package before it copies the new one. If a file is in use (os error 32), it can stop halfway and leave `autoswarm` broken. Run the same command again, then check the help.
+
+### Requirements
+
+- An installed AutoSwarm whose `run` has `--remote-control`.
+- A claude.ai login (Pro, Max, Team or Enterprise). Remote Control refuses API keys, so `ANTHROPIC_API_KEY` must not be set for the child.
+- The one-time Remote Control confirmation, accepted once in an interactive session on the machine. A headless child can't show that dialog. `~/.claude.json` has `"remoteDialogSeen": true` once it's done.
+- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` unset, because it turns Remote Control off.
+
+### Reading it
+
+The call's `handle.json` has a `remote_control` field:
+
+- `requested`: still connecting.
+- `enabled`: connected. `response` holds what Claude Code returned: `session_url` is the link to open on claude.ai, along with `connect_url`, `environment_id`, `bridge_epoch` and `bridge_session_id`.
+- `failed`: refused. `error` holds Claude Code's reason.
+
+A refusal doesn't stop the run. It just goes on without the mirror.
+
+What changes for a headless child:
+
+- Its mirror goes offline when the child ends.
+- A message sent from claude.ai arrives as a user message. The child still ends the moment it replies without a tool call, so a monitor prompt must tell it to answer and make its next tool call in the same reply.
+- Anyone who can open your claude.ai account can type into the session, so treat it like the terminal.
+
+### Status
+
+Tested on 2026-11-05 with `claude` 2.1.318:
+
+- **AutoSwarm suite:** 210 tests, and the four new ones pass. The only two failures, both Kimi tests, also fail without the change.
+- **Autobot:** 41 of 41 tests pass.
+- **Live run:** one `claude-code` child started directly with `autoswarm run --remote-control` reached `enabled`, with a `session_url`, before its 18-second turn ended. The run completed normally.
+
+Not tried yet: a full Autobot cycle with `remote_control = true`, and opening a mirrored session on claude.ai.
 
 ## Writing a prompt for a cold session
 
@@ -209,7 +295,7 @@ A child starts with no conversation and no memory. Don't count on the environmen
 
 A monitor is a Claude Code child that only reads. Monitors have failed in each of these ways:
 
-- **It ended itself.** A headless session ends the moment it replies without calling a tool, and nothing wakes it. One replied "next check-in in 3 minutes" and was gone. Tell it to write check-ins to a log file and reply only when finished.
+- **It ended itself.** A headless session ends the moment it replies without calling a tool, and nothing wakes it. One replied "next check-in in 3 minutes" and was gone. Tell it to write check-ins to a log file and reply only when finished. With Remote Control on, also tell it to answer a message from the user and make its next tool call in the same reply.
 - **It watched the wrong run.** `result.json` appears only when a call ends, so "the newest `result.json`" belongs to some older call. Pass the worker's call ID on the prompt's first line.
 - **It read old artifacts.** Old findings files can look finished. Compare them with `started_at` in the worker's `handle.json`.
 - **It stopped too soon.** One gave up after 30 minutes and reported a stall, while the worker finished 26 minutes later. Set stop conditions: the call's `result.json` exists, the deliverable is complete, or a long period passes with no progress.
@@ -301,6 +387,7 @@ Reasoning is encrypted, so read the agent messages for the why. Responses are la
 - **Removed tasks stay open.** Deleting a task from `backlog.toml` leaves it `open` in the ledger, so it can still launch unless it's approval-class.
 - **Verdicts are crude.** A `resolved` proposal means the run completed and a findings file appeared after dispatch, even one from an unrelated run. A `review` verdict can't be closed through `authorize` yet.
 - **The timer loop is unproven.** Only one-shot `--once` cycles have run live.
+- **Remote Control is proven on one child only.** A child started directly with `autoswarm run` connected. No Autobot cycle has used `remote_control = true` yet, and nobody has opened a mirrored session on claude.ai.
 
 ## How a cycle works
 

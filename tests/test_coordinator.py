@@ -564,5 +564,34 @@ class VerifyEnforcementTests(unittest.TestCase):
         self.assertEqual(rows["blank"]["verdict"], verify_mod.UNKNOWN)
 
 
+class RunCommandTests(unittest.TestCase):
+    """The `autoswarm run` argv a route produces, Remote Control included."""
+
+    OPUS = {"agent": "claude-code", "model": "claude-opus-4-6[1m]", "workspace": "C:\\repo",
+            "provider_args": ["--dangerously-skip-permissions"]}
+
+    def test_remote_control_off_adds_nothing(self):
+        for value in (None, False, ""):
+            route = {**self.OPUS, **({} if value is None else {"remote_control": value})}
+            cmd = dispatch_mod._build_run_cmd("autoswarm", route, "luna-v13-run")
+            self.assertFalse(any(a.startswith("--remote-control") for a in cmd), cmd)
+
+    def test_remote_control_names_the_session_after_the_task(self):
+        cmd = dispatch_mod._build_run_cmd("autoswarm", {**self.OPUS, "remote_control": True},
+                                          "luna-v13-run")
+        self.assertEqual(cmd[-1], "--remote-control=autobot luna-v13-run")
+        self.assertIn("--provider-arg=--dangerously-skip-permissions", cmd)
+        cmd = dispatch_mod._build_run_cmd("autoswarm", {**self.OPUS, "remote_control": "v13"},
+                                          "luna-v13-run")
+        self.assertEqual(cmd[-1], "--remote-control=v13 luna-v13-run")
+
+    def test_remote_control_is_skipped_on_a_codex_route(self):
+        luna = {"agent": "codex", "model": "gpt-6-luna", "workspace": "C:\\repo",
+                "effort": "max", "remote_control": True}
+        with self.assertLogs("coordinator.dispatch", level="WARNING"):
+            cmd = dispatch_mod._build_run_cmd("autoswarm", luna, "tier4-records-classify")
+        self.assertFalse(any(a.startswith("--remote-control") for a in cmd), cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

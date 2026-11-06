@@ -62,6 +62,11 @@ agent = "claude-code"
 model = "claude-opus-4-6[1m]"
 provider_args = ["--dangerously-skip-permissions"]
 workspace = ""                 # auto: parent of gate_root, whose own hook runs the gate
+# Claude Code Remote Control: follow (and message) the child from claude.ai/code
+# or the Claude app. true names it "autobot <task id>"; a string replaces
+# "autobot". Needs an AutoSwarm with `run --remote-control` and a claude.ai login
+# (no ANTHROPIC_API_KEY). Off unless set; codex routes can't use it.
+remote_control = false
 
 [triggers]
 timer_floor_minutes = 15
