@@ -1,0 +1,127 @@
+{
+  "schema": "autobot-ch1a-hea-techniques/v1",
+  "rule": "HEA evidence shows that a technique works. It is never the authority for an Autobot rule. Whether and how a technique applies to an Autobot object is an Autobot design decision (decision_candidates.json), traced to Chapter 0 or to your decision.",
+  "corpus": {
+    "repository": "github.com/dimascior/HeliosEntitlementAuthority",
+    "commit": "f439f5244313e6e0d1737be556c56b68905d4b56",
+    "read_by": "git cat-file at that commit, no fetch and no checkout (gate 20261108-ch1a-001)",
+    "files": {
+      "docs/contracts/CANONICAL_SERIALIZATION.md": "d8dc9c2bea44db7fb10aa5236759a784fc40c4dd52330842056026d1784da4a3",
+      "docs/contracts/CONTRACT_V1_ACCEPTANCE.md": "5e23632b393973707542747dc5ed270aa7264eb9326efc3a9304cc11a8555880",
+      "docs/contracts/IDENTIFIER_MODEL.md": "54d46e15c7b6d52c06ee02e12a2bc3b7af0042f62e08fb0d9a935123b6f9bcae",
+      "docs/contracts/SIGNATURE_ENVELOPE.md": "501f63fe234c337db07bf3f2ed0aabe6d76c03eeb0100c563d625973bf9ef9e4",
+      "docs/contracts/domain-label-registry.json": "ed44b8cfc3b06ee6f72a09f143d7be5b6a1f91789ca20dd5bcfb596d80837535",
+      "docs/contracts/object-type-registry.json": "4113972a27263fb728b6d56c93afb7cfe11eebba95bfa07f25910c8c3a462c17",
+      "docs/implementation/handoffs/ch01-phase-a.json": "9724d4651942fe6f0b1f3ac2b2d50409c06b8308d7719f7baf4fceeec4bc7e46",
+      "docs/implementation/handoffs/ch01-phase-b.json": "ab4e8fccc79372ab855d311fd7cc419f167d93b1411213082aca815d8943fa46",
+      "docs/implementation/handoffs/ch01-phase-c.json": "4bb6db27786c98ee150e796c758a0bff97592e68a77b46ae5eaaed48fdc78205"
+    }
+  },
+  "techniques": [
+    {"id": "T-01", "kind": "technique", "technique": "A complete object-type inventory, in a document table and a machine-readable registry: object type, schema version, field count, schema location, implementation type.",
+     "evidence": [
+       {"file": "docs/contracts/CONTRACT_V1_ACCEPTANCE.md", "lines": [8, 21], "needle": "Object Type Inventory"},
+       {"file": "docs/contracts/object-type-registry.json", "lines": [1, 20], "needle": "field_count"}]},
+    {"id": "T-02", "kind": "technique", "technique": "A field provenance table for every object: field, type, contract source, validation.",
+     "evidence": [{"file": "docs/contracts/CONTRACT_V1_ACCEPTANCE.md", "lines": [23, 35], "needle": "| Field | Type | Contract Source | Validation |"}]},
+    {"id": "T-03", "kind": "technique", "technique": "The schema version is pinned as an exact constant; validators never pattern-match future versions.",
+     "evidence": [
+       {"file": "docs/contracts/CONTRACT_V1_ACCEPTANCE.md", "lines": [207, 207], "needle": "Schema version is const"},
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [164, 169], "needle": "Schema version uses JSON Schema const"}]},
+    {"id": "T-04", "kind": "technique", "technique": "Version refusals are classified and tested (MALFORMED, UNSUPPORTED, INVALID), and a validation failure taxonomy names each rejection.",
+     "evidence": [
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [58, 58], "needle": "version refusal classification (MALFORMED/UNSUPPORTED/INVALID)"},
+       {"file": "docs/contracts/CANONICAL_SERIALIZATION.md", "lines": [108, 115], "needle": "UNSUPPORTED_SCHEMA_VERSION"},
+       {"file": "docs/contracts/SIGNATURE_ENVELOPE.md", "lines": [193, 214], "needle": "Validation failure taxonomy"}]},
+    {"id": "T-05", "kind": "technique", "technique": "Signed payloads reject unknown fields (deny_unknown_fields; additionalProperties false), because a verifier must understand every field it asserts integrity over.",
+     "evidence": [
+       {"file": "docs/contracts/CONTRACT_V1_ACCEPTANCE.md", "lines": [204, 204], "needle": "deny_unknown_fields"},
+       {"file": "docs/contracts/CANONICAL_SERIALIZATION.md", "lines": [84, 86], "needle": "For structures that are signed"},
+       {"file": "docs/contracts/CANONICAL_SERIALIZATION.md", "lines": [84, 96], "needle": "verifier must understand every field"}]},
+    {"id": "T-06", "kind": "technique", "technique": "Signed payloads have no optional fields and no nulls; on the wire, absence is a zero sentinel.",
+     "evidence": [
+       {"file": "docs/contracts/CONTRACT_V1_ACCEPTANCE.md", "lines": [205, 206], "needle": "No optional fields"},
+       {"file": "docs/contracts/CANONICAL_SERIALIZATION.md", "lines": [90, 92], "needle": "absent semantics expressed through zero sentinels"}]},
+    {"id": "T-07", "kind": "technique", "technique": "Evidence and other unsigned structures use a permissive mode: unknown fields are preserved for round trips.",
+     "evidence": [{"file": "docs/contracts/CANONICAL_SERIALIZATION.md", "lines": [98, 106], "needle": "Preserved (round-trip safe)"}]},
+    {"id": "T-08", "kind": "technique", "technique": "Distinct typed identifiers and roots that share one wire encoding (CORR-H typed root newtypes), so mixing types is a compile-time error while the wire format is unchanged.",
+     "evidence": [
+       {"file": "docs/implementation/handoffs/ch01-phase-b.json", "lines": [51, 51], "needle": "14 strongly-typed identifier newtypes"},
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [152, 156], "needle": "SemanticRoot, StorageRoot, UsageRoot, EnvelopeRoot"},
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [349, 349], "needle": "mixing root types is a compile-time error"}]},
+    {"id": "T-09", "kind": "technique", "technique": "Explicit variants in the domain model instead of nullable values (PriorEnvelopeRoot is Genesis or Chained), with the wire format preserved as a sentinel.",
+     "evidence": [{"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [146, 150], "needle": "PriorEnvelopeRoot is an enum (Genesis | Chained), not a nullable Root"}]},
+    {"id": "T-10", "kind": "technique", "technique": "Each identifier is given a derivation class (RANDOM_OPAQUE, PUBLIC_KEY_DERIVED, COMPOSITE_DERIVED, MONOTONIC, EXTERNALLY_ISSUED), and the key identifiers get a lifecycle matrix of the events that change them.",
+     "evidence": [
+       {"file": "docs/contracts/IDENTIFIER_MODEL.md", "lines": [8, 18], "needle": "RANDOM_OPAQUE"},
+       {"file": "docs/contracts/IDENTIFIER_MODEL.md", "lines": [128, 137], "needle": "| Same installation, rotated key |"}]},
+    {"id": "T-11", "kind": "technique", "technique": "Byte values are lowercase hex with no prefix or separators, and uppercase is rejected rather than normalized.",
+     "evidence": [
+       {"file": "docs/contracts/IDENTIFIER_MODEL.md", "lines": [437, 451], "needle": "No `0x` prefix. No uppercase."},
+       {"file": "docs/implementation/handoffs/ch01-phase-b.json", "lines": [274, 274], "needle": "Uppercase hex is REJECTED, not normalized"}]},
+    {"id": "T-12", "kind": "technique", "technique": "JCS rules stated in full: sorted keys, no duplicate keys, integers bounded to the safe range with no floats in authority fields, and explicit string rules.",
+     "evidence": [
+       {"file": "docs/contracts/CANONICAL_SERIALIZATION.md", "lines": [41, 48], "needle": "No duplicate keys"},
+       {"file": "docs/contracts/CANONICAL_SERIALIZATION.md", "lines": [52, 67], "needle": "[0, 2^53-1] (9007199254740991)"},
+       {"file": "docs/contracts/CANONICAL_SERIALIZATION.md", "lines": [71, 78], "needle": "NFC (Unicode Normalization Form C) for display strings"}]},
+    {"id": "T-13", "kind": "technique", "technique": "Two independent JCS implementations (sharing no code) must produce byte-identical output and equal digests.",
+     "evidence": [{"file": "docs/contracts/CONTRACT_V1_ACCEPTANCE.md", "lines": [186, 188], "needle": "independent RFC 8785 implementation sharing zero code"}]},
+    {"id": "T-14", "kind": "technique", "technique": "Golden vectors carry the input, the exact canonical bytes and the expected SHA-256; the frozen digests make any drift a regression.",
+     "evidence": [
+       {"file": "docs/contracts/CANONICAL_SERIALIZATION.md", "lines": [172, 175], "needle": "`expected_sha256` — SHA-256 of the canonical bytes"},
+       {"file": "docs/contracts/CONTRACT_V1_ACCEPTANCE.md", "lines": [190, 192], "needle": "11 frozen SHA-256 digests"}]},
+    {"id": "T-15", "kind": "technique", "technique": "Schema and runtime validation are tested for parity on the same fixtures; a cross-field rule the schema can't express is a documented exception.",
+     "evidence": [
+       {"file": "docs/contracts/CONTRACT_V1_ACCEPTANCE.md", "lines": [180, 184], "needle": "One documented parity exception"},
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [170, 175], "needle": "Cross-field constraints are Rust-only validation"}]},
+    {"id": "T-16", "kind": "technique", "technique": "Property-based tests for identifier round trips, hash determinism and sorted-key canonicalization.",
+     "evidence": [{"file": "docs/contracts/CONTRACT_V1_ACCEPTANCE.md", "lines": [194, 196], "needle": "19 property-based tests"}]},
+    {"id": "T-17", "kind": "technique", "technique": "A cross-process canonicalization determinism proof (one test): separate processes canonicalize the same fixtures identically.",
+     "evidence": [
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [59, 59], "needle": "Cross-process canonicalization determinism proof"},
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [299, 299], "needle": "cross_process_determinism_verified"}]},
+    {"id": "T-18", "kind": "technique", "technique": "The contract package is representation and validation only, with no runtime, database, network or storage dependency.",
+     "evidence": [
+       {"file": "docs/contracts/CONTRACT_V1_ACCEPTANCE.md", "lines": [211, 211], "needle": "No runtime leaks"},
+       {"file": "docs/implementation/handoffs/ch01-phase-b.json", "lines": [273, 273], "needle": "representation and validation only"}]},
+    {"id": "T-19", "kind": "technique", "technique": "Domain-separated hashing, HASH(label || 0x00 || input), with the labels kept in a machine-readable registry.",
+     "evidence": [
+       {"file": "docs/contracts/IDENTIFIER_MODEL.md", "lines": [22, 48], "needle": "The zero-byte separator prevents domain-label suffix collisions."},
+       {"file": "docs/contracts/domain-label-registry.json", "lines": [5, 5], "needle": "HASH(domain_label || 0x00 || data)"}]},
+    {"id": "T-20", "kind": "technique", "technique": "Type binding in the signature input: the domain label, object type, object version and payload digest form a structured input that is canonicalized and hashed, so a signature can't be reused across types or versions. The payload digest itself is a plain hash of the canonical bytes.",
+     "evidence": [
+       {"file": "docs/contracts/SIGNATURE_ENVELOPE.md", "lines": [58, 63], "needle": "payload_digest = HASH(canonical_bytes)"},
+       {"file": "docs/contracts/SIGNATURE_ENVELOPE.md", "lines": [65, 77], "needle": "includes type binding to prevent cross-type signature reuse"},
+       {"file": "docs/implementation/handoffs/ch01-phase-a.json", "lines": [165, 169], "needle": "Signature input includes type binding"}]},
+    {"id": "T-21", "kind": "technique", "technique": "A derived identity is computed from a payload but never stored inside the bytes it hashes.",
+     "evidence": [{"file": "docs/implementation/handoffs/ch01-phase-a.json", "lines": [175, 179], "needle": "envelope_root computed FROM DatabaseEnvelopePayload but NOT stored INSIDE it"}]},
+    {"id": "T-22", "kind": "technique", "technique": "Timestamps are UTC to the second and advisory; a counter, not time, orders authority.",
+     "evidence": [
+       {"file": "docs/contracts/CANONICAL_SERIALIZATION.md", "lines": [119, 134], "needle": "Timestamps are advisory."},
+       {"file": "docs/implementation/handoffs/ch01-phase-a.json", "lines": [195, 199], "needle": "advisory only, not for authority ordering"}]},
+    {"id": "T-23", "kind": "technique", "technique": "Unknown IDs are durable: a materially different question gets a new ID. HEA had to repair reused IDs twice in its Chapter 1 (CORR-F, then CORR-G).",
+     "evidence": [
+       {"file": "docs/implementation/handoffs/ch01-phase-a.json", "lines": [57, 62], "needle": "Unknown IDs are durable identities"},
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [60, 60], "needle": "CORR-G: Unknown registry lineage repair"}]},
+    {"id": "T-24", "kind": "technique", "technique": "Phase handoffs chain by the SHA-256 of the previous handoff's bytes, and a verifier tool checks the chain against named failure modes.",
+     "evidence": [
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [11, 12], "needle": "continuation_token_sha256"},
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [255, 259], "needle": "verified from disk bytes"},
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [271, 273], "needle": "8 failure modes"}]},
+    {"id": "T-25", "kind": "lesson_from_defect", "technique": "Keep one machine-readable source and check documents against it. At f439f52, HEA's documents disagree with its own label registry: different label strings for the same purposes, two different signature-input constructions, and 175 versus 188 tests in two closure records.",
+     "evidence": [
+       {"file": "docs/contracts/IDENTIFIER_MODEL.md", "lines": [61, 61], "needle": "HEA/identity/authority-key-id/v1"},
+       {"file": "docs/contracts/domain-label-registry.json", "lines": [9, 9], "needle": "HEA/identity/authority_key/v1"},
+       {"file": "docs/contracts/SIGNATURE_ENVELOPE.md", "lines": [71, 71], "needle": "HEA/signature/v1"},
+       {"file": "docs/contracts/domain-label-registry.json", "lines": [27, 27], "needle": "HEA/signature/input/v1"},
+       {"file": "docs/contracts/CONTRACT_V1_ACCEPTANCE.md", "lines": [6, 6], "needle": "175 tests"},
+       {"file": "docs/implementation/handoffs/ch01-phase-c.json", "lines": [290, 290], "needle": "total_tests"}]}
+  ],
+  "hea_specific_not_carried": [
+    {"item": "Signed envelopes, key identities (DER SubjectPublicKeyInfo), ECDSA and TPM operations", "why": "Chapter 0 doesn't require signing: it places authority in the service identity, the ACL-protected ledger and store, IPC and the presence factor (D-01, D-02, D-02b; C-44). Whether a record carries proof that its principal authenticated is open (U-46)."},
+    {"item": "Digest and signature algorithm agility", "why": "D-09 fixes full SHA-256."},
+    {"item": "Generation as the authority-ordering counter", "why": "Autobot orders authority by Sequence version, fence, transitions and Git compare-and-swap (R-6, INV-12, INV-13, INV-14, INV-15)."},
+    {"item": "16-byte random identifiers, zero sentinels on the wire, and the [1, 2^53-1] range for quantities", "why": "These are HEA's own answers; the Autobot equivalents are open questions (U-22, U-24, U-40)."},
+    {"item": "Rust and serde", "why": "Autobot is a Python codebase; the schema language is open (U-36)."}
+  ]
+}
