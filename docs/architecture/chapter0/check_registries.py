@@ -8,8 +8,11 @@ what Chapter 0 claims:
     participants may mint;
   - exactly one point of no return (PONR) per finalization path, with nothing
     crossing it backwards;
-  - every ref or push effect under a bounded EffectIntent, canonical effects
-    under an active delegation and a permit reservation;
+  - every ref or push effect under a bounded EffectIntent created with its
+    effect class's checks (canonical effects under an active delegation and a
+    permit reservation; standalone effects under their own checks; retries
+    proving the identical effect), and every effect that requires an intent
+    closing: a creation rule, the outcome lifecycle and its receipt;
   - graph properties: no unverified acceptance, no uncommitted source
     acceptance, PUBLISHED_UNVERIFIED releases nothing, stale or fenced attempts
     are dead ends, revocation covers every pre-PONR state, every state has an
@@ -69,6 +72,8 @@ TRANS = TR["transitions"]
 WILD = TR["wildcards"]
 ALL_T = TRANS + WILD
 EFF = {e["id"]: e for e in TR["effects"]}
+INTENTS = TR["intent_classes"]
+CLASSES = INTENTS["classes"]
 PATHS = {p["id"]: p for p in TR["paths"]}
 GROUPS = TR["path_groups"]
 RULES = TR["outcome_rules"]
@@ -87,7 +92,9 @@ UNKS = UNK_DOC["unknowns"]
 
 STATE_MACHINES_APPLIED_BY_SEQUENCER = {
     "sequence", "attempt", "effect_intent", "permit_reservation", "forward_repair_obligation",
+    "staging_ref", "workspace_sync",
 }
+EXTERNALLY_VISIBLE = ("STAGING_PUSH", "CANONICAL_PUSH", "STAGING_REF_DELETE")
 
 
 def states(machine):
@@ -288,6 +295,9 @@ def _transition_refs():
         for k in ("effect", "intent_for"):
             if t.get(k) and t[k] not in EFF:
                 probs.append(f"{t['id']}: unknown effect {t[k]}")
+        for e in t.get("retry_for", []):
+            if e not in EFF:
+                probs.append(f"{t['id']}: retries unknown effect {e}")
         if m == "sequence":
             if not t.get("paths"):
                 probs.append(f"{t['id']}: a sequence transition must name its paths")
@@ -427,8 +437,11 @@ def _effects():
                 probs.append(f"{e['id']}: unknown path {pid}")
         if e["type"] in ("STAGING_PUSH", "STAGING_REF_DELETE") and e["canonical_on"]:
             probs.append(f"{e['id']}: a staging effect can never be canonical")
-        if not e.get("standalone") and not any(t.get("effect") == e["id"] for t in TRANS):
+        # Since CORR-55 a standalone effect has its own lifecycle, so it too needs a transition that performs it.
+        if not any(t.get("effect") == e["id"] for t in TRANS):
             probs.append(f"{e['id']}: no transition performs it")
+        if e.get("intent_class") not in CLASSES:
+            probs.append(f"{e['id']}: unknown intent class {e.get('intent_class')}")
     return probs, f"{len(EFF)} effect types"
 
 
@@ -459,34 +472,169 @@ def _outcome_rules():
 
 @check("effects.require_intent")
 def _require_intent():
+    """Every transition that performs an effect, in any machine, is fed by a transition that creates the effect's intent
+    in the same machine (on a shared path, for the Sequence); it requires the effect's receipt and its effect_happened.
+    Which checks an intent carries is effects.intent_creation's job (INV-73)."""
     probs = []
-    seq = [t for t in TRANS if t["machine"] == "sequence"]
-    for t in seq:
+    for t in TRANS:
         if t.get("effect"):
             e = EFF[t["effect"]]
-            feeders = [x for x in seq if x.get("intent_for") == t["effect"] and x["to"] == t["from"]
-                       and expand(x["paths"]) & expand(t["paths"])]
+            feeders = [x for x in TRANS if x["machine"] == t["machine"] and x.get("intent_for") == t["effect"] and x["to"] == t["from"]
+                       and (t["machine"] != "sequence" or expand(x["paths"]) & expand(t["paths"]))]
             if not feeders:
-                probs.append(f"{t['id']}: no intent-issuing transition for {t['effect']} leads into {t['from']}")
+                probs.append(f"{t['id']}: performs {t['effect']}, but no transition that creates its intent leads into {t['from']}")
             if "effect_happened" not in t["preconditions"]:
                 probs.append(f"{t['id']}: performs {t['effect']} without effect_happened")
             if e["receipt"] not in t.get("requires", []):
                 probs.append(f"{t['id']}: does not require the effect's receipt {e['receipt']}")
+        if t.get("intent_for") and "obj-25" not in t.get("mints", []):
+            probs.append(f"{t['id']}: issues an intent but mints no EffectIntent")
+    return probs, f"{sum(1 for t in TRANS if t.get('effect'))} transitions perform an effect, each under an intent created upstream"
+
+
+def missing_checks(pre, groups):
+    """The check groups a set of preconditions misses. A group lists alternatives, one of which must hold."""
+    return [g for g in groups if not set(g) & pre]
+
+
+def retry_rule_name():
+    return INTENTS["retry"]["rule"]
+
+
+def as_list(v):
+    return v if isinstance(v, list) else [] if v is None else [v]
+
+
+@check("effects.intent_creation")
+def _intent_creation():
+    """INV-47 (revised): every transition that mints an EffectIntent names the exact effect (intent_for), or the effects
+    it retries (retry_for), and holds every check of that effect's class. A canonical effect's class checks an active
+    delegation and a permit reservation; an externally visible effect's class checks an authority; every class checks a
+    committed, bounded intent. INV-74: a standalone effect's class requires none of the attempt-scoped checks. INV-73: the
+    retry rule retries exactly the effects named retryable, never the ones named not retryable, moves the old intent from
+    UNKNOWN_OUTCOME to SUPERSEDED_BY_RETRY, proves the identical effect and binds the intent it supersedes. A rule that
+    records a class's skip mints no intent and requires the effect's receipt (INV-46)."""
+    probs = []
+    for cname, c in CLASSES.items():
+        effs = [e for e in EFF.values() if e.get("intent_class") == cname]
+        flat = {x for g in c["checks"] for x in g}
+        if not effs:
+            probs.append(f"intent class {cname}: no effect uses it")
+        if any(e["canonical_on"] for e in effs) and not ("delegation_active_at_intent" in flat and {"permit_reserved", "reservation_held"} & flat):
+            probs.append(f"intent class {cname}: a canonical effect's intent must check an active delegation and a permit reservation")
+        if any(e["type"] in EXTERNALLY_VISIBLE for e in effs) and not set(INTENTS["authority_checks"]) & flat:
+            probs.append(f"intent class {cname}: an externally visible effect's intent must check an authority ({', '.join(INTENTS['authority_checks'])})")
+        for needed in ("effect_intent_committed", "intent_ttl_gt_hard_timeout"):
+            if needed not in flat:
+                probs.append(f"intent class {cname}: every intent must check {needed}")
+        inherited = sorted(flat & set(INTENTS["attempt_only_checks"]))
+        if any(e.get("standalone") for e in effs) and inherited:
+            probs.append(f"intent class {cname}: a standalone effect's class must not require the attempt-scoped checks {inherited}")
+    rinfo = INTENTS["retry"]
+    needing = {e["id"] for e in EFF.values() if e.get("requires_intent")}
+    yes, no = set(rinfo["retryable"]), set(rinfo["not_retryable"])
+    if yes & no or (yes | no) != needing:
+        probs.append(f"the retryable and not-retryable effects must split the {len(needing)} effects that require an intent")
+    standalone_retryable = sorted(e["id"] for e in EFF.values() if e.get("standalone") and e["id"] in yes)
+    if standalone_retryable:
+        probs.append(f"standalone effects can't be retryable by {rinfo['rule']}: {standalone_retryable}")
+    rule = transition(rinfo["rule"])
+    if not rule or set(rule.get("retry_for", [])) != yes:
+        probs.append(f"the retry rule {rinfo['rule']} must retry exactly the retryable effects {sorted(yes)}")
+    minters = 0
+    for t in ALL_T:
+        if "obj-25" not in t.get("mints", []):
+            continue
+        minters += 1
+        pre = set(t["preconditions"])
         if t.get("intent_for"):
-            e = EFF[t["intent_for"]]
-            pre = set(t["preconditions"])
-            if "obj-25" not in t.get("mints", []):
-                probs.append(f"{t['id']}: issues an intent but mints no EffectIntent")
-            for needed in ("effect_intent_committed", "intent_ttl_gt_hard_timeout", "fence_matches"):
-                if needed not in pre:
-                    probs.append(f"{t['id']}: intent without {needed}")
-            externally_visible = e["type"] in ("STAGING_PUSH", "CANONICAL_PUSH", "STAGING_REF_DELETE")
-            canonical_here = set(e["canonical_on"]) & expand(t["paths"])
-            if (canonical_here or externally_visible) and "delegation_active_at_intent" not in pre:
-                probs.append(f"{t['id']}: {e['id']} intent without delegation_active_at_intent")
-            if canonical_here and not ({"permit_reserved", "reservation_held"} & pre):
-                probs.append(f"{t['id']}: canonical intent without a permit reservation")
-    return probs, ""
+            targets, retry = [t["intent_for"]], False
+        elif t.get("retry_for"):
+            targets, retry = t["retry_for"], True
+        else:
+            probs.append(f"{t['id']}: mints obj-25 without naming the effect it is for (intent_for) or the effects it retries (retry_for)")
+            continue
+        for eid in [x for x in targets if x in EFF]:
+            cname = EFF[eid].get("intent_class")
+            lack = missing_checks(pre, CLASSES.get(cname, {}).get("checks", []))
+            if lack:
+                probs.append(f"{t['id']}: the intent for {eid} lacks the {cname} checks {lack}")
+            if retry and eid not in yes:
+                probs.append(f"{t['id']}: retries {eid}, which is not retryable by {retry_rule_name()}")
+        if retry:
+            if t["id"] != rinfo["rule"]:
+                probs.append(f"{t['id']}: only the retry rule {rinfo['rule']} may retry an intent")
+            if (t["machine"], t.get("from"), t["to"]) != ("effect_intent", "UNKNOWN_OUTCOME", "SUPERSEDED_BY_RETRY"):
+                probs.append(f"{t['id']}: a retry must move the old intent from UNKNOWN_OUTCOME to SUPERSEDED_BY_RETRY")
+            lack = missing_checks(pre, rinfo["checks"])
+            if lack:
+                probs.append(f"{t['id']}: a retry must prove the identical effect and bind the intent it supersedes; it lacks {lack}")
+    for cname, c in CLASSES.items():
+        skip = c.get("skip")
+        if not skip:
+            continue
+        receipts = {e["receipt"] for e in EFF.values() if e.get("intent_class") == cname}
+        for t in [x for x in ALL_T if skip["precondition"] in x["preconditions"]]:
+            if "obj-25" in t.get("mints", []):
+                probs.append(f"{t['id']}: the {cname} skip ({skip['precondition']}) holds, yet it mints an intent")
+            if t.get("effect"):
+                probs.append(f"{t['id']}: the {cname} skip performs {t['effect']}; a skip moves no ref")
+            if not receipts & set(t.get("requires", [])):
+                probs.append(f"{t['id']}: the {cname} skip must record {skip['records']} in the effect's receipt {sorted(receipts)}")
+    return probs, f"{minters} transitions mint an EffectIntent, each for named effects with their class's checks; {len(CLASSES)} intent classes"
+
+
+@check("effects.intent_closure")
+def _intent_closure():
+    """INV-75: every effect that requires an intent closes. A transition creates its intent; from PENDING the shared
+    EffectIntent machine reaches HAPPENED, ABSENT, UNKNOWN_OUTCOME and every outcome the effect's rule can produce; and a
+    transition that performs the effect requires its receipt with effect_happened. A receipt a skip records (SKIPPED) is
+    no proof of the effect: only that HAPPENED path counts. A standalone effect's lifecycle leaves its in-flight state only
+    on HAPPENED or ABSENT, each named with the observation its outcome rule maps to it, and holds while the intent is
+    UNKNOWN_OUTCOME; only its HAPPENED exit performs the effect."""
+    probs = []
+    for e in [x for x in EFF.values() if x.get("standalone")]:
+        for iss in [t for t in TRANS if t.get("intent_for") == e["id"]]:
+            inflight = iss["to"]
+            exits = [t for t in TRANS if t["machine"] == iss["machine"] and t.get("from") == inflight]
+            for t in exits:
+                o = t.get("on_outcome")
+                if o not in ("HAPPENED", "ABSENT"):
+                    probs.append(f"{t['id']}: leaves {inflight} on {o or 'no outcome'}; while its intent is unresolved the "
+                                 f"{iss['machine']} lifecycle must hold in {inflight}, and leave only on HAPPENED or ABSENT")
+                    continue
+                observed = as_list(t.get("observation"))
+                if not observed:
+                    probs.append(f"{t['id']}: leaves {inflight} on {o} without naming the observation that gives it")
+                for obs in observed:
+                    got = RULES[e["outcome_rule"]].get(obs)
+                    if got != o:
+                        probs.append(f"{t['id']}: leaves {inflight} on {o}, but under {e['outcome_rule']} the observation {obs} gives {got}")
+                if (o == "HAPPENED") != (t.get("effect") == e["id"]):
+                    probs.append(f"{t['id']}: only the HAPPENED exit from {inflight} performs {e['id']}")
+            outs = {t.get("on_outcome") for t in exits}
+            if not {"HAPPENED", "ABSENT"} <= outs:
+                probs.append(f"{e['id']}: its {iss['machine']} lifecycle needs both a HAPPENED and an ABSENT exit from {inflight}")
+    adj = defaultdict(set)
+    for t in TRANS:
+        if t["machine"] == "effect_intent":
+            adj[t["from"]].add(t["to"])
+    reach = reachable(adj, MACHINES["effect_intent"]["initial"])
+    closed = 0
+    for e in [x for x in EFF.values() if x.get("requires_intent")]:
+        missing = []
+        if not any(t.get("intent_for") == e["id"] and "obj-25" in t.get("mints", []) for t in TRANS):
+            missing.append("no transition creates its intent")
+        outcomes = {"HAPPENED", "ABSENT", "UNKNOWN_OUTCOME"} | {v for k, v in RULES[e["outcome_rule"]].items() if k != "note"}
+        if outcomes - reach:
+            missing.append(f"its intent can't reach {sorted(outcomes - reach)} from {MACHINES['effect_intent']['initial']}")
+        if not any(t.get("effect") == e["id"] and "effect_happened" in t["preconditions"] and e["receipt"] in t.get("requires", []) for t in TRANS):
+            missing.append(f"no transition reaches its receipt {e['receipt']} from HAPPENED")
+        if missing:
+            probs.append(f"{e['id']}: " + "; ".join(missing))
+        else:
+            closed += 1
+    return probs, f"{closed} of {sum(1 for x in EFF.values() if x.get('requires_intent'))} effects that require an intent close"
 
 
 @check("fence.attempt_bound_receipts")
@@ -860,6 +1008,7 @@ def registry_counts():
         "expanded wildcard edges": len(WEDGES),
         "finalization paths": len(PATHS),
         "effect types": len(EFF),
+        "intent classes": len(CLASSES),
         "invariants": len(INVS),
         "invariants with a registry proof": sum(1 for i in INVS if any(t["kind"] == "registry" for t in i.get("tests", []))),
         "enforcement points": sum(len(i.get("enforcement_points", [])) for i in INVS),
@@ -948,7 +1097,9 @@ def render_registers():
         table(["ID", "Machine", "From → to", "Actor (trigger)", "Capabilities", "Requires", "Mints", "Effect / intent", "Preconditions", "Paths", "PONR"],
               [[t["id"], t["machine"], f"{t['from']} → {t['to']}", t["actor"] + (f" ({t['trigger']})" if t.get("trigger") else ""),
                 t.get("capabilities", []), t.get("requires", []), t.get("mints", []),
-                t.get("effect") or (f"intent for {t['intent_for']}" if t.get("intent_for") else ""),
+                (t.get("effect") or (f"intent for {t['intent_for']}" if t.get("intent_for") else
+                                     f"retry intent for {', '.join(t['retry_for'])}" if t.get("retry_for") else ""))
+                + (f" (on {t['on_outcome']}: {', '.join(as_list(t.get('observation')))})" if t.get("on_outcome") else ""),
                 t.get("preconditions", []), t.get("paths", []), "yes" if t.get("ponr") else ""] for t in TRANS]),
         "",
         "## Wildcards",
@@ -962,6 +1113,20 @@ def render_registers():
         "",
         table(["ID", "Type", "Target", "Executor", "Capability", "Canonical on", "Receipt", "Outcome rule"],
               [[e["id"], e["type"], e["target"], e["executor"], e["capability"], e["canonical_on"], e["receipt"], e["outcome_rule"]] for e in EFF.values()]),
+        "",
+        "## Intent classes (INV-73)",
+        "",
+        INTENTS["note"],
+        "",
+        table(["Class", "Effects", "Checks (each must hold; 'or' joins alternatives)", "Skip", "Authority source"],
+              [[name, [e["id"] for e in EFF.values() if e.get("intent_class") == name], [" or ".join(g) for g in c["checks"]],
+                f"{c['skip']['precondition']}: records {c['skip']['records']}, no intent" if c.get("skip") else None,
+                c.get("authority_source")] for name, c in CLASSES.items()]),
+        "",
+        f"Retry rule {INTENTS['retry']['rule']}: retries {', '.join(INTENTS['retry']['retryable'])}; never "
+        f"{', '.join(INTENTS['retry']['not_retryable'])}. {INTENTS['retry']['note']} It also proves "
+        f"{', '.join(' or '.join(g) for g in INTENTS['retry']['checks'])}. Authority checks for externally visible effects: "
+        f"{', '.join(INTENTS['authority_checks'])}. Never required of a standalone effect: {', '.join(INTENTS['attempt_only_checks'])}.",
         "",
         "## Outcome rules",
         "",

@@ -263,6 +263,23 @@ Generated from `registries/*.json` by `python check_registries.py --render`. Do 
 | DUPLICATE | yes | no |
 | REJECTED | yes | no |
 
+### staging_ref (initial RETAINED)
+
+| State | Terminal | Waits for you |
+|---|---|---|
+| RETAINED | no | no |
+| DELETING | no | no |
+| DELETED | yes | no |
+
+### workspace_sync (initial DUE)
+
+| State | Terminal | Waits for you |
+|---|---|---|
+| DUE | no | no |
+| SYNCING | no | no |
+| SYNCED | yes | no |
+| SKIPPED | yes | no |
+
 ## Finalization paths
 
 | Path | Name | States | Side states before the PONR | PONR |
@@ -342,8 +359,15 @@ Generated from `registries/*.json` by `python check_registries.py --render`. Do 
 | t-i03 | effect_intent | PENDING → UNKNOWN_OUTCOME | sequencer | cap-52 | none | none | n/a | expired_and_target_at_expected_old_or_unobservable | none | n/a |
 | t-i04 | effect_intent | UNKNOWN_OUTCOME → HAPPENED | sequencer | cap-52 | none | none | n/a | target_observed_at_new_value | none | n/a |
 | t-i05 | effect_intent | UNKNOWN_OUTCOME → ABSENT | sequencer | cap-52 | none | none | n/a | stale_expected_old_observed_or_positive_cancellation_proof | none | n/a |
-| t-i06 | effect_intent | UNKNOWN_OUTCOME → SUPERSEDED_BY_RETRY | sequencer | cap-52, cap-37 | none | obj-25 | n/a | authority_active_now, reservation_held, identical_effect_same_target_same_expected_old | none | n/a |
+| t-i06 | effect_intent | UNKNOWN_OUTCOME → SUPERSEDED_BY_RETRY | sequencer | cap-52, cap-37 | none | obj-25 | retry intent for eff-local-canonical-cas, eff-local-sequence-ref, eff-staging-push, eff-canonical-push | retry_same_effect, retry_same_target, retry_same_expected_old, delegation_active_at_intent, reservation_held, fence_matches, effect_intent_committed, intent_ttl_gt_hard_timeout, binds_superseded_intent | none | n/a |
 | t-i07 | effect_intent | UNKNOWN_OUTCOME → HUMAN_RESOLVED | sequencer (you) | cap-52 | obj-37 | none | n/a | authority_inactive, your_effect_outcome_attestation_or_retry_permit | none | n/a |
+| t-g01 | staging_ref | RETAINED → DELETING | sequencer | cap-51, cap-52 | none | obj-25 | intent for eff-staging-delete | staging_ref_eligible, sequence_accepted_or_retention_expired, expected_ref_value_known, cleanup_authority_from_frozen_policy, effect_intent_committed, intent_ttl_gt_hard_timeout | none | n/a |
+| t-g02 | staging_ref | DELETING → DELETED | sequencer | cap-51 | obj-41 | none | eff-staging-delete (on HAPPENED: target_absent) | effect_happened | none | n/a |
+| t-g03 | staging_ref | DELETING → RETAINED | sequencer | cap-51 | none | none |  (on ABSENT: target_other) | staging_ref_neither_expected_old_nor_absent | none | n/a |
+| t-w01 | workspace_sync | DUE → SYNCING | sequencer | cap-51, cap-52 | none | obj-25 | intent for eff-workspace-sync | canonical_source_established, workspace_target_eligible, worktree_safety_predicate_passes, effect_intent_committed, intent_ttl_gt_hard_timeout | none | n/a |
+| t-w02 | workspace_sync | SYNCING → SYNCED | sequencer | cap-51 | obj-29 | none | eff-workspace-sync (on HAPPENED: target_equals_new) | effect_happened | none | n/a |
+| t-w03 | workspace_sync | DUE → SKIPPED | sequencer | cap-51 | obj-29 | none | n/a | worktree_safety_predicate_fails, receipt_records_skipped | none | n/a |
+| t-w04 | workspace_sync | SYNCING → DUE | sequencer | cap-51 | none | none |  (on ABSENT: target_equals_expected_old_and_executor_fenced_and_no_ref_lock, target_other) | effect_absent_per_outcome_rule | none | n/a |
 | t-r01 | permit_reservation | RESERVED → CONSUMED | sequencer | cap-37 | none | none | n/a | ponr_effect_happened, row_status_reserved_rowcount_1 | none | n/a |
 | t-r02 | permit_reservation | RESERVED → RELEASED | sequencer | cap-37 | none | none | n/a | pre_ponr_exit_and_no_pending_or_unknown_intent, idempotent_rowcount_0_or_1 | none | n/a |
 | t-o01 | forward_repair_obligation | OPEN → REPAIR_DISPATCHED | sequencer | cap-53 | none | none | n/a | delegation_covers_repair_or_your_record, chain_depth_within_max_repairs | none | n/a |
@@ -381,6 +405,18 @@ Generated from `registries/*.json` by `python check_registries.py --render`. Do 
 | eff-canonical-push | CANONICAL_PUSH | remote canonical ref, lease = expected old | git_sequencer | cap-40 | SRD, SRP, SRPO | obj-28 | remote_cas |
 | eff-staging-delete | STAGING_REF_DELETE | remote staging ref, after ACCEPTED or retention expiry (D-16) | git_sequencer | cap-39 | none | obj-41 | remote_delete |
 | eff-workspace-sync | LOCAL_REF_CAS | your local branch, only when safe (CORR-32) | git_sequencer | cap-41 | none | obj-29 | local |
+
+## Intent classes (INV-73)
+
+The authorization checks an effect class's intent commits with, in one ledger transaction just before the effect (INV-47 as revised by CORR-55 and CORR-56). Each entry lists alternatives, one of which must be a precondition of every rule that creates an intent for an effect of the class. Standalone effects carry their own checks and never the attempt-scoped ones (INV-74).
+
+| Class | Effects | Checks (each must hold; 'or' joins alternatives) | Skip | Authority source |
+|---|---|---|---|---|
+| attempt_scoped | eff-local-canonical-cas, eff-local-sequence-ref, eff-staging-push, eff-canonical-push | delegation_active_at_intent, permit_reserved or reservation_held, fence_matches, effect_intent_committed, intent_ttl_gt_hard_timeout | n/a | n/a |
+| staging_delete | eff-staging-delete | staging_ref_eligible, sequence_accepted_or_retention_expired, expected_ref_value_known, cleanup_authority_from_frozen_policy, effect_intent_committed, intent_ttl_gt_hard_timeout | n/a | an immutable authority established before the deletion, such as the frozen policy the staging ref was created under; never the cleanup configuration current when retention expires, so a later configuration change can't authorize a deletion that wasn't authorized when the ref was created. Chapter 6 fixes its representation. |
+| workspace_sync | eff-workspace-sync | canonical_source_established, workspace_target_eligible, worktree_safety_predicate_passes, effect_intent_committed, intent_ttl_gt_hard_timeout | worktree_safety_predicate_fails: records SKIPPED, no intent | n/a |
+
+Retry rule t-i06: retries eff-local-canonical-cas, eff-local-sequence-ref, eff-staging-push, eff-canonical-push; never eff-staging-delete, eff-workspace-sync. The exclusion is architectural (INV-73): a standalone intent that ends UNKNOWN_OUTCOME is never retried by t-i06; it resolves by observation, or by your decision once authority is inactive. It does not rest on the standalone effects happening to fail the reservation and fence checks. It also proves retry_same_effect, retry_same_target, retry_same_expected_old, binds_superseded_intent. Authority checks for externally visible effects: delegation_active_at_intent, cleanup_authority_from_frozen_policy. Never required of a standalone effect: permit_reserved, reservation_held, fence_matches.
 
 ## Outcome rules
 
@@ -525,7 +561,7 @@ Generated from `registries/*.json` by `python check_registries.py --render`. Do 
 | INV-44 | Specification identity is the exact bytes; prompt identity is the declared transform's output; A1 proves the chain. | active | CH4-a1-transform-chain (chapter 4) | none |
 | INV-45 | authority_location is declared once per repository; a contract that disagrees, or whose finalization doesn't fit it, cannot freeze. | active | invariants.enforcement_points (registry) | t-c02: repository_declaration_bound_and_matching |
 | INV-46 | Workspace sync never moves a checked-out branch out from under its worktree; otherwise it records SKIPPED. | active | CH6-workspace-sync-safety (chapter 6) | none |
-| INV-47 | An effect's checks and intent commit in one ledger transaction just before the effect. | active | effects.require_intent (registry) | none |
+| INV-47 | Every transition or lifecycle rule that mints an EffectIntent, including retries and standalone effects, atomically commits the intent with the authorization checks required by that effect class immediately before the effect. | revised | effects.intent_creation (registry), effects.require_intent (registry) | t-i06: intent_ttl_gt_hard_timeout, t-g01: effect_intent_committed, t-w01: effect_intent_committed |
 | INV-48 | consumed_uses + reserved_uses <= permitted_uses at all times; only the Sequencer changes permit state. | revised | objects.minters (registry), CH2-permit-counters (chapter 2) | none |
 | INV-49 | Child prompts are checked after the fact against their declared role transform; the Dispatcher projects only what it renders. | active | CH4-role-transform-check (chapter 4) | none |
 | INV-50 | Reuse needs the same RequirementDigest and a dominating proof. | revised | invariants.enforcement_points (registry) | t-s43: dominating_finalization_proof, t-s44: dominating_finalization_proof |
@@ -551,6 +587,9 @@ Generated from `registries/*.json` by `python check_registries.py --render`. Do 
 | INV-70 | An UNKNOWN_OUTCOME intent resolves only by observation, by an identical CAS retried under a fresh intent with active authority, or by your decision. | active | liveness.exits_and_reachability (registry) | none |
 | INV-71 | No state lies on both sides of a PONR on any path, and no resume can skip verification. | active | ponr.no_backward (registry), graph.no_unverified_acceptance (registry) | none |
 | INV-72 | Receipts and authoritative state live only in the Autobot ledger and its content-addressed store; HDB is a derived index that never gates completeness, acceptance or state unless a TaskContract declares an HDB-derived assertion; Git holds source proof and path-free references only. | active | objects.storage (registry), CH2-receipt-storage (chapter 2) | none |
+| INV-73 | A retry intent may supersede UNKNOWN_OUTCOME only for a retryable attempt-scoped effect and binds the superseded intent while proving the identical effect, target and expected-old value. | active | effects.intent_creation (registry), CH6-retry-identical-effect (chapter 6) | t-i06: retry_same_target, t-i06: retry_same_expected_old, t-i06: binds_superseded_intent |
+| INV-74 | Standalone effects use their own effect-class authorization rules; they do not inherit attempt permit/reservation/fence requirements. | active | effects.intent_creation (registry), CH6-standalone-effects (chapter 6) | t-g01: cleanup_authority_from_frozen_policy, t-w01: worktree_safety_predicate_passes, t-w03: worktree_safety_predicate_fails |
+| INV-75 | Every effect with requires_intent=true has an intent-creation rule, an outcome path, and a receipt-producing successful path. | active | effects.intent_closure (registry) | none |
 
 ## Corrections
 
@@ -588,7 +627,7 @@ Generated from `registries/*.json` by `python check_registries.py --render`. Do 
 | CORR-30 | Specification identity vs prompt identity | user | APPLIED | none | n/a |
 | CORR-31 | authority_location declared per repository | assistant | ACCEPTED | none | n/a |
 | CORR-32 | WorkspaceSync never moves a checked-out branch unsafely | assistant | ACCEPTED | none | n/a |
-| CORR-33 | Linearization point for external effects | assistant | ACCEPTED | CORR-44 | n/a |
+| CORR-33 | Linearization point for external effects | assistant | ACCEPTED | CORR-44, CORR-55, CORR-56 | n/a |
 | CORR-34 | reserved_uses counter; the Sequencer changes permit state | assistant | ACCEPTED | CORR-40 | n/a |
 | CORR-35 | Dispatch projection vs role transforms | assistant | ACCEPTED | none | n/a |
 | CORR-36 | Reuse policy and liveness | assistant | ACCEPTED | CORR-41, CORR-47 | n/a |
@@ -610,6 +649,8 @@ Generated from `registries/*.json` by `python check_registries.py --render`. Do 
 | CORR-52 | MEDIATED repositories in v1 | assistant | ACCEPTED | none | the record freezes but its Sequence never becomes READY (BLOCKED_UNSUPPORTED_FINALIZER) |
 | CORR-53 | Forward repair bounds | assistant | ACCEPTED | none | quarantine the canonical ref while OPEN; a waiver lifts it and still satisfies no edge |
 | CORR-54 | D-04 confirmed: the Autobot ledger plus the content-addressed store hold receipts; HDB is an index only; Git holds source proof and path-free references | user | APPLIED | none | folded in before the acceptance commit; checked as objects.storage (INV-72) |
+| CORR-55 | Standalone EffectIntent closure: each standalone effect gets its own Sequencer initiation rule with effect-specific checks, never the attempt-scoped permit, reservation or fence checks. Staging delete: an eligible staging ref, an ACCEPTED sequence or expired retention, the expected ref value known, cleanup authority from an immutable, previously established source, a bounded intent (t-g01); under remote_delete an absent ref is HAPPENED (t-g02), a ref at another value is ABSENT and returns to RETAINED (t-g03), and UNKNOWN_OUTCOME holds in DELETING. Workspace sync: an established canonical source, an eligible target, the INV-46 safety predicate, a bounded intent (t-w01); when the predicate fails there is no intent and no ref mutation, and it ends SKIPPED with the WorkspaceSyncReceipt recording SKIPPED (t-w03) | assistant | ACCEPTED | none | amendment 1: found by Chapter 1 Phase A as U-44 and specified by you on 2026-11-08, with your review's corrections; all objects and the six EffectIntent states are kept; INV-47 is revised in place, and INV-74 and INV-75 are new; the cleanup authority is never the configuration current at expiry; checked by effects.intent_creation and effects.intent_closure |
+| CORR-56 | Retry EffectIntent closure: t-i06 is a real initiation rule for the replacement intent. It proves the same effect, target and expected old value, an active delegation, the reservation still held, the fence, a bounded window and the committed intent; moves the old intent to SUPERSEDED_BY_RETRY; and mints a fresh intent that binds the one it supersedes. It retries exactly the attempt-scoped effects, and the standalone effects are excluded by name | assistant | ACCEPTED | none | amendment 1: found by Chapter 1 Phase A as U-47 and specified by you on 2026-11-08, with your review's corrections; fence_matches kept although no wildcard can move the fence while an intent is UNKNOWN_OUTCOME, so the rule stays locally complete; INV-73 is new; checked by effects.intent_creation |
 
 ## Decisions
 

@@ -1,0 +1,221 @@
+{
+  "schema_version": "autobot-phase-handoff.v1",
+  "chapter": "00-evidence-sequencing",
+  "phase": "amendment-01",
+  "phase_type": "AMEND / FREEZE",
+  "closed_date": "2026-11-08",
+  "commit_status": "not committed; commit only when the user asks",
+  "repository": {
+    "remote": "github.com/dimascior/Autobot",
+    "branch": "main",
+    "base_commit": "f2e6faaf35e994f2aff7c0612a6a4ec635b4646d",
+    "worktree_state": "unreadable by the shell user (git refuses the checkout: dubious ownership); HEAD read from the git files",
+    "artifact_root": "docs/architecture/chapter0",
+    "handoff_root": "docs/implementation/handoffs"
+  },
+  "canonical_form": "docs/architecture/chapter0/registries/*.json; prose explains them and is checked against them",
+  "predecessor": {
+    "handoff": "ch01-phase-a.json",
+    "sha256": "48f5b6641eef71467bc78d062e41656a4df7d25ed319df02d6af3b9c2f3b1cdb",
+    "commit": "354356bdb3c2205140c99eecad789d6762e015bb",
+    "merged_in": "f2e6faaf35e994f2aff7c0612a6a4ec635b4646d",
+    "relationship": "chronological: the latest handoff when this one was written. Chapter 1 Phase A discovered the defects this amendment corrects."
+  },
+  "amends": {
+    "handoff": "ch00-phase-c.json",
+    "sha256": "e256ccc47d7ac1516575ff8386503a5d04454c4654048ab32e21455c84c49209",
+    "commit": "9cc0f5b2cb752c5d817d6e7c50c7da7d59700057",
+    "tree": "be36025fd59e45917ddcf59100480e4082bb6b28",
+    "relationship": "semantic: the Chapter 0 architecture this amendment corrects. Its handoff is not rewritten."
+  },
+  "resolves": [
+    {
+      "unknown": "U-44",
+      "registered_in": "ch01-phase-a.json",
+      "by": "CORR-55",
+      "question": "standalone EffectIntent closure"
+    },
+    {
+      "unknown": "U-47",
+      "registered_in": "ch01-phase-a.json",
+      "by": "CORR-56",
+      "question": "retry EffectIntent closure"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "M1",
+      "date": "2026-11-08",
+      "what": "Your decision on U-44 and U-47: \"Yes, as recommended\""
+    },
+    {
+      "id": "M2",
+      "date": "2026-11-08",
+      "what": "Your specification: append both now, before any other Phase B decisions; effect-specific checks for standalone effects; t-i06 as a real initiation rule; the revised INV-47 wording; separate intent_creation and intent_closure properties; at least six planted defects; a new Chapter 0 handoff"
+    },
+    {
+      "id": "M3",
+      "date": "2026-11-08",
+      "what": "Your review of the draft: INV-47 revised in place with INV-73 to INV-75 new; SKIPPED distinct and never the HAPPENED path; the staging-delete exits tied to the frozen remote_delete rule and t-i06's retryable set explicit; predecessor ch01-phase-a.json and amends ch00-phase-c.json; an immutable cleanup authority"
+    },
+    {
+      "id": "M4",
+      "date": "2026-11-08",
+      "what": "Your approval to freeze, with this closure state"
+    }
+  ],
+  "closure_state": {
+    "CORR-55 standalone intents": "ACCEPTED",
+    "CORR-56 retry intents": "ACCEPTED",
+    "U-44": "RESOLVED by CORR-55",
+    "U-47": "RESOLVED by CORR-56",
+    "42 object types": "UNCHANGED",
+    "6 EffectIntent states": "UNCHANGED",
+    "INV-47": "REVISED IN PLACE",
+    "INV-73 to INV-75": "ADDED",
+    "positive checks": "38 / 38",
+    "planted defects": "24 / 24"
+  },
+  "lifecycle_machines": {
+    "staging_ref": [
+      "RETAINED",
+      "DELETING",
+      "DELETED"
+    ],
+    "workspace_sync": [
+      "DUE",
+      "SYNCING",
+      "SYNCED",
+      "SKIPPED"
+    ],
+    "note": "Logical machines the Sequencer applies; no new object type. Their transitions are journaled as TransitionRecords (obj-36) like every other, and their instance keys and runtime representation are Chapter 6's."
+  },
+  "workspace_sync_closure": "SKIPPED is neither HAPPENED, nor an effect's execution, nor an intent's creation. When the safety predicate fails, the Git sequencer moves no ref and mints the WorkspaceSyncReceipt recording SKIPPED, and the Sequencer consumes it in t-w03 (DUE to SKIPPED). eff-workspace-sync closes successfully only from SYNCING, under its intent, on HAPPENED, with its WorkspaceSyncReceipt (t-w02, to SYNCED).",
+  "retry": {
+    "rule": "t-i06",
+    "retryable": [
+      "eff-local-canonical-cas",
+      "eff-local-sequence-ref",
+      "eff-staging-push",
+      "eff-canonical-push"
+    ],
+    "not_retryable": [
+      "eff-staging-delete",
+      "eff-workspace-sync"
+    ]
+  },
+  "phase_a": {
+    "handoff": "ch01-phase-a.json",
+    "sha256": "48f5b6641eef71467bc78d062e41656a4df7d25ed319df02d6af3b9c2f3b1cdb",
+    "status": "a valid frozen historical artifact",
+    "baseline": "Chapter 0 at 9cc0f5b2cb752c5d817d6e7c50c7da7d59700057 (handoff ch00-phase-c.json, e256ccc4), merged with Phase A as f2e6faaf35e994f2aff7c0612a6a4ec635b4646d",
+    "proof_on_its_baseline": "gate 20261108-ch1b-001: check_phase_a.py 33 of 33 and test_phase_a_negative.py 46 of 46 on files rebuilt from f2e6faa",
+    "against_this_amendment": {
+      "exit": 1,
+      "summary": "29 of 33 checks passed",
+      "failed_checks": [
+        "baseline.chapter0",
+        "effects.intent_closure",
+        "inventory.intents",
+        "inventory.provenance"
+      ],
+      "meaning": "intended: Phase A validates only against the baseline it reviewed"
+    },
+    "first_consumer_of_this_amendment": "Chapter 1 Phase B"
+  },
+  "validations": {
+    "baseline_before_write": {
+      "verdict": "PASS",
+      "detail": "the checkout's 19 files that ch00-phase-c.json records were unchanged, both earlier handoffs matched their sidecars, and latest.json named ch01-phase-a.json"
+    },
+    "chapter0_checks": {
+      "verdict": "PASS",
+      "result": "38 of 38 checks passed",
+      "run_from": [
+        "the staging copy",
+        "docs/architecture/chapter0"
+      ],
+      "gate_evidence": "20261108-ch0am1-005"
+    },
+    "negative_tests": {
+      "verdict": "PASS",
+      "result": "24 of 24 planted defects caught",
+      "run_from": [
+        "the staging copy",
+        "docs/architecture/chapter0"
+      ],
+      "gate_evidence": "20261108-ch0am1-005"
+    },
+    "line_endings": {
+      "verdict": "PASS",
+      "detail": "every artifact is LF only; .gitattributes already pins docs/architecture/chapter0/** and docs/implementation/handoffs/** to LF"
+    },
+    "no_machine_paths": {
+      "verdict": "PASS",
+      "detail": "every artifact, this handoff, its sidecar and latest.json scanned"
+    }
+  },
+  "registry_counts": {
+    "principals": 26,
+    "capabilities": 55,
+    "capabilities owned by you": 12,
+    "capabilities owned by Autobot seats": 31,
+    "capabilities owned by external owners": 12,
+    "object types": 42,
+    "state machines": 9,
+    "transitions": 88,
+    "wildcards": 5,
+    "expanded wildcard edges": 200,
+    "finalization paths": 7,
+    "effect types": 6,
+    "intent classes": 3,
+    "invariants": 76,
+    "invariants with a registry proof": 44,
+    "enforcement points": 32,
+    "corrections": 56,
+    "decisions": 18,
+    "unknowns": 18,
+    "checks": 38
+  },
+  "changed_from_phase_c": [
+    "README.md",
+    "CHAPTER0_ARCHITECTURE.md",
+    "CHAPTER0_CLOSURE.md",
+    "CHAPTER0_REGISTERS.md",
+    "check_registries.py",
+    "test_checker_negative.py",
+    "registries/corrections.json",
+    "registries/invariants.json",
+    "registries/states.json",
+    "registries/transitions.json"
+  ],
+  "phase_b_prerequisites": [
+    "Commit the amended Chapter 0 folder, this handoff, its sidecar and latest.json together",
+    "latest.json names ch00-amendment-01.json and the sidecar hash verifies",
+    "check_registries.py (38 of 38 checks passed) and test_checker_negative.py (24 of 24 planted defects caught) pass on files rebuilt from the commit",
+    "Phase B's entry check proves the chain against git objects: this handoff, its predecessor ch01-phase-a.json, and the ch00-phase-c.json it amends"
+  ],
+  "next_phase": "Chapter 1 Phase B: the remaining Phase A decision candidates, on the amended Chapter 0",
+  "artifact_hashes": {
+    "docs/architecture/chapter0/CHAPTER0_ARCHITECTURE.md": "0684d79f15737c0123a6bf16f3ec6c60085452ce486bc8baf6ed8e30dd93622f",
+    "docs/architecture/chapter0/CHAPTER0_CLOSURE.md": "0774b658754f71ba4d3c6fa8e8f625aee64a34a78010ee228d113b199883a8d8",
+    "docs/architecture/chapter0/CHAPTER0_REGISTERS.md": "36e1b4e5504451e1c853e5edc99193dc42bf0bb35e8988a1a8e12db0296bce28",
+    "docs/architecture/chapter0/README.md": "aae38a8083a3342936ab860213f08b4b335459f9e63f3116891e22b52d4052dd",
+    "docs/architecture/chapter0/check_registries.py": "09384d4a9783a006561035e3e120f494f1a9e988e2319d4cd4e776ef485ec314",
+    "docs/architecture/chapter0/registries/authority_edges.json": "c5b2f6c5be9ec37f66eb174aef3e897c2645fd29fc1c910e187a225e8b5bc964",
+    "docs/architecture/chapter0/registries/capabilities.json": "c0d55a65fa5768ee7f4909a673e644b20bc5c4972c63c51b0195059e5d698e23",
+    "docs/architecture/chapter0/registries/corrections.json": "dc26f1071ed7ac70aeab4983730ecd08f3f67232c29d6bb39cfd2950e624a19c",
+    "docs/architecture/chapter0/registries/decisions.json": "2053acfd125100c4e9753c1e209b3be466cd47969239f45b8c8aa6c98ba6fbf5",
+    "docs/architecture/chapter0/registries/identity.json": "6fc6384fa375940a891863f2b1c3151776dfaa838fb86a12832c93a449d26e08",
+    "docs/architecture/chapter0/registries/invariants.json": "9911b748cf86fa0297d1b3c87a6a7ce94a185499e26cb8e5785e9d405702d438",
+    "docs/architecture/chapter0/registries/objects.json": "fcd6c7d5044e40e79d5aaaec736fb886de6a7ce361568580ff186fec31a2c798",
+    "docs/architecture/chapter0/registries/principals.json": "56d0f095b25315045256c90862f2aff32c1098be52f345891aa6c9bcc22fb85f",
+    "docs/architecture/chapter0/registries/registrations.json": "430f6cc3d6fc379ceb79b5fbfbe35c32133c6086b69e081fea979841949011a9",
+    "docs/architecture/chapter0/registries/states.json": "da591335b1bbfa7b18b0c6b3be65980521ee1d044f4f5c717a116b08cfd673c5",
+    "docs/architecture/chapter0/registries/transitions.json": "fa47ef75a9df23883fc549b1f236affd6c5262b335737fdf66253e19a6fea4ec",
+    "docs/architecture/chapter0/registries/unknowns.json": "221e347fe0cc4c44f3ffd56aaf0b04dc62c6bbed8d4bf0d8af70374174e3dc72",
+    "docs/architecture/chapter0/test_checker_negative.py": "9cdd669f65ad1c04157c34bbfc5e493b980b5840304774dc99625231c1304b88",
+    "docs/ARCHITECTURE.md": "dea4f7a42fed50542537bea84f2fd7abb74e124841fc5532348372340c0aff77"
+  },
+  "amendments": []
+}

@@ -1,7 +1,7 @@
 {
   "schema": "autobot-ch0-corrections/v1",
   "statuses": ["APPLIED", "ACCEPTED", "REJECTED", "REPLACED"],
-  "note": "origin user = your correction; origin assistant = proposed in a draft. R7 = the review of draft 4 that accepted CORR-47 to 53 with refinements and closed the earlier open proposals.",
+  "note": "origin user = your correction; origin assistant = proposed in a draft. R7 = the review of draft 4 that accepted CORR-47 to 53 with refinements and closed the earlier open proposals. Amendment 1 = CORR-55 and CORR-56: two gaps in the effect lifecycle that Chapter 1 Phase A found (its U-44 and U-47), which you decided on 2026-11-08 and specified, appended after the Phase C freeze with their own handoff.",
   "corrections": [
     {"id": "CORR-01", "title": "DelegationContract above TaskContract", "origin": "user", "status": "APPLIED"},
     {"id": "CORR-02", "title": "Authority service is the target architecture; interim in-process over the same IPC", "origin": "user", "status": "APPLIED"},
@@ -35,7 +35,7 @@
     {"id": "CORR-30", "title": "Specification identity vs prompt identity", "origin": "user", "status": "APPLIED"},
     {"id": "CORR-31", "title": "authority_location declared per repository", "origin": "assistant", "status": "ACCEPTED"},
     {"id": "CORR-32", "title": "WorkspaceSync never moves a checked-out branch unsafely", "origin": "assistant", "status": "ACCEPTED"},
-    {"id": "CORR-33", "title": "Linearization point for external effects", "origin": "assistant", "status": "ACCEPTED", "refined_by": ["CORR-44"]},
+    {"id": "CORR-33", "title": "Linearization point for external effects", "origin": "assistant", "status": "ACCEPTED", "refined_by": ["CORR-44", "CORR-55", "CORR-56"]},
     {"id": "CORR-34", "title": "reserved_uses counter; the Sequencer changes permit state", "origin": "assistant", "status": "ACCEPTED", "refined_by": ["CORR-40"]},
     {"id": "CORR-35", "title": "Dispatch projection vs role transforms", "origin": "assistant", "status": "ACCEPTED"},
     {"id": "CORR-36", "title": "Reuse policy and liveness", "origin": "assistant", "status": "ACCEPTED", "refined_by": ["CORR-41", "CORR-47"]},
@@ -56,6 +56,8 @@
     {"id": "CORR-51", "title": "DuplicateAdmissionRecord minted by the Registry; terminal-state list", "origin": "assistant", "status": "ACCEPTED"},
     {"id": "CORR-52", "title": "MEDIATED repositories in v1", "origin": "assistant", "status": "ACCEPTED", "refinement": "the record freezes but its Sequence never becomes READY (BLOCKED_UNSUPPORTED_FINALIZER)"},
     {"id": "CORR-53", "title": "Forward repair bounds", "origin": "assistant", "status": "ACCEPTED", "refinement": "quarantine the canonical ref while OPEN; a waiver lifts it and still satisfies no edge"},
-    {"id": "CORR-54", "title": "D-04 confirmed: the Autobot ledger plus the content-addressed store hold receipts; HDB is an index only; Git holds source proof and path-free references", "origin": "user", "status": "APPLIED", "refinement": "folded in before the acceptance commit; checked as objects.storage (INV-72)"}
+    {"id": "CORR-54", "title": "D-04 confirmed: the Autobot ledger plus the content-addressed store hold receipts; HDB is an index only; Git holds source proof and path-free references", "origin": "user", "status": "APPLIED", "refinement": "folded in before the acceptance commit; checked as objects.storage (INV-72)"},
+    {"id": "CORR-55", "title": "Standalone EffectIntent closure: each standalone effect gets its own Sequencer initiation rule with effect-specific checks, never the attempt-scoped permit, reservation or fence checks. Staging delete: an eligible staging ref, an ACCEPTED sequence or expired retention, the expected ref value known, cleanup authority from an immutable, previously established source, a bounded intent (t-g01); under remote_delete an absent ref is HAPPENED (t-g02), a ref at another value is ABSENT and returns to RETAINED (t-g03), and UNKNOWN_OUTCOME holds in DELETING. Workspace sync: an established canonical source, an eligible target, the INV-46 safety predicate, a bounded intent (t-w01); when the predicate fails there is no intent and no ref mutation, and it ends SKIPPED with the WorkspaceSyncReceipt recording SKIPPED (t-w03)", "origin": "assistant", "status": "ACCEPTED", "refinement": "amendment 1: found by Chapter 1 Phase A as U-44 and specified by you on 2026-11-08, with your review's corrections; all objects and the six EffectIntent states are kept; INV-47 is revised in place, and INV-74 and INV-75 are new; the cleanup authority is never the configuration current at expiry; checked by effects.intent_creation and effects.intent_closure"},
+    {"id": "CORR-56", "title": "Retry EffectIntent closure: t-i06 is a real initiation rule for the replacement intent. It proves the same effect, target and expected old value, an active delegation, the reservation still held, the fence, a bounded window and the committed intent; moves the old intent to SUPERSEDED_BY_RETRY; and mints a fresh intent that binds the one it supersedes. It retries exactly the attempt-scoped effects, and the standalone effects are excluded by name", "origin": "assistant", "status": "ACCEPTED", "refinement": "amendment 1: found by Chapter 1 Phase A as U-47 and specified by you on 2026-11-08, with your review's corrections; fence_matches kept although no wildcard can move the fence while an intent is UNKNOWN_OUTCOME, so the rule stays locally complete; INV-73 is new; checked by effects.intent_creation"}
   ]
 }
