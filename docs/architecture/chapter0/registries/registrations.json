@@ -1,0 +1,20 @@
+{
+  "schema": "autobot-ch0-registrations/v1",
+  "rule": "Every authority-affecting registry lookup is resolved at freeze to an immutable record, and that record's hash enters the ContractDigest (C42). A frozen contract executes the exact registered artifact closure, never whatever a filesystem path currently holds (CORR-48 as refined).",
+  "registrations": [
+    {"id": "reg-repository", "object": "obj-02", "resolved_at_freeze": true, "bound_as": "resolved_bindings.repository_authority_declaration", "carries": ["authority_location", "canonical_ref", "publication_mode"], "sources": ["CORR-31", "C45"]},
+    {"id": "reg-verifier", "object": "obj-03", "resolved_at_freeze": true, "bound_as": "resolved_bindings.verifier_registrations", "carries": ["registration_id", "verifier_id", "version", "artifact_root", "entrypoint", "execution_requirements"], "sources": ["CORR-39", "C42", "CORR-48"]},
+    {"id": "reg-transform", "object": "obj-03", "resolved_at_freeze": true, "bound_as": "resolved_bindings.transform_registrations", "carries": ["registration_id", "transform_id", "version", "artifact_root", "entrypoint", "execution_requirements"], "sources": ["CORR-35", "C42", "CORR-48"]},
+    {"id": "reg-delegation", "object": "obj-00", "resolved_at_freeze": true, "bound_as": "resolved_bindings.delegation_contract", "carries": ["delegation record hash", "policy bounds (D-18)"], "sources": ["C1", "C42"]},
+    {"id": "reg-floor", "object": "obj-00", "resolved_at_freeze": true, "bound_as": "resolved_bindings.mandatory_floor", "carries": ["mandatory assertion IDs per effect class and repository"], "sources": ["CORR-14", "C42"]}
+  ],
+  "verifier_registration_fields": ["registration_id", "verifier_id", "version", "artifact_root", "entrypoint", "execution_requirements", "registered_by"],
+  "artifact_closure": {
+    "native": "executable SHA-256",
+    "python": "script SHA-256 + interpreter identity + dependency lock identity",
+    "packaged": "artifact manifest root, or container image digest",
+    "retention": "the content store keeps everything under artifact_root while any non-terminal record binds it, and for an audit period after",
+    "missing": "HALT; never substitute the current registration",
+    "open_question": "U-18 decides what the closure is for the current claude, codex and Python dependencies"
+  }
+}

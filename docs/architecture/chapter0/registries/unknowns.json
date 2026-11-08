@@ -1,0 +1,25 @@
+{
+  "schema": "autobot-ch0-unknowns/v1",
+  "statuses": ["OPEN", "NARROWED", "RESOLVED", "DEFERRED"],
+  "principle": "A materially different question gets a new ID; the earliest definition is canonical (HEA UNKNOWNS.md).",
+  "unknowns": [
+    {"id": "U-01", "question": "Why commands with a recorded DENY still ran (07:19Z and 21:56Z on 2026-11-07)", "status": "OPEN", "next_probe": "Trace the hook output and timing for those tool_use_ids", "blocks": "AUTOMATIC acceptance of contracts that require Helios integrity (D-05); Chapters 3 and 5"},
+    {"id": "U-02", "question": "Whether the Codex DevTools API can be relied on for write provenance", "status": "OPEN", "next_probe": "Check server mode; fall back to codex-export.ts", "blocks": "Chapter 3 provenance for Codex workers"},
+    {"id": "U-03", "question": "Running git in folders owned by BUILTIN/Administrators without changing your global safe.directory", "status": "OPEN", "next_probe": "Your setting, or the CODEAPI elevated route", "blocks": "Chapter 6 on swarm-coordinator"},
+    {"id": "U-04", "question": "Whether Helios ledgers for Codex sessions are as complete as Claude's", "status": "NARROWED", "next_probe": "Compare one Luna session's ledger with its rollout", "blocks": "Chapter 3"},
+    {"id": "U-05", "question": "The catalog watermark interface", "status": "OPEN", "next_probe": "hdb status", "blocks": "Nothing authoritative; INDEX_LAG is diagnostic (Chapter 3)"},
+    {"id": "U-06", "question": "AutoSwarm's outcome vocabulary, including cancelled calls", "status": "OPEN", "next_probe": "Read AutoSwarm's code", "blocks": "Chapter 3 completion policies"},
+    {"id": "U-07", "question": "Whether controller_id is always set for --no-parent children", "status": "NARROWED", "next_probe": "Check the v13 and v14 children", "blocks": "Chapter 3 joins"},
+    {"id": "U-08", "question": "Whether the monitor's and poller's results are required", "status": "RESOLVED", "next_probe": null, "blocks": null, "resolution": "Completion policy per role (C8)"},
+    {"id": "U-09", "question": "What the proof-policy names mean", "status": "RESOLVED", "next_probe": null, "blocks": null, "resolution": "finalization_requirements (C7)"},
+    {"id": "U-10", "question": "Environment capture for Python verifiers", "status": "OPEN", "next_probe": "Define with U-18", "blocks": "Chapters 1 and 4"},
+    {"id": "U-11", "question": "Windows 10 Home mechanics for a service identity, ACL-protected ledger and named-pipe IPC with peer identity", "status": "OPEN", "next_probe": "Prototype the pipe and ACL", "blocks": "Chapter 8 (Chapter 2 defines the interface only)"},
+    {"id": "U-12", "question": "Calibrating the role transforms: PowerShell 5.1 encoding and appended newline, AutoSwarm --input reading, BOM and CRLF", "status": "OPEN", "next_probe": "Recompute v14 and v15 children's task.json prompts from their input files", "blocks": "Chapter 4 registration of A1's transforms"},
+    {"id": "U-13", "question": "Whether CI exists for REMOTE_VERIFICATION on the target repositories", "status": "OPEN", "next_probe": "List each repository's workflows", "blocks": "Chapter 6 PRE_PUBLICATION contracts"},
+    {"id": "U-14", "question": "The Git sequencer's identity and push credential in the target topology", "status": "OPEN", "next_probe": "Decide with U-11", "blocks": "Chapter 8"},
+    {"id": "U-15", "question": "Which Windows human-presence check backs the AuthorityAuthenticationProvider", "status": "OPEN", "next_probe": "Evaluate Windows Hello consent for the CLI", "blocks": "Chapter 8"},
+    {"id": "U-16", "question": "Whether CI triggers on the staging branch, and whether branch protection forces pull requests", "status": "OPEN", "next_probe": "Push a disposable staging branch on a test repository", "blocks": "Chapter 6"},
+    {"id": "U-17", "question": "How long a server can still apply a push after its client died", "status": "NARROWED", "next_probe": "Operational polling interval only", "blocks": "Nothing authoritative: CORR-49 as refined no longer uses a delay as proof (Chapter 6 operations)"},
+    {"id": "U-18", "question": "What the execution closure is for verifiers that depend on the claude, codex and Python toolchains", "status": "OPEN", "next_probe": "Inventory each verifier's dependencies", "blocks": "Chapters 1 and 4 registration schema details"}
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "schema": "autobot-ch0-identity/v1",
+  "serialization": "RFC 8785 JCS, SHA-256 (D-09)",
+  "tiers": [
+    {"id": "requirement_digest", "question": "Is this the same engineering work?", "embeds": null, "fields": [
+      "objective",
+      "finalization_class",
+      "source_domain.repository_id",
+      "source_domain.authority_location",
+      "source_domain.target_ref",
+      "specification_inputs.name_to_exact_byte_sha256",
+      "allowed_scope.paths",
+      "allowed_scope.artifact_paths",
+      "acceptance_assertions.ids_and_environment_constraints"
+    ]},
+    {"id": "contract_digest", "question": "Is this the same fulfillment policy for that work?", "embeds": "requirement_digest", "fields": [
+      "retry_policy",
+      "repair_policy",
+      "reuse_policy",
+      "effect_policy",
+      "finalization_requirements",
+      "remote_verification_mode",
+      "capability_requirements",
+      "role_transforms",
+      "completion_policies",
+      "evidence_requirements",
+      "predecessors",
+      "resolved_bindings.repository_authority_declaration",
+      "resolved_bindings.verifier_registrations",
+      "resolved_bindings.transform_registrations",
+      "resolved_bindings.delegation_contract",
+      "resolved_bindings.mandatory_floor"
+    ]},
+    {"id": "record_hash", "question": "Is this the same admitted request event?", "embeds": "contract_digest", "fields": [
+      "task_contract_id",
+      "revision",
+      "authored_by",
+      "frozen_utc",
+      "delegation_id",
+      "supersession_provenance",
+      "force_new_sequence"
+    ]}
+  ],
+  "required_placements": {
+    "finalization_class": "requirement_digest",
+    "source_domain.authority_location": "requirement_digest",
+    "specification_inputs.name_to_exact_byte_sha256": "requirement_digest",
+    "reuse_policy": "contract_digest",
+    "finalization_requirements": "contract_digest",
+    "resolved_bindings.verifier_registrations": "contract_digest",
+    "resolved_bindings.transform_registrations": "contract_digest",
+    "resolved_bindings.repository_authority_declaration": "contract_digest",
+    "force_new_sequence": "record_hash"
+  },
+  "excluded_from_every_tier": [
+    "specification_inputs.resolution_path",
+    "machine_paths",
+    "operational_config"
+  ],
+  "sources": ["C4", "C26", "C30", "C41", "C42", "C43", "CORR-47"]
+}

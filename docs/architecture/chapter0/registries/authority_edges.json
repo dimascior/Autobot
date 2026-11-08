@@ -1,0 +1,52 @@
+{
+  "schema": "autobot-ch0-authority-edges/v1",
+  "note": "Authority flows from decider to subject. topology is interim, target or both. Evidence edges are listed for completeness and are not part of the acyclicity check.",
+  "authority_edges": [
+    {"from": "you", "to": "registry", "label": "freeze your contracts; delegation scope", "topology": "interim"},
+    {"from": "you", "to": "sequencer", "label": "permits, attestations, supersession, abandonment, waivers, budgets, revocations", "topology": "interim"},
+    {"from": "you", "to": "autobot_service", "label": "authenticated authority requests (AuthorityAuthenticationProvider)", "topology": "target"},
+    {"from": "autobot_service", "to": "registry", "label": "authenticated freeze requests", "topology": "target"},
+    {"from": "autobot_service", "to": "sequencer", "label": "authenticated authority records", "topology": "target"},
+    {"from": "registry", "to": "sequencer", "label": "frozen records become Sequences", "topology": "both"},
+    {"from": "sequencer", "to": "dispatcher", "label": "reserved, fenced attempts", "topology": "both"},
+    {"from": "dispatcher", "to": "autoswarm", "label": "in-process launch", "topology": "interim"},
+    {"from": "dispatcher", "to": "launcher", "label": "launch request over IPC", "topology": "target"},
+    {"from": "launcher", "to": "autoswarm", "label": "autoswarm run under your or the agent identity", "topology": "target"},
+    {"from": "autoswarm", "to": "task_force", "label": "sessions", "topology": "both"},
+    {"from": "helios", "to": "task_force", "label": "command admission", "topology": "both"},
+    {"from": "akashic", "to": "helios", "label": "integrity verdict", "topology": "both"},
+    {"from": "sequencer", "to": "git_sequencer", "label": "effect intents", "topology": "both"},
+    {"from": "git_sequencer", "to": "git", "label": "ref CAS and pushes", "topology": "both"}
+  ],
+  "forbidden_edges": [
+    {"from": "task_force", "to": "sequencer", "reason": "agents never transition state", "topology": "both"},
+    {"from": "task_force", "to": "registry", "reason": "agents never author or freeze their own contracts", "topology": "both"},
+    {"from": "task_force", "to": "autobot_service", "reason": "agents never make authority requests (CORR-11)", "topology": "both"},
+    {"from": "task_force", "to": "git_sequencer", "reason": "agents never publish", "topology": "both"},
+    {"from": "planner", "to": "sequencer", "reason": "the LLM proposes; it never decides", "topology": "both"},
+    {"from": "planner", "to": "registry", "reason": "the Planner authors drafts; only the Registry freezes (CORR-15)", "topology": "both"},
+    {"from": "planner", "to": "git_sequencer", "reason": "the LLM never publishes", "topology": "both"},
+    {"from": "autoswarm", "to": "sequencer", "reason": "an outcome is evidence, not acceptance", "topology": "both"},
+    {"from": "helios", "to": "sequencer", "reason": "Helios never decides task state (I-1)", "topology": "both"},
+    {"from": "sequencer", "to": "helios", "reason": "Autobot never directs the gate", "topology": "both"},
+    {"from": "sequencer", "to": "akashic", "reason": "a Reset is an external effect under your permit", "topology": "both"},
+    {"from": "verifier_runner", "to": "sequencer", "reason": "verifiers return results; the Sequencer decides", "topology": "both"},
+    {"from": "collector", "to": "sequencer", "reason": "evidence never grants authority", "topology": "both"},
+    {"from": "hdb", "to": "sequencer", "reason": "an index is never authority (C5)", "topology": "both"},
+    {"from": "ci_system", "to": "sequencer", "reason": "a remote check is a witness", "topology": "both"},
+    {"from": "dispatcher", "to": "autoswarm", "reason": "in the target the service never launches agents as itself (CORR-12)", "topology": "target"},
+    {"from": "autobot_service", "to": "task_force", "reason": "agents run under your or the agent identity, never the service's (CORR-12)", "topology": "target"}
+  ],
+  "evidence_edges": [
+    {"from": "autoswarm", "to": "collector", "label": "lifecycle WitnessRecords"},
+    {"from": "helios", "to": "collector", "label": "governance WitnessRecords"},
+    {"from": "agent_clis", "to": "collector", "label": "transcript WitnessRecords"},
+    {"from": "ci_system", "to": "verifier_runner", "label": "remote-check WitnessRecords"},
+    {"from": "task_force", "to": "git_adapter", "label": "artifacts and trees"},
+    {"from": "git_adapter", "to": "verifier_runner", "label": "CandidateReceipt"},
+    {"from": "verifier_runner", "to": "sequencer", "label": "VerificationReceipt"},
+    {"from": "collector", "to": "sequencer", "label": "ExecutionReceipt"},
+    {"from": "git_sequencer", "to": "sequencer", "label": "Commit, Staging and Publication receipts"},
+    {"from": "hdb", "to": "collector", "label": "index, INDEX_LAG diagnostic only"}
+  ]
+}

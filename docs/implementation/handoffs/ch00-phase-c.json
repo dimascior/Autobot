@@ -1,0 +1,271 @@
+{
+  "schema_version": "autobot-phase-handoff.v1",
+  "chapter": "00-evidence-sequencing",
+  "phase": "C",
+  "phase_type": "VERIFY / FREEZE / CLOSE",
+  "closed_date": "2026-11-08",
+  "commit_status": "not committed; commit only when the user asks",
+  "repository": {
+    "remote": "github.com/dimascior/Autobot",
+    "branch": "main",
+    "base_commit": "2d8427c80d676e4ed67f8026b9edf9e334058463",
+    "worktree_state": "unreadable by the shell user (git refuses the checkout: dubious ownership)",
+    "artifact_root": "docs/architecture/chapter0",
+    "handoff_root": "docs/implementation/handoffs"
+  },
+  "canonical_form": "docs/architecture/chapter0/registries/*.json; prose explains them and is checked against them",
+  "inputs": [
+    {
+      "id": "R1",
+      "date": "2026-11-07",
+      "what": "The first Luna v15 run through Autobot (the live example of today's scaffolding)"
+    },
+    {
+      "id": "R2",
+      "date": "2026-11-07",
+      "what": "A coordinator review and the Evidence Sequencing v1 proposal mapped to HEA's commit history"
+    },
+    {
+      "id": "R3",
+      "date": "2026-11-07",
+      "what": "The TaskContract / Sequence / Attempt design with four corrections adopted"
+    },
+    {
+      "id": "R4",
+      "date": "2026-11-07",
+      "what": "Ten corrections (CORR-01 to CORR-10) with an impact analysis"
+    },
+    {
+      "id": "R5",
+      "date": "2026-11-07",
+      "what": "Six closure corrections (CORR-25 to CORR-30)"
+    },
+    {
+      "id": "R6",
+      "date": "2026-11-07",
+      "what": "Seven corrections (CORR-40 to CORR-46)"
+    },
+    {
+      "id": "R7",
+      "date": "2026-11-08",
+      "what": "Acceptance of CORR-47 to CORR-53 with refinements, of all remaining proposals, and the decision dispositions"
+    },
+    {
+      "id": "R8",
+      "date": "2026-11-08",
+      "what": "Your confirmation of D-04 (CORR-54)"
+    }
+  ],
+  "prior_phases": {
+    "note": "Phases A and B are drafts 1 to 4. They stay outside the repository because they contain machine-local paths.",
+    "drafts": [
+      {
+        "name": "autobot-chapter0-who-what-how.md",
+        "bytes": 108012,
+        "sha256": "7a1f140b915e104c910a518b8f95df86bcbc764a5a8854dbd069ca888851bb5c"
+      },
+      {
+        "name": "autobot-chapter0-who-what-how-draft2.md",
+        "bytes": 107101,
+        "sha256": "ac45b4ac0aef9a88eb5b2129a22e74c0dee930181b6713b5f4a843669c2ba44b"
+      },
+      {
+        "name": "autobot-chapter0-who-what-how-draft3.md",
+        "bytes": 62138,
+        "sha256": "a41fa1ea2b1dea984cf4869b7d4d3c57563f2298830b3185107af69c63e53af4"
+      },
+      {
+        "name": "autobot-chapter0-who-what-how-draft4.md",
+        "bytes": 31997,
+        "sha256": "a9e87db49bf7231549525102edc4c47e20bdffaeb389715967b1153f095546d3"
+      }
+    ]
+  },
+  "upstream_pins": {
+    "captured_utc": "2026-11-08T00:41:22Z",
+    "method": "read-only git, no fetch; user info stripped from remote URLs",
+    "repositories": [
+      {
+        "remote": "github.com/dimascior/Autobot",
+        "role": "primary target",
+        "branch": "main",
+        "commit": "2d8427c80d676e4ed67f8026b9edf9e334058463",
+        "state": "worktree unreadable (dubious ownership); HEAD read from the git files"
+      },
+      {
+        "remote": "github.com/dimascior/Helios-",
+        "role": "read-only: the live command gate",
+        "branch": "main",
+        "commit": "e9ad8881e0d7aaca49574af7ff8b3c642fe44be8",
+        "state": "no upstream configured; 2 tracked changes"
+      },
+      {
+        "remote": "github.com/dimascior/Akashic",
+        "role": "read-only",
+        "branch": "main",
+        "commit": "51209af948348ed25fb5709bf54b017155cc2ff1",
+        "state": "1 ahead of origin/main; 4 tracked changes"
+      },
+      {
+        "remote": "github.com/dimascior/HeliosDataBase",
+        "role": "read-only index (HDB)",
+        "branch": "main",
+        "commit": "7100932b25a2b9c256d11bfe077f8dc149296d9f",
+        "state": "5 ahead of origin/main; 35 tracked changes"
+      },
+      {
+        "remote": "github.com/dimascior/codex-handoff",
+        "role": "read-only",
+        "branch": "main",
+        "commit": "24d823c0810447fa562d9a55e1925ecfe6741759",
+        "state": "in sync with origin/main; clean"
+      },
+      {
+        "remote": "github.com/dimascior/Codex_claude_devtools",
+        "role": "read-only witness reader",
+        "branch": "claude/serene-brahmagupta-ljj3xj",
+        "commit": "a091ee116d2b52d079d4f800b7f0fa36bb5db229",
+        "state": "2 ahead of its upstream; clean"
+      },
+      {
+        "remote": "github.com/dimascior/CODEAPI",
+        "role": "read-only",
+        "branch": "main",
+        "commit": "8678f46a18f85646d98511b73080266d5103bf84",
+        "state": "guard commit; no upstream configured; clean"
+      },
+      {
+        "remote": "github.com/dimascior/CODEAPI",
+        "role": "read-only (second checkout)",
+        "branch": "release/terminal-runtime-cleanup",
+        "commit": "a78a8cb362d4cf83a4187818376a0be78fe6860d",
+        "state": "63 ahead and 9 behind its upstream; clean"
+      },
+      {
+        "remote": "github.com/dimascior/HeliosEntitlementAuthority",
+        "role": "method corpus",
+        "branch": "main",
+        "commit": "79628711bc78c8862c8f097d2d4de79f69192c9c",
+        "state": "138 behind origin/main (f439f5244313e6e0d1737be556c56b68905d4b56, the cited 418-commit history); 111 tracked changes"
+      },
+      {
+        "remote": "github.com/dimascior/AutoSwarm",
+        "role": "reference: the execution engine",
+        "branch": null,
+        "commit": null,
+        "state": "not pinned: no checkout in the scanned folders; the installed tool was built from the fork's main (addc189, recorded 2026-11-05, not re-read)"
+      }
+    ]
+  },
+  "validations": {
+    "registry_checks": {
+      "verdict": "PASS",
+      "result": "36 of 36 checks passed",
+      "gate_evidence": "20261108-phasec-006"
+    },
+    "negative_tests": {
+      "verdict": "PASS",
+      "result": "11 of 11 planted defects caught",
+      "gate_evidence": "20261108-phasec-006"
+    },
+    "document_consistency": {
+      "verdict": "PASS",
+      "detail": "249 distinct IDs cited, all defined; 19 quoted counts equal the registries; the generated register is current"
+    },
+    "no_machine_paths": {
+      "verdict": "PASS",
+      "detail": "every file under the artifact root and the handoff root scanned"
+    }
+  },
+  "registry_counts": {
+    "principals": 26,
+    "capabilities": 55,
+    "capabilities owned by you": 12,
+    "capabilities owned by Autobot seats": 31,
+    "capabilities owned by external owners": 12,
+    "object types": 42,
+    "state machines": 7,
+    "transitions": 81,
+    "wildcards": 5,
+    "expanded wildcard edges": 200,
+    "finalization paths": 7,
+    "effect types": 6,
+    "invariants": 73,
+    "invariants with a registry proof": 41,
+    "enforcement points": 23,
+    "corrections": 54,
+    "decisions": 18,
+    "unknowns": 18,
+    "checks": 36
+  },
+  "corrections": {
+    "total": 54,
+    "applied": 24,
+    "accepted": 28,
+    "rejected": [
+      "CORR-18"
+    ],
+    "replaced": [
+      "CORR-16"
+    ]
+  },
+  "decisions": {
+    "decided": 18,
+    "decided_by_inference": [],
+    "open": []
+  },
+  "unknowns": {
+    "open": 13,
+    "narrowed": 3,
+    "resolved": 2,
+    "blocking_chapter_1_start": [],
+    "resolved_inside_chapter_1": [
+      "U-10",
+      "U-18"
+    ],
+    "blocking_automatic_acceptance_with_helios_integrity": [
+      "U-01"
+    ]
+  },
+  "findings_from_encoding": [
+    "One HALTED state let a resume skip verification; split into HALTED and HALTED_AFTER_VERIFICATION",
+    "UNKNOWN_OUTCOME at the old value had no exit once authority was gone; it now resolves by observation, an idempotent retry under fresh authority, or the user's decision (INV-70)",
+    "An integrity-failed ExecutionReceipt had no exit from CANDIDATE_FROZEN; it now halts the sequence (t-s45)",
+    "Staging-ref deletion needed a receipt (obj-41)",
+    "The post-publication CI check got its own state, POST_PUBLICATION_OBSERVING, for clarity"
+  ],
+  "chapter_1_prerequisites": [
+    "Commit the artifact root, this handoff, its sidecar and latest.json together",
+    "latest.json names ch00-phase-c.json and the sidecar hash verifies",
+    "check_registries.py passes on the committed tree"
+  ],
+  "next_phase": "Chapter 1 Phase A: contracts, identifiers and canonical serialization (golden hashes for the three identity tiers; registration and transform schemas; U-10, U-18)",
+  "artifact_hashes": {
+    "docs/architecture/chapter0/CHAPTER0_ARCHITECTURE.md": "7bf10c6aa6b2c0502e9d4130c79e79e20546b91de37b3bbaab4abf28dd54d48d",
+    "docs/architecture/chapter0/CHAPTER0_CLOSURE.md": "8861731f8372b087ecbd93d6a946ea703217b6511dab21023dbc5267887b6ca5",
+    "docs/architecture/chapter0/CHAPTER0_REGISTERS.md": "20ed5e29e58c040868cc2a05f4ad35782c25696bfb9c73c6aaf7984441ae5f8d",
+    "docs/architecture/chapter0/check_registries.py": "d508a595d70495d70fb4fa0b4147851afc3939e70d0336e5f22fe5884ce5d7c8",
+    "docs/architecture/chapter0/README.md": "45bb37742b7a8b9ea6341267a5a2061be2bedb77c40be0e6d3b15a89744c5031",
+    "docs/architecture/chapter0/registries/authority_edges.json": "c5b2f6c5be9ec37f66eb174aef3e897c2645fd29fc1c910e187a225e8b5bc964",
+    "docs/architecture/chapter0/registries/capabilities.json": "c0d55a65fa5768ee7f4909a673e644b20bc5c4972c63c51b0195059e5d698e23",
+    "docs/architecture/chapter0/registries/corrections.json": "df5afd6f9c931af726fb1d7e8cf0471bf0d5172609ec58b32ee5d154aedef008",
+    "docs/architecture/chapter0/registries/decisions.json": "2053acfd125100c4e9753c1e209b3be466cd47969239f45b8c8aa6c98ba6fbf5",
+    "docs/architecture/chapter0/registries/identity.json": "6fc6384fa375940a891863f2b1c3151776dfaa838fb86a12832c93a449d26e08",
+    "docs/architecture/chapter0/registries/invariants.json": "55ef6b183260a72f137e8c9cd7a7627e347b474a0c872c9b80410333824c44e7",
+    "docs/architecture/chapter0/registries/objects.json": "fcd6c7d5044e40e79d5aaaec736fb886de6a7ce361568580ff186fec31a2c798",
+    "docs/architecture/chapter0/registries/principals.json": "56d0f095b25315045256c90862f2aff32c1098be52f345891aa6c9bcc22fb85f",
+    "docs/architecture/chapter0/registries/registrations.json": "430f6cc3d6fc379ceb79b5fbfbe35c32133c6086b69e081fea979841949011a9",
+    "docs/architecture/chapter0/registries/states.json": "4d343033a4882bd4eef1e0516ef96bf054f823e90d43e0f46ae3fc1a3c464697",
+    "docs/architecture/chapter0/registries/transitions.json": "ba15a2c0aaad6492068b79cd081ee70b4e4eb2139c05b340068e390c34ca41ac",
+    "docs/architecture/chapter0/registries/unknowns.json": "221e347fe0cc4c44f3ffd56aaf0b04dc62c6bbed8d4bf0d8af70374174e3dc72",
+    "docs/architecture/chapter0/test_checker_negative.py": "4253680da3ab57fc10c26b48ee3b648802ff323a6f8c39bf133a1778dffa7f13",
+    "docs/ARCHITECTURE.md": "dea4f7a42fed50542537bea84f2fd7abb74e124841fc5532348372340c0aff77"
+  },
+  "amendments": [
+    {
+      "id": "CORR-54",
+      "date": "2026-11-08",
+      "what": "D-04 confirmed by you and folded in before the acceptance commit: the ledger plus the content-addressed store hold receipts, HDB is an index only, Git holds source proof and path-free references; checked as objects.storage (INV-72)"
+    }
+  ]
+}
