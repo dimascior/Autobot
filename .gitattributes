@@ -1,0 +1,6 @@
+# Chapter 0's phase handoff, its SHA-256 sidecar and latest.json record SHA-256 hashes of exact
+# file bytes. These paths check out with LF on every platform and core.autocrlf setting, so a
+# checkout reproduces the committed bytes and the recorded hashes keep matching the files on disk.
+docs/architecture/chapter0/** text=auto eol=lf
+docs/implementation/handoffs/** text=auto eol=lf
+docs/ARCHITECTURE.md text=auto eol=lf
