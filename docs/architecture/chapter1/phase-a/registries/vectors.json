@@ -1,0 +1,91 @@
+{
+  "schema": "autobot-ch1a-vectors/v1",
+  "note": "The golden-vector plan for INV-05 (CH1-golden-digest-stability), plus predicate tests for the other inherited Chapter 1 tests. A golden vector is a valid record used as a fixture for the hash function; it need not be an admission that could happen, and no vector invents an object a cross-field rule forbids. A tier-effect vector's expected tiers are derived by the checker from identity.json: a tier changes when one of its own fields changes, or when a tier it embeds changes. No bytes or hashes are frozen in Phase A. Every exact fixture waits on fixture_waits_for_all. It is a full record, so it also waits on the unknowns of the fields it leaves unchanged; a vector's own list names only the unknowns open on the fields it changes, and anything else it needs.",
+  "fixture_waits_for_all": ["U-28", "U-30", "U-53"],
+  "statuses": {
+    "tier_effect_specified": "Chapter 0 already determines which tiers move. No exact fixture exists yet; fixture_blocked_by names what an executable vector waits on beyond fixture_waits_for_all.",
+    "rejection_specified": "Chapter 0 already determines that the payload is refused.",
+    "executable_vector": "Exact JSON, canonical bytes and expected digests can be frozen.",
+    "blocked": "Waits on the named unknowns before its effect, or its validity, is known."
+  },
+  "predicate_statuses": {
+    "outcome_specified": "Chapter 0 already fixes the outcome.",
+    "blocked": "Waits on the named unknowns."
+  },
+  "coupling_statuses": {
+    "ch0": "stated as a rule in Chapter 0",
+    "ch0_implied": "follows from Chapter 0's state machines but isn't stated as a field rule",
+    "pending": "depends on an open unknown (pending_on)"
+  },
+  "couplings": [
+    {"id": "K-1", "fields": ["source_domain.authority_location", "resolved_bindings.repository_authority_declaration"], "rule": "The contract's authority_location must equal the bound declaration's; a contract that disagrees can't freeze.", "basis": ["INV-45"], "status": "ch0"},
+    {"id": "K-2", "fields": ["role_transforms", "resolved_bindings.transform_registrations"], "rule": "Every transform a role uses resolves at freeze to a bound registration.", "basis": ["INV-53", "reg-transform", "t-c02"], "status": "ch0"},
+    {"id": "K-3", "fields": ["acceptance_assertions.ids_and_environment_constraints", "resolved_bindings.verifier_registrations"], "rule": "Every assertion's verifier resolves at freeze to a bound registration.", "basis": ["INV-52", "INV-53", "t-c02"], "status": "ch0"},
+    {"id": "K-4", "fields": ["resolved_bindings.delegation_contract", "resolved_bindings.mandatory_floor"], "rule": "Both resolve to the same DelegationContract record: reg-delegation and reg-floor both bind obj-00.", "basis": ["reg-delegation", "reg-floor"], "status": "ch0"},
+    {"id": "K-5", "fields": ["delegation_id", "resolved_bindings.delegation_contract"], "rule": "delegation_id names the delegation whose record is bound; whether it can vary independently of the record waits on U-37.", "basis": ["D-11", "INV-28"], "status": "pending", "pending_on": ["U-37"]},
+    {"id": "K-6", "fields": ["finalization_class", "finalization_requirements"], "rule": "The finalization requirements must fit the class: the READ_ONLY path has no commit or publication state.", "basis": ["transitions.json", "INV-16"], "status": "ch0_implied", "open": ["U-36"]},
+    {"id": "K-7", "fields": ["source_domain.authority_location", "finalization_requirements"], "rule": "The finalization requirements must fit the authority location: a LOCAL source contract accepts on its CommitReceipt (t-s20), a REMOTE one on its PublicationReceipt (t-s37) or remote check (t-s39). A contract whose finalization doesn't fit can't freeze.", "basis": ["INV-45", "CORR-07", "t-s20", "t-s37", "t-s39"], "status": "ch0"},
+    {"id": "K-8", "fields": ["resolved_bindings.mandatory_floor", "acceptance_assertions.ids_and_environment_constraints"], "rule": "A delegated freeze includes the delegation's mandatory assertions among the contract's assertions.", "basis": ["INV-34", "reg-floor", "t-c02"], "status": "ch0"},
+    {"id": "K-9", "fields": ["resolved_bindings.delegation_contract", "allowed_scope.paths", "allowed_scope.artifact_paths"], "rule": "A delegated contract's paths and artifact paths lie inside the bound delegation's scope; otherwise it waits for you (t-c04).", "basis": ["INV-28", "t-c02", "t-c04"], "status": "ch0", "open": ["U-26"]},
+    {"id": "K-10", "fields": ["source_domain.target_ref", "resolved_bindings.repository_authority_declaration"], "rule": "Whether target_ref must equal the bound declaration's canonical_ref: t-c02 checks the declaration is bound and matching, and INV-45 names only authority_location and finalization.", "basis": ["t-c02", "INV-45", "reg-repository"], "status": "pending", "pending_on": ["U-51"]}
+  ],
+  "vectors": [
+    {"id": "V-A", "brief": "A", "kind": "base", "description": "Base requirement: an objective, SOURCE_MODIFYING, one repository, REMOTE, refs/heads/main, one specification input, one path in scope, assertions A1 and A2. Produces the canonical requirement bytes and the RequirementDigest.",
+     "status": "blocked", "blocked_by": ["U-10", "U-22", "U-23", "U-25", "U-26", "U-29", "U-33", "U-35", "U-38", "U-49"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-B", "brief": "B", "kind": "jcs_property", "description": "The same object with its source JSON keys in a different order.",
+     "expected": {"requirement_digest": "same", "contract_digest": "same", "record_hash": "same"}, "basis": ["D-09"], "status": "tier_effect_specified", "fixture_blocked_by": [], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-C", "brief": "C", "kind": "field_change", "field": "retry_policy", "description": "A different retry policy. Its structure is open (U-24), so the effect holds for any change to its canonical value.",
+     "expected": {"requirement_digest": "same", "contract_digest": "different", "record_hash": "different"}, "status": "tier_effect_specified", "fixture_blocked_by": ["U-24"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-D", "brief": "D", "kind": "field_change", "field": "finalization_class", "coupled_fields": ["finalization_requirements"], "description": "SOURCE_MODIFYING to READ_ONLY, with finalization requirements that fit READ_ONLY (no commit or publication receipt).",
+     "coupling_satisfied": {"K-7": "authority_location stays the same, and READ_ONLY requirements need no commit or publication receipt, so they fit either location"},
+     "expected": {"requirement_digest": "different", "contract_digest": "different", "record_hash": "different"}, "status": "tier_effect_specified", "fixture_blocked_by": ["U-25", "U-33", "U-36"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-E", "brief": "E", "kind": "field_change", "field": "force_new_sequence", "description": "force_new_sequence false to true. A payload carrying the flag is admitted as a new record even when its ContractDigest matches a live one. The flag isn't part of the ContractDigest, so the duplicate check must read it from the payload.",
+     "expected": {"requirement_digest": "same", "contract_digest": "same", "record_hash": "different"}, "status": "tier_effect_specified", "fixture_blocked_by": [], "admission_outcome": "new_record", "tests": ["CH1-golden-digest-stability", "CH1-duplicate-admission"]},
+    {"id": "V-F", "brief": "F", "kind": "field_change", "field": "resolved_bindings.verifier_registrations", "description": "A new registration (a new version) of the same verifier bound at freeze.",
+     "coupling_satisfied": {"K-3": "the new registration is for the same verifier, so every assertion's verifier stays bound"},
+     "expected": {"requirement_digest": "same", "contract_digest": "different", "record_hash": "different"}, "status": "tier_effect_specified", "fixture_blocked_by": ["U-22", "U-25"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-G", "brief": "G", "kind": "out_of_band_change", "field": "specification_inputs.resolution_path", "description": "The same canonical identity payload, resolved from a different machine path. The path is out-of-band input to resolution and never a field of the payload, so no illegal field is needed to prove the exclusion.",
+     "expected": {"requirement_digest": "same", "contract_digest": "same", "record_hash": "same"}, "status": "tier_effect_specified", "fixture_blocked_by": [], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-H", "brief": "H", "kind": "field_change", "field": "specification_inputs.name_to_exact_byte_sha256", "description": "One specification input's bytes with LF endings, then with CRLF endings.",
+     "expected": {"requirement_digest": "different", "contract_digest": "different", "record_hash": "different"}, "status": "tier_effect_specified", "fixture_blocked_by": ["U-29", "U-35", "U-38"], "tests": ["CH1-golden-digest-stability", "CH1-exact-byte-input-hash"]},
+    {"id": "V-I", "brief": "I", "kind": "collection_order", "field": "acceptance_assertions.ids_and_environment_constraints", "description": "Assertions [A1, A2] then [A2, A1].",
+     "status": "blocked", "blocked_by": ["U-25"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-J", "brief": "J", "kind": "unknown_field", "description": "A record with one field the schema doesn't define.",
+     "status": "blocked", "blocked_by": ["U-32"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-K", "brief": "K", "kind": "unsupported_version", "description": "A record whose schema version the reader doesn't support. Whether the reader refuses it outright, or parses it for audit and refuses it as authority, waits on version recognition (U-31) and compatibility policy (U-45).",
+     "status": "blocked", "blocked_by": ["U-31", "U-45"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-L", "brief": "item 4", "kind": "domain_separation", "description": "The same canonical bytes hashed as two different object types.",
+     "status": "blocked", "blocked_by": ["U-28"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-M", "brief": "phase-a", "kind": "field_change", "field": "source_domain.authority_location", "coupled_fields": ["resolved_bindings.repository_authority_declaration", "finalization_requirements"], "description": "From V-A: the same repository after you issue a new declaration, REMOTE to LOCAL, with the new declaration bound and finalization requirements that fit LOCAL (the CommitReceipt instead of the PublicationReceipt).",
+     "coupling_satisfied": {
+       "K-6": "finalization_class stays SOURCE_MODIFYING, and the new requirements (a CommitReceipt instead of a PublicationReceipt) still fit a source-modifying class",
+       "K-10": "the new declaration keeps the same canonical ref, so target_ref matches it whatever 'matching' turns out to require"},
+     "expected": {"requirement_digest": "different", "contract_digest": "different", "record_hash": "different"}, "status": "tier_effect_specified", "fixture_blocked_by": ["U-23", "U-25", "U-33"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-N", "brief": "phase-a", "kind": "field_change", "field": "role_transforms", "coupled_fields": ["resolved_bindings.transform_registrations"], "description": "A different transform for one role, with that transform's registration bound.",
+     "expected": {"requirement_digest": "same", "contract_digest": "different", "record_hash": "different"}, "status": "tier_effect_specified", "fixture_blocked_by": ["U-25"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-O", "brief": "phase-a", "kind": "field_change", "field": "frozen_utc", "scenario": "hypothetical_preimage", "description": "A hypothetical RecordHash preimage test: the same record content with a different frozen_utc. This is not an admission. Re-admitting the same payload while its Sequence is live returns the existing record and mints no second one (P-2).",
+     "expected": {"requirement_digest": "same", "contract_digest": "same", "record_hash": "different"}, "status": "tier_effect_specified", "fixture_blocked_by": ["U-27"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-P", "brief": "phase-a", "kind": "field_change", "field": "resolved_bindings.delegation_contract", "coupled_fields": ["resolved_bindings.mandatory_floor"], "description": "The contract bound to a different DelegationContract record, with that record's floor. The new delegation's mandatory assertions are already among the contract's assertions, and its scope contains the contract's paths and artifact paths, so the requirement is unchanged.",
+     "coupling_satisfied": {
+       "K-5": "for a new record of the same delegation, delegation_id stays the same; for another delegation it changes too. Either way the expected tiers are the same, because delegation_id is a RecordHash field and the RecordHash already changes",
+       "K-8": "the new floor's mandatory assertions are already among the contract's assertions, so acceptance_assertions, and with it the RequirementDigest, stays the same",
+       "K-9": "the new delegation's scope contains the contract's paths and artifact paths, so the freeze stays inside it and those fields don't change"},
+     "expected": {"requirement_digest": "same", "contract_digest": "different", "record_hash": "different"}, "status": "tier_effect_specified", "fixture_blocked_by": ["U-25", "U-26", "U-37", "U-40"], "tests": ["CH1-golden-digest-stability", "CH1-scope-check"]},
+    {"id": "V-Q", "brief": "phase-a", "kind": "field_change", "field": "delegation_id", "description": "delegation_id changed while the bound DelegationContract record stays the same. This may be an impossible object: if the record contains or determines its delegation_id, the pair is inconsistent. Once U-37 decides whether delegation_id is independent provenance or derived from the bound record, the vector becomes valid or is deleted.",
+     "status": "blocked", "blocked_by": ["U-37"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-R", "brief": "item 2", "kind": "field_change", "field": "reuse_policy", "description": "A different reuse policy, for example NEVER to fresh within 24 hours. Its structure and duration encoding are open (U-24, U-39).",
+     "expected": {"requirement_digest": "same", "contract_digest": "different", "record_hash": "different"}, "status": "tier_effect_specified", "fixture_blocked_by": ["U-24", "U-39"], "tests": ["CH1-golden-digest-stability"]},
+    {"id": "V-S", "brief": "phase-a", "kind": "invalid_payload", "field": "source_domain.authority_location", "violates": "K-1", "description": "authority_location changed while the same repository declaration stays bound. The freeze must refuse it: the contract disagrees with its declaration (INV-45, t-c02).",
+     "expected": "rejected", "status": "rejection_specified", "tests": ["CH1-golden-digest-stability"]}
+  ],
+  "predicate_tests": [
+    {"id": "P-1", "test": "CH1-scope-check", "invariant": "INV-28", "rule": "A contract freezes only inside the active DelegationContract's scope and floor, or when you author it (t-c02 precondition scope_and_floor_within_active_delegation_or_authored_by_you).",
+     "status": "blocked", "blocked_by": ["U-26", "U-37"], "note": "Needs the canonical path form with its containment rule, and how a freeze with no delegation is written."},
+    {"id": "P-2", "test": "CH1-duplicate-admission", "invariant": "INV-40", "rule": "Same ContractDigest as a record whose Sequence is live, and no force_new_sequence: the admission is a duplicate (t-c03). Otherwise a payload that passes the freeze checks becomes a new record with its own Sequence (t-c02, or t-c05 when you freeze a queued one); one outside the delegation's scope or floor waits for you (t-c04), and you may reject it (t-c06); one with an unresolved input, an unbound assertion or a location mismatch is rejected at freeze (t-c07).",
+     "outcome": {
+       "duplicate": {"records_minted": 0, "sequences_created": 0, "minted": ["obj-32"], "returns": "the existing TaskContractRecord, with its existing RecordHash"},
+       "new_record": {"records_minted": 1, "sequences_created": 1, "minted": ["obj-04", "obj-05", "obj-06", "obj-07", "obj-17"],
+         "sequence_rule": {"object": "obj-08", "basis": "INV-40", "form": "lifecycle_coupling"}}},
+     "status": "outcome_specified", "also_open": ["U-28", "U-30", "U-53"], "note": "The classification and both outcomes P-2 tests are fixed by Chapter 0 (INV-40, INV-54, INV-61, t-c02, t-c03). The freeze mints the record and its embedded parts. The new Sequence is not one of its mints: it comes from INV-40's one-for-one coupling with the record (obj-08's created_by rule). The queued and rejected outcomes are outside P-2. The concrete digests wait on the hash construction, and the live-Sequence lookup is a stub until the Chapter 2 ledger exists."}
+  ]
+}

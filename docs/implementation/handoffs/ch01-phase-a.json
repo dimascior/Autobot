@@ -1,0 +1,258 @@
+{
+  "schema_version": "autobot-phase-handoff.v1",
+  "chapter": "01-contract-surface",
+  "phase": "A",
+  "phase_type": "DISCOVERY / FREEZE",
+  "closed_date": "2026-11-08",
+  "commit_status": "not committed; commit only when the user asks",
+  "repository": {
+    "remote": "github.com/dimascior/Autobot",
+    "branch": "main",
+    "base_commit": "9cc0f5b2cb752c5d817d6e7c50c7da7d59700057",
+    "worktree_state": "unreadable by the shell user (git refuses the checkout: dubious ownership); HEAD read from the git files",
+    "artifact_root": "docs/architecture/chapter1/phase-a",
+    "handoff_root": "docs/implementation/handoffs"
+  },
+  "canonical_form": "docs/architecture/chapter1/phase-a/registries/*.json; prose explains them and is checked against them",
+  "predecessor": {
+    "handoff": "ch00-phase-c.json",
+    "sha256": "e256ccc47d7ac1516575ff8386503a5d04454c4654048ab32e21455c84c49209",
+    "commit": "9cc0f5b2cb752c5d817d6e7c50c7da7d59700057",
+    "tree": "be36025fd59e45917ddcf59100480e4082bb6b28",
+    "entry_evidence": "gate 20261108-ch1a-002: all six links of the entry chain PASS (commit, ancestry, handoff and sidecar, latest.json, the checker on blobs rebuilt from the commit, the working tree)"
+  },
+  "inputs": [
+    {
+      "id": "A1",
+      "date": "2026-11-08",
+      "what": "The Chapter 1 brief: ten items for the contract surface"
+    },
+    {
+      "id": "A2",
+      "date": "2026-11-08",
+      "what": "The HEA split (HEA proves techniques; every Autobot rule traces to Chapter 0 or your decision) and the entry-chain refinement"
+    },
+    {
+      "id": "A3",
+      "date": "2026-11-08",
+      "what": "The seven-step plan"
+    },
+    {
+      "id": "A4",
+      "date": "2026-11-08",
+      "what": "Your first review"
+    },
+    {
+      "id": "A5",
+      "date": "2026-11-08",
+      "what": "Your second review, twelve points"
+    },
+    {
+      "id": "A6",
+      "date": "2026-11-08",
+      "what": "Your third review: U-44 as a Chapter 0 correction candidate, the splits of U-31 and U-34"
+    },
+    {
+      "id": "A7",
+      "date": "2026-11-08",
+      "what": "The independent review: 23 findings, checked against the sources (RV-25 to RV-47)"
+    },
+    {
+      "id": "A8",
+      "date": "2026-11-08",
+      "what": "Your decision on RV-25: effect_result in conjunctive when clauses (RV-48)"
+    },
+    {
+      "id": "A9",
+      "date": "2026-11-08",
+      "what": "Your review of RV-48: provenance kept apart from the record, additive rules with exclusive partitions, reservation_held (RV-49)"
+    },
+    {
+      "id": "A10",
+      "date": "2026-11-08",
+      "what": "The review before freeze, done directly at your instruction (RV-51 to RV-53)"
+    },
+    {
+      "id": "A11",
+      "date": "2026-11-08",
+      "what": "Your acceptance: \"Yes, freeze it\""
+    }
+  ],
+  "hea_corpus": {
+    "repository": "github.com/dimascior/HeliosEntitlementAuthority",
+    "commit": "f439f5244313e6e0d1737be556c56b68905d4b56",
+    "read_by": "git cat-file at that commit, no fetch and no checkout (gate 20261108-ch1a-001)",
+    "files": {
+      "docs/contracts/CANONICAL_SERIALIZATION.md": "d8dc9c2bea44db7fb10aa5236759a784fc40c4dd52330842056026d1784da4a3",
+      "docs/contracts/CONTRACT_V1_ACCEPTANCE.md": "5e23632b393973707542747dc5ed270aa7264eb9326efc3a9304cc11a8555880",
+      "docs/contracts/IDENTIFIER_MODEL.md": "54d46e15c7b6d52c06ee02e12a2bc3b7af0042f62e08fb0d9a935123b6f9bcae",
+      "docs/contracts/SIGNATURE_ENVELOPE.md": "501f63fe234c337db07bf3f2ed0aabe6d76c03eeb0100c563d625973bf9ef9e4",
+      "docs/contracts/domain-label-registry.json": "ed44b8cfc3b06ee6f72a09f143d7be5b6a1f91789ca20dd5bcfb596d80837535",
+      "docs/contracts/object-type-registry.json": "4113972a27263fb728b6d56c93afb7cfe11eebba95bfa07f25910c8c3a462c17",
+      "docs/implementation/handoffs/ch01-phase-a.json": "9724d4651942fe6f0b1f3ac2b2d50409c06b8308d7719f7baf4fceeec4bc7e46",
+      "docs/implementation/handoffs/ch01-phase-b.json": "ab4e8fccc79372ab855d311fd7cc419f167d93b1411213082aca815d8943fa46",
+      "docs/implementation/handoffs/ch01-phase-c.json": "4bb6db27786c98ee150e796c758a0bff97592e68a77b46ae5eaaed48fdc78205"
+    }
+  },
+  "validations": {
+    "phase_a_checks": {
+      "verdict": "PASS",
+      "result": "33 of 33 checks passed",
+      "run_from": "docs/architecture/chapter1/phase-a",
+      "gate_evidence": "20261108-ch1a-012"
+    },
+    "negative_tests": {
+      "verdict": "PASS",
+      "result": "46 of 46 planted defects caught",
+      "run_from": "docs/architecture/chapter1/phase-a",
+      "gate_evidence": "20261108-ch1a-012"
+    },
+    "chapter0_baseline": {
+      "verdict": "PASS",
+      "detail": "ch00-phase-c.json hashes to e256ccc4, its sidecar and latest.json agreed before this handoff replaced latest.json, and all 19 recorded artifact hashes match"
+    },
+    "line_endings": {
+      "verdict": "PASS",
+      "detail": "every artifact is LF only, and .gitattributes pins docs/architecture/chapter1/** to LF"
+    },
+    "no_machine_paths": {
+      "verdict": "PASS",
+      "detail": "every artifact, this handoff, its sidecar and latest.json scanned"
+    }
+  },
+  "registry_counts": {
+    "object types": 42,
+    "protocol objects": 25,
+    "embedded contract parts": 4,
+    "ledger state rows": 6,
+    "append-only journal records": 2,
+    "raw witnesses": 4,
+    "legacy read-only": 1,
+    "objects required in Chapter 1": 10,
+    "objects with conditional bindings": 6,
+    "binding rules": 24,
+    "binding rules with provenance": 7,
+    "effect results": 2,
+    "objects with lifecycle creation rules": 4,
+    "identity fields": 32,
+    "freeze-time bindings": 5,
+    "field couplings": 10,
+    "golden vectors": 19,
+    "vectors with tier effect specified": 12,
+    "vectors with rejection specified": 1,
+    "executable vectors": 0,
+    "blocked vectors": 6,
+    "predicate tests": 2,
+    "brief claims": 88,
+    "claims CH0-required": 47,
+    "claims HEA-derived technique": 12,
+    "claims Phase-A proposal": 20,
+    "claims unresolved": 9,
+    "claims accepted": 49,
+    "claims partially accepted": 18,
+    "claims rejected": 2,
+    "claims method only": 7,
+    "claims pending decision": 12,
+    "HEA techniques": 24,
+    "HEA lessons from defects": 1,
+    "inherited unknowns": 2,
+    "new unknowns": 37,
+    "NARROWED unknowns": 7,
+    "Chapter 0 correction candidates": 2,
+    "decision candidates": 43,
+    "decide_with pairs": 6,
+    "review findings": 53,
+    "review findings from your reviews": 23,
+    "review findings from self-checks": 7,
+    "review findings from the independent review": 23,
+    "checks": 33
+  },
+  "closure_state": {
+    "RV-25, the conditional-binding defect": "RESOLVED (RV-48, RV-49)",
+    "binding grammar": "ESTABLISHED: additive rules, exclusive partitions, provenance outside when",
+    "effect_result vocabulary": "ESTABLISHED",
+    "the six EffectIntent states": "UNCHANGED",
+    "conditional-object coverage": "COMPLETE",
+    "U-44, Chapter 0 correction candidate": "OPEN, carried",
+    "U-47, Chapter 0 correction candidate": "OPEN, carried",
+    "Phase A": "FROZEN 2026-11-08; not committed"
+  },
+  "chapter0_correction_candidates": [
+    {
+      "id": "U-44",
+      "status": "OPEN",
+      "covers": [
+        "eff-staging-delete",
+        "eff-workspace-sync"
+      ],
+      "decision_candidate": "dc.standalone-intents",
+      "decided_by": "you",
+      "applied": false
+    },
+    {
+      "id": "U-47",
+      "status": "OPEN",
+      "covers": [
+        "t-i06"
+      ],
+      "decision_candidate": "dc.retry-intents",
+      "decided_by": "you",
+      "applied": false
+    }
+  ],
+  "decision_candidates": {
+    "total": 43,
+    "decided": 0,
+    "decide_whether_to_append_a_chapter0_correction": [
+      "dc.retry-intents",
+      "dc.standalone-intents"
+    ]
+  },
+  "unknowns": {
+    "inherited": [
+      "U-10",
+      "U-18"
+    ],
+    "new": 37,
+    "narrowed": [
+      "U-27",
+      "U-28",
+      "U-29",
+      "U-31",
+      "U-32",
+      "U-34",
+      "U-37"
+    ],
+    "chapter0_correction_candidates": [
+      "U-44",
+      "U-47"
+    ]
+  },
+  "review": {
+    "findings": 53,
+    "last": "RV-53"
+  },
+  "phase_b_prerequisites": [
+    "Commit the artifact root, this handoff, its sidecar, latest.json and the .gitattributes rule together",
+    "latest.json names ch01-phase-a.json and the sidecar hash verifies",
+    "check_phase_a.py passes and test_phase_a_negative.py catches every planted defect, both run on files rebuilt from the commit",
+    "Phase B's entry check proves this chain against git objects: the commit and its ancestry, this handoff and its sidecar, latest.json, and the predecessor ch00-phase-c.json"
+  ],
+  "next_phase": "Chapter 1 Phase B: decide the decision candidates, including whether to append the U-44 and U-47 Chapter 0 corrections",
+  "artifact_hashes": {
+    "docs/architecture/chapter1/phase-a/CHAPTER1_PHASE_A.md": "98ed85ec91a9fa8bda57178d6381ddeee35a8b86b73b1531068abbc3187a87e1",
+    "docs/architecture/chapter1/phase-a/CHAPTER1_PHASE_A_REGISTERS.md": "7d7e90f70d39cc8d7425b340bb2ec2a3356ce0eda319adf2c349e17ee68c2a58",
+    "docs/architecture/chapter1/phase-a/README.md": "5fc45390362a48264b6bc7c81b61287f4d6484e26ccdc4d13bb46df411e6c84c",
+    "docs/architecture/chapter1/phase-a/check_phase_a.py": "4f98e51ea1a8a4664bad87f9f4b2dbddedde2503382af1c96b06bc0459d9ad78",
+    "docs/architecture/chapter1/phase-a/registries/claims.json": "e09a75e3f99fbd5636e699ea378471f3036247eef12d8e1e2db653b5d9c7fcfd",
+    "docs/architecture/chapter1/phase-a/registries/decision_candidates.json": "8be5ea6c808ad1517c92a3ebee6e45e9e070962e534d6e3b160cf949a8cdb651",
+    "docs/architecture/chapter1/phase-a/registries/hea_techniques.json": "97a6ce7e5bc97701b7fd16275ef0cf95e73ea0198c53678fbd8c3abdd0403e2b",
+    "docs/architecture/chapter1/phase-a/registries/identity_fields.json": "724b66e7f4c90f3b0442112b5b609468e13b9ec2b480304e73b2a1836879f001",
+    "docs/architecture/chapter1/phase-a/registries/inventory.json": "91cae6a2f0137cc40d45f4f8453c29f490276ad57b0a6695ff499bc940714f3e",
+    "docs/architecture/chapter1/phase-a/registries/review.json": "a5c1a77358998cea7e73b7d9834c1d56e2b9ef895e78ca5a0e45b4bd027e3a3d",
+    "docs/architecture/chapter1/phase-a/registries/unknowns.json": "3f99f085038c093e3fd3e19bcd02975d4401c214b286e7048fb0c90c5ccf1484",
+    "docs/architecture/chapter1/phase-a/registries/vectors.json": "5db282e95bfa92bfbdfc9680e1d6fc4df7c84061893b7177eb02faed2a764fc7",
+    "docs/architecture/chapter1/phase-a/test_phase_a_negative.py": "f87e672e2806dc96c7a203d1512a495a913ddf61cdbde61f772694258229bfff"
+  },
+  "amendments": []
+}

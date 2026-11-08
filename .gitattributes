@@ -4,3 +4,6 @@
 docs/architecture/chapter0/** text=auto eol=lf
 docs/implementation/handoffs/** text=auto eol=lf
 docs/ARCHITECTURE.md text=auto eol=lf
+# Chapter 1 Phase A's files are hashed in its handoff, ch01-phase-a.json, so they check out with LF
+# for the same reason.
+docs/architecture/chapter1/** text=auto eol=lf
