@@ -1,0 +1,24 @@
+{
+  "schema": "autobot-ch0-decisions/v1",
+  "statuses": ["DECIDED", "DECIDED_BY_INFERENCE", "OPEN"],
+  "decisions": [
+    {"id": "D-01", "question": "How Autobot holds authority", "status": "DECIDED", "disposition": "Target: a separate authority service. Interim: in-process over the same IPC protocol.", "source": "R4 (C2)"},
+    {"id": "D-02", "question": "The human-authority boundary", "status": "DECIDED", "disposition": "One decision with D-01: separate OS/service identity, ACL-protected ledger and content store, narrow IPC.", "source": "R4 (C2)"},
+    {"id": "D-02b", "question": "How the service tells you apart from your agents", "status": "DECIDED", "disposition": "A human-presence factor first, behind an abstract AuthorityAuthenticationProvider.", "source": "R7"},
+    {"id": "D-03", "question": "Publication permits", "status": "DECIDED", "disposition": "Standing scoped delegation permitted (standing_publication_permits).", "source": "R4"},
+    {"id": "D-04", "question": "Where receipts live", "status": "DECIDED", "disposition": "Authoritative receipt storage is the Autobot ledger plus its content-addressed store. The ledger holds authoritative metadata, identities, hashes, bindings, state transitions and receipt references; the content store holds the immutable receipt payloads and the retained evidence and artifact bytes, addressed by hash. HDB is a derived, queryable evidence index, non-authoritative by default: its freshness or availability never gates receipt completeness, acceptance or authoritative state unless a TaskContract explicitly declares an HDB-derived assertion. Git holds source-state proof and path-free proof references (trailers); it is not the primary receipt store.", "source": "Your confirmation, 2026-11-08 (CORR-54)"},
+    {"id": "D-05", "question": "Helios changes", "status": "DECIDED", "disposition": "No required Helios architecture change. U-01 stays a blocker for AUTOMATIC contracts that require Helios integrity.", "source": "R7"},
+    {"id": "D-06", "question": "Supersession while an attempt is in flight", "status": "DECIDED", "disposition": "Fence immediately when before the PONR.", "source": "R7"},
+    {"id": "D-07", "question": "Legacy proposals v13, v13-rc, v14", "status": "DECIDED", "disposition": "Import as legacy; re-verify only when a current dependency or an explicit historical-close request needs it.", "source": "R7"},
+    {"id": "D-08", "question": "Live-system investigations", "status": "DECIDED", "disposition": "Yes, qualified by ObservationWindow / SubjectState semantics.", "source": "R4"},
+    {"id": "D-09", "question": "Canonical serialization", "status": "DECIDED", "disposition": "RFC 8785 JCS and full SHA-256, with three identity tiers.", "source": "R4, C41"},
+    {"id": "D-10", "question": "AutoSwarm joins", "status": "DECIDED", "disposition": "Joins only, no fork change; a missing required join is INCOMPLETE.", "source": "R7"},
+    {"id": "D-11", "question": "Who freezes Planner-drafted contracts", "status": "DECIDED", "disposition": "Your freeze during bootstrap; a DelegationContract for autonomous operation.", "source": "R4"},
+    {"id": "D-12", "question": "Gate verdicts in acceptance", "status": "DECIDED", "disposition": "DENY counts are diagnostic. An orphan, a DENY-then-ran event, or execution with no recorded decision is INTEGRITY_FAILED.", "source": "R7"},
+    {"id": "D-13", "question": "Two contracts with the same digest", "status": "DECIDED", "disposition": "One Sequence per TaskContractRecord; equivalence is recorded, reuse is explicit.", "source": "R5 (C26)"},
+    {"id": "D-14", "question": "When remote verification runs", "status": "DECIDED", "disposition": "PRE_PUBLICATION_REMOTE_VERIFICATION by default; POST_PUBLICATION_OBSERVATION when a contract declares it.", "source": "R5 (C29)"},
+    {"id": "D-16", "question": "Staging-ref retention", "status": "DECIDED", "disposition": "Delete after ACCEPTED; otherwise bounded retention such as 14 days; deletion is a receipted external effect.", "source": "R7"},
+    {"id": "D-17", "question": "Quarantine during an open repair obligation", "status": "DECIDED", "disposition": "Yes: quarantine the affected canonical ref; a waiver lifts it.", "source": "R7"},
+    {"id": "D-18", "question": "Window and lease lengths", "status": "DECIDED", "disposition": "Configurable bounded defaults, not architecture constants: hard timeout below intent TTL; leases renewable up to max wait; the stricter of policy and config applies.", "source": "R7"}
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "schema": "autobot-ch0-states/v1",
+  "note": "human_queue states wait for you; each must have an exit you trigger. HALTED is split by verification status so a resume can never skip verification.",
+  "machines": {
+    "sequence": {
+      "initial": "DECLARED",
+      "states": [
+        {"id": "DECLARED", "terminal": false, "human_queue": false},
+        {"id": "BLOCKED", "terminal": false, "human_queue": false},
+        {"id": "BLOCKED_UNSUPPORTED_FINALIZER", "terminal": false, "human_queue": true, "sources": ["CORR-52 (R7)"]},
+        {"id": "READY", "terminal": false, "human_queue": false},
+        {"id": "EXECUTING", "terminal": false, "human_queue": false},
+        {"id": "CANDIDATE_FROZEN", "terminal": false, "human_queue": false},
+        {"id": "VERIFYING", "terminal": false, "human_queue": false},
+        {"id": "VERIFIED", "terminal": false, "human_queue": false},
+        {"id": "COMMITTING", "terminal": false, "human_queue": false},
+        {"id": "COMMITTED", "terminal": false, "human_queue": false},
+        {"id": "STAGING_PUBLISHING", "terminal": false, "human_queue": false},
+        {"id": "STAGED", "terminal": false, "human_queue": false},
+        {"id": "REMOTE_VERIFYING", "terminal": false, "human_queue": false},
+        {"id": "REMOTE_VERIFIED", "terminal": false, "human_queue": false},
+        {"id": "PUBLISHING", "terminal": false, "human_queue": false},
+        {"id": "PUBLISHED", "terminal": false, "human_queue": false},
+        {"id": "POST_PUBLICATION_OBSERVING", "terminal": false, "human_queue": false, "sources": ["C29", "Phase C finding: REMOTE_VERIFYING meant both sides of the PONR"]},
+        {"id": "ACCEPTED", "terminal": false, "human_queue": false},
+        {"id": "DEPENDENCIES_RELEASED", "terminal": false, "human_queue": false},
+        {"id": "COMPLETED", "terminal": true, "human_queue": false},
+        {"id": "HALTED", "terminal": false, "human_queue": true},
+        {"id": "HALTED_AFTER_VERIFICATION", "terminal": false, "human_queue": false, "sources": ["CORR-50 (R7)", "Phase C finding: one HALTED let a resume skip verification"]},
+        {"id": "SUPERSEDED", "terminal": true, "human_queue": false},
+        {"id": "ABANDONED", "terminal": true, "human_queue": false},
+        {"id": "DELEGATION_REVOKED", "terminal": true, "human_queue": false},
+        {"id": "PUBLISHED_UNVERIFIED", "terminal": true, "human_queue": false}
+      ]
+    },
+    "attempt": {
+      "initial": "DECLARED",
+      "states": [
+        {"id": "DECLARED", "terminal": false, "human_queue": false},
+        {"id": "RESERVED", "terminal": false, "human_queue": false},
+        {"id": "DISPATCHED", "terminal": false, "human_queue": false},
+        {"id": "RUNNING", "terminal": false, "human_queue": false},
+        {"id": "FINISHED", "terminal": false, "human_queue": false},
+        {"id": "CANDIDATE_FROZEN", "terminal": false, "human_queue": false},
+        {"id": "EVIDENCE_COMPLETE", "terminal": false, "human_queue": false},
+        {"id": "VERIFIED", "terminal": true, "human_queue": false},
+        {"id": "REJECTED", "terminal": true, "human_queue": false},
+        {"id": "FAILED", "terminal": true, "human_queue": false},
+        {"id": "STALE", "terminal": true, "human_queue": false},
+        {"id": "FENCED", "terminal": true, "human_queue": false},
+        {"id": "RECONCILED", "terminal": true, "human_queue": false}
+      ]
+    },
+    "effect_intent": {
+      "initial": "PENDING",
+      "states": [
+        {"id": "PENDING", "terminal": false, "human_queue": false},
+        {"id": "HAPPENED", "terminal": true, "human_queue": false},
+        {"id": "ABSENT", "terminal": true, "human_queue": false},
+        {"id": "UNKNOWN_OUTCOME", "terminal": false, "human_queue": false},
+        {"id": "SUPERSEDED_BY_RETRY", "terminal": true, "human_queue": false},
+        {"id": "HUMAN_RESOLVED", "terminal": true, "human_queue": false}
+      ]
+    },
+    "permit_reservation": {
+      "initial": "RESERVED",
+      "states": [
+        {"id": "RESERVED", "terminal": false, "human_queue": false},
+        {"id": "CONSUMED", "terminal": true, "human_queue": false},
+        {"id": "RELEASED", "terminal": true, "human_queue": false}
+      ]
+    },
+    "forward_repair_obligation": {
+      "initial": "OPEN",
+      "states": [
+        {"id": "OPEN", "terminal": false, "human_queue": false},
+        {"id": "REPAIR_DISPATCHED", "terminal": false, "human_queue": false},
+        {"id": "RESOLVED", "terminal": true, "human_queue": false},
+        {"id": "WAIVED", "terminal": true, "human_queue": false}
+      ]
+    },
+    "delegation": {
+      "initial": "ACTIVE",
+      "states": [
+        {"id": "ACTIVE", "terminal": false, "human_queue": false},
+        {"id": "REVOKED", "terminal": true, "human_queue": false},
+        {"id": "EXPIRED", "terminal": true, "human_queue": false}
+      ]
+    },
+    "contract_admission": {
+      "initial": "RECEIVED",
+      "states": [
+        {"id": "RECEIVED", "terminal": false, "human_queue": false},
+        {"id": "DRAFT", "terminal": false, "human_queue": false},
+        {"id": "QUEUED_FOR_YOU", "terminal": false, "human_queue": true},
+        {"id": "FROZEN", "terminal": true, "human_queue": false},
+        {"id": "DUPLICATE", "terminal": true, "human_queue": false},
+        {"id": "REJECTED", "terminal": true, "human_queue": false}
+      ]
+    }
+  }
+}

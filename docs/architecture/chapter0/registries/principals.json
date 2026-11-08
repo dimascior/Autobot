@@ -1,0 +1,32 @@
+{
+  "schema": "autobot-ch0-principals/v1",
+  "note": "Every owner, minter, actor and trigger named in the other registries must be listed here.",
+  "principals": [
+    {"id": "you", "name": "You (human authority)", "kind": "human", "llm": false},
+    {"id": "registry", "name": "Autobot Contract Registry", "kind": "autobot_seat", "llm": false},
+    {"id": "planner", "name": "Autobot Planner (Chief Engineer seat)", "kind": "autobot_seat", "llm": true},
+    {"id": "agent_factory", "name": "Autobot Agent Factory", "kind": "autobot_seat", "llm": false},
+    {"id": "sequencer", "name": "Autobot Evidence Sequencer", "kind": "autobot_seat", "llm": false},
+    {"id": "dispatcher", "name": "Autobot Dispatcher", "kind": "autobot_seat", "llm": false},
+    {"id": "launcher", "name": "Autobot Launcher (target topology, runs as you or the agent account)", "kind": "autobot_seat", "llm": false},
+    {"id": "collector", "name": "Autobot Evidence Collector", "kind": "autobot_seat", "llm": false},
+    {"id": "git_adapter", "name": "Autobot Git adapter", "kind": "autobot_seat", "llm": false},
+    {"id": "environment_probe", "name": "Autobot Environment probe", "kind": "autobot_seat", "llm": false},
+    {"id": "verifier_runner", "name": "Autobot Verifier runner", "kind": "autobot_seat", "llm": false},
+    {"id": "git_sequencer", "name": "Autobot Git sequencer", "kind": "autobot_seat", "llm": false},
+    {"id": "recovery", "name": "Autobot Recovery (triggers transitions; the Sequencer applies them)", "kind": "autobot_seat", "llm": false},
+    {"id": "authority_cli", "name": "Autobot authority CLI (thin; submits your requests)", "kind": "autobot_seat", "llm": false},
+    {"id": "autobot_service", "name": "Autobot authority service boundary (IPC, AuthorityAuthenticationProvider)", "kind": "autobot_seat", "llm": false},
+    {"id": "autobot_code", "name": "Autobot code (schema, migrations, retention)", "kind": "autobot_seat", "llm": false},
+    {"id": "migration", "name": "Autobot v3 to v4 migration", "kind": "autobot_seat", "llm": false},
+    {"id": "autoswarm", "name": "AutoSwarm", "kind": "external_program", "llm": false},
+    {"id": "helios", "name": "Helios command gate", "kind": "external_program", "llm": false},
+    {"id": "akashic", "name": "Akashic", "kind": "external_program", "llm": false},
+    {"id": "hdb", "name": "HDB / HeliosEvidenceCatalog", "kind": "external_program", "llm": false},
+    {"id": "git", "name": "Git repositories and remotes", "kind": "external_program", "llm": false},
+    {"id": "ci_system", "name": "CI system (for example GitHub Actions)", "kind": "external_program", "llm": false},
+    {"id": "agent_clis", "name": "claude and codex CLIs (as transcript writers)", "kind": "external_program", "llm": false},
+    {"id": "registered_verifiers", "name": "Registered deterministic verifier programs", "kind": "external_program", "llm": false},
+    {"id": "task_force", "name": "Task Force agents (orchestrator, worker, monitor, poller)", "kind": "agent", "llm": true}
+  ]
+}

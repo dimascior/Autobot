@@ -104,3 +104,12 @@ agent, and exits non-zero only when a **required** dependency (for an enabled
 route) is unresolved. Unset workspaces and accommodations are reported but never
 fail the check — and `load_config` is likewise non-fatal, so the loop always
 starts and `--check` is the single preflight that tells you what is not ready.
+
+## Next: Evidence Sequencing (Chapter 0, frozen 2026-11-08)
+
+This document describes the system as it runs today. The architecture that
+replaces its resolve-and-authorize path is specified, but not yet implemented, in
+[architecture/chapter0/](architecture/chapter0/README.md). That architecture
+covers who may decide that work is done, and which receipts prove each step.
+Its JSON registries are canonical and are checked by
+`architecture/chapter0/check_registries.py`.
