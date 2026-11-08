@@ -1,6 +1,6 @@
 # Autobot Chapter 0: the Evidence Sequencing architecture
 
-**Status:** frozen by Phase C on 2026-11-08. Nothing in this chapter is implemented yet; Chapters 1 to 8 implement it.
+**Status:** frozen by Phase C on 2026-11-08, and amended the same day by amendment 1 (CORR-55, CORR-56), which closes the intent lifecycle of standalone effects and retries (section 9). Nothing in this chapter is implemented yet; Chapters 1 to 8 implement it.
 
 **Precedence:** the canonical form is the JSON in `registries/`. This document explains it, and `CHAPTER0_REGISTERS.md` (generated) lists all of it. Where prose and registries disagree, the registries win. `python check_registries.py` checks the registries, and also checks that this document cites only IDs the registries define.
 
@@ -215,9 +215,22 @@ Six effect types in `registries/transitions.json`:
 | eff-staging-delete | Housekeeping (D-16) |
 | eff-workspace-sync | Not authority; only when safe (CORR-32, INV-46) |
 
-**Intents** (CORR-33, CORR-44, INV-47, INV-55):
+**Intents** (CORR-33, CORR-44, CORR-55, CORR-56, INV-47, INV-55):
 
-- Every effect runs under an EffectIntent, committed in one transaction just before the effect. That transaction checks: delegation active, permit reserved, fence, version, and a hard timeout shorter than the intent window.
+- Every effect runs under an EffectIntent. Every transition that mints one, retries and standalone effects included, commits it in one ledger transaction just before the effect, with the authorization checks of the effect's class (INV-47, as revised by amendment 1):
+
+  | Class | Effects | The intent checks |
+  |---|---|---|
+  | Attempt-scoped | eff-local-canonical-cas, eff-local-sequence-ref, eff-staging-push, eff-canonical-push | an active delegation, a permit reservation (taken or held), the fence, the committed intent, and a hard timeout shorter than the intent window |
+  | Staging delete | eff-staging-delete | an eligible staging ref, an ACCEPTED sequence or expired retention (D-16), the expected ref value known, cleanup authority from an immutable, previously established source, and a committed, bounded intent |
+  | Workspace sync | eff-workspace-sync | an established canonical source, an eligible target, INV-46's safety predicate, and a committed, bounded intent |
+
+- The Sequence's own compare-and-swap on its state version (t-s15a, t-s15b) comes on top of its class's checks.
+- Standalone effects use their own class's checks and never inherit the attempt-scoped permit, reservation or fence checks (INV-74). Each has its own lifecycle, applied by the Sequencer (CORR-55). A lifecycle leaves its in-flight state only on HAPPENED or ABSENT under its effect's outcome rule, and holds there while the intent is UNKNOWN_OUTCOME:
+  - **A staging ref** is RETAINED from its staging push, and its delete intent (t-g01) moves it to DELETING. Under the remote_delete rule, a ref observed absent is HAPPENED, even when it was already gone, and moves it to DELETED (t-g02). A ref at any other value is ABSENT and returns it to RETAINED (t-g03).
+  - **A workspace sync** is DUE once a canonical ref your workspace tracks moves, and its intent (t-w01) moves it to SYNCING. The proven sync moves it to SYNCED (t-w02), and an ABSENT sync returns it to DUE (t-w04).
+  - **SKIPPED.** When INV-46's safety predicate fails, the sync ends SKIPPED (t-w03): no intent, no ref mutation, and a WorkspaceSyncReceipt that records SKIPPED. That receipt closes only the no-effect branch. The effect itself closes only through its HAPPENED path (INV-75).
+- The cleanup authority behind a staging delete comes from an immutable source established before the deletion, such as the frozen policy the staging ref was created under. It is never the configuration current when retention expires, so a later change can't authorize a deletion that wasn't authorized when the ref was created. Chapter 6 fixes its representation.
 - A revocation committed after the intent doesn't stop that in-flight effect (INV-41).
 
 **Outcomes** (CORR-49 as refined, INV-62):
@@ -228,6 +241,14 @@ Six effect types in `registries/transitions.json`:
 - Grace periods only tune polling. Local ref updates have no asynchronous server, so for them a fenced executor plus the old value does prove absence.
 
 An UNKNOWN_OUTCOME resolves only by observation (t-i04, t-i05), by retrying the identical compare-and-swap under a fresh intent while authority is active (t-i06), or by your recorded decision (t-i07) (INV-70).
+
+**The retry is an initiation rule of its own** (CORR-56, INV-73). t-i06:
+
+- proves the same effect, target and expected old value as the intent it replaces;
+- holds the attempt-scoped checks: an active delegation, the reservation still held, the fence, a bounded window and the committed intent. The fence is checked even though no wildcard can move it while an intent is UNKNOWN_OUTCOME, so the rule stays locally complete;
+- moves the old intent to SUPERSEDED_BY_RETRY and mints a fresh intent that binds it.
+
+It retries exactly the four attempt-scoped effects. The registry names the two standalone effects as not retryable, so their exclusion is a rule of its own, not a side effect of failing the reservation and fence checks. A standalone intent that ends UNKNOWN_OUTCOME resolves by observation (t-i04, t-i05) or, once authority is inactive, by your decision (t-i07).
 
 **Permits** (CORR-28, CORR-40, CORR-50):
 

@@ -1,6 +1,6 @@
 # Chapter 0 closure: baseline, ownership and freeze
 
-**Phase:** C (verify, freeze, close). **Date:** 2026-11-08. **Handoff:** `../../implementation/handoffs/ch00-phase-c.json`, with its SHA-256 sidecar and `latest.json`.
+**Phase:** C (verify, freeze, close). **Date:** 2026-11-08. **Handoff:** `../../implementation/handoffs/ch00-phase-c.json`, with its SHA-256 sidecar. **Amended:** the same day by amendment 1 (CORR-55, CORR-56; section 8), whose handoff is `ch00-amendment-01.json`; `latest.json` names the newest handoff.
 
 This is the audit surface for Chapter 0. An agent that has lost the conversation can read this folder and rebuild exactly:
 
@@ -9,6 +9,8 @@ This is the audit surface for Chapter 0. An agent that has lost the conversation
 - why Helios, AutoSwarm and Akashic stay unchanged.
 
 ## 1. Acceptance gate
+
+The figures in this table are Phase C's. Amendment 1's gate is in section 8, and section 2 gives the current counts.
 
 | Item | Verdict | Evidence |
 |---|---|---|
@@ -44,19 +46,20 @@ The checker compares this table with the registries.
 | capabilities owned by Autobot seats | 31 |
 | capabilities owned by external owners | 12 |
 | object types | 42 |
-| state machines | 7 |
-| transitions | 81 |
+| state machines | 9 |
+| transitions | 88 |
 | wildcards | 5 |
 | expanded wildcard edges | 200 |
 | finalization paths | 7 |
 | effect types | 6 |
-| invariants | 73 |
-| invariants with a registry proof | 41 |
-| enforcement points | 23 |
-| corrections | 54 |
+| intent classes | 3 |
+| invariants | 76 |
+| invariants with a registry proof | 44 |
+| enforcement points | 32 |
+| corrections | 56 |
 | decisions | 18 |
 | unknowns | 18 |
-| checks | 36 |
+| checks | 38 |
 
 ## 3. Upstream pins (2026-11-08 00:41 UTC)
 
@@ -118,3 +121,38 @@ You confirmed D-04 on 2026-11-08, recorded as CORR-54. It settles where receipts
 - **Git** holds source-state proof and path-free references only.
 
 The decision is folded in before the acceptance commit, so Phase C stays one phase. The registries, checker, register, this document and the handoff were all updated together. The decision is now a checked rule (`objects.storage`, INV-72), and one more planted defect proves that rule fails when it should.
+
+## 8. Amendment 1: intent closure (CORR-55, CORR-56)
+
+Chapter 1 Phase A found two gaps in the effect lifecycle and registered them as Chapter 0 correction candidates:
+
+- no transition created the intent of the two standalone effects;
+- the retry (t-i06) minted a fresh intent without the checks an initiation rule makes.
+
+You decided both on 2026-11-08, specified the corrections, and corrected the first draft in review. They are appended after the Phase C freeze, with their own handoff, `../../implementation/handoffs/ch00-amendment-01.json`. That handoff names two relationships:
+
+- **predecessor:** `ch01-phase-a.json`, the latest handoff when it was written, so the audit chain stays linear: Chapter 0 Phase C, then Chapter 1 Phase A, which found the defects, then this amendment, then Chapter 1 Phase B;
+- **amends:** `ch00-phase-c.json`, the Chapter 0 handoff whose architecture it corrects.
+
+Neither the Phase C handoff nor Chapter 1 Phase A is rewritten, and Phase A stays checked against the baseline it reviewed.
+
+What changed:
+
+- **CORR-55, standalone intents.** Each standalone effect has its own Sequencer lifecycle, with an initiation rule and effect-specific checks: staging_ref (t-g01 to t-g03) and workspace_sync (t-w01 to t-w04). Each leaves its in-flight state only on HAPPENED or ABSENT under its frozen outcome rule, and holds while the intent is UNKNOWN_OUTCOME; a staging ref observed absent is a delete that HAPPENED. A failed workspace safety predicate ends in SKIPPED, with no intent and no ref moved (t-w03). The cleanup authority comes from an immutable, previously established source. No object and no EffectIntent state changed.
+- **CORR-56, retries.** t-i06 proves the identical effect and holds the attempt-scoped checks. It then moves the old intent to SUPERSEDED_BY_RETRY and mints a fresh intent that binds it. It retries exactly the attempt-scoped effects; the standalone effects are named as not retryable.
+- **Invariants.** INV-47 keeps its identifier and is revised in place: every intent is committed with its effect class's checks. INV-73 covers retries, INV-74 says standalone effects use their own checks, and INV-75 says every effect that requires an intent closes.
+- **The checker.**
+  - Each effect names an intent class, and the classes and their checks are in `registries/transitions.json`.
+  - Two new checks:
+    - `effects.intent_creation`: every mint of obj-25 names its effect and holds its class's checks; standalone classes require no attempt-scoped check; the retry retries exactly the retryable effects and proves the identical effect; a skip mints no intent.
+    - `effects.intent_closure`: every effect that requires an intent has a creation rule, its outcome lifecycle and a receipt on its HAPPENED path, which a SKIPPED receipt never counts as; standalone lifecycles leave their in-flight state only as their outcome rule says.
+  - `effects.require_intent` now covers every machine, and `effects.definitions` no longer exempts standalone effects.
+  - The universal check list of Phase C (delegation, reservation, fence) now applies only to the attempt-scoped class.
+- **Planted defects.** Thirteen new ones cover both corrections and your review, and each must now be caught for its stated reason. One existing case, a canonical push intent without a delegation check, now fails under `effects.intent_creation`, which owns that rule.
+
+| Item | Verdict | Evidence |
+|---|---|---|
+| The registries are checked mechanically | PASS | `check_registries.py`: 38 of 38 checks |
+| The checker catches known defects, each for its stated reason | PASS | `test_checker_negative.py`: 24 of 24 planted defects caught |
+| Every effect that requires an intent closes | PASS | `effects.intent_closure`: 6 of 6 effects |
+| Every intent is created with its class's checks | PASS | `effects.intent_creation`: 3 intent classes, retries included |

@@ -1,6 +1,6 @@
 {
   "schema": "autobot-ch0-states/v1",
-  "note": "human_queue states wait for you; each must have an exit you trigger. HALTED is split by verification status so a resume can never skip verification.",
+  "note": "human_queue states wait for you; each must have an exit you trigger. HALTED is split by verification status so a resume can never skip verification. staging_ref and workspace_sync are the standalone effects' lifecycles (CORR-55): a staging ref is RETAINED from its staging push (t-s22) until its deletion is proven, and a workspace sync is DUE from the moment a canonical ref your workspace tracks moves. Each leaves its in-flight state (DELETING, SYNCING) only on HAPPENED or ABSENT under its effect's outcome rule, and holds there while the intent is UNKNOWN_OUTCOME. SKIPPED is the workspace sync's no-effect end: its safety predicate failed, so no intent was created and no ref moved; SKIPPED is neither HAPPENED nor an effect's execution. Both are logical machines the Sequencer applies, needing no new object type: their transitions are journaled as TransitionRecords (obj-36) like every other, and their instance keys and runtime representation are Chapter 6's.",
   "machines": {
     "sequence": {
       "initial": "DECLARED",
@@ -96,6 +96,23 @@
         {"id": "FROZEN", "terminal": true, "human_queue": false},
         {"id": "DUPLICATE", "terminal": true, "human_queue": false},
         {"id": "REJECTED", "terminal": true, "human_queue": false}
+      ]
+    },
+    "staging_ref": {
+      "initial": "RETAINED",
+      "states": [
+        {"id": "RETAINED", "terminal": false, "human_queue": false, "sources": ["D-16", "CORR-55"]},
+        {"id": "DELETING", "terminal": false, "human_queue": false, "sources": ["CORR-55"]},
+        {"id": "DELETED", "terminal": true, "human_queue": false, "sources": ["CORR-55"]}
+      ]
+    },
+    "workspace_sync": {
+      "initial": "DUE",
+      "states": [
+        {"id": "DUE", "terminal": false, "human_queue": false, "sources": ["CORR-32", "CORR-55"]},
+        {"id": "SYNCING", "terminal": false, "human_queue": false, "sources": ["CORR-55"]},
+        {"id": "SYNCED", "terminal": true, "human_queue": false, "sources": ["CORR-55"]},
+        {"id": "SKIPPED", "terminal": true, "human_queue": false, "sources": ["INV-46", "CORR-55"]}
       ]
     }
   }
