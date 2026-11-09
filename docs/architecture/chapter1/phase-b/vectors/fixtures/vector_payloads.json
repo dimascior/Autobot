@@ -1,0 +1,1100 @@
+{
+  "V-C": {
+    "acceptance_assertions": {
+      "ids_and_environment_constraints": [
+        {
+          "assertion_id": "a1",
+          "environment_constraint": {
+            "interpreter": {
+              "implementations": [
+                "cpython"
+              ],
+              "versions": [
+                "3.12.4"
+              ]
+            }
+          },
+          "mode": "DETERMINISTIC",
+          "verifier_id": "registry-checker"
+        },
+        {
+          "assertion_id": "a2",
+          "mode": "DETERMINISTIC",
+          "verifier_id": "vector-checker"
+        }
+      ]
+    },
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts/ch1"
+      ],
+      "paths": [
+        "docs/architecture/chapter1"
+      ]
+    },
+    "authored_by": "planner",
+    "capability_requirements": [
+      "cap-15",
+      "cap-17"
+    ],
+    "completion_policies": {
+      "builder": {
+        "required": true,
+        "success_outcomes": [
+          "success"
+        ]
+      }
+    },
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "effect_policy": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "evidence_requirements": [
+      "COMMAND_GOVERNANCE",
+      "EXECUTION_LIFECYCLE"
+    ],
+    "finalization_class": "SOURCE_MODIFYING",
+    "finalization_requirements": [
+      "CANONICAL_PUBLICATION",
+      "REMOTE_VERIFICATION",
+      "SEQUENCE_REF_COMMIT",
+      "STAGING_PUBLICATION"
+    ],
+    "force_new_sequence": false,
+    "frozen_utc": "2026-11-08T22:00:00.000Z",
+    "kind": "TaskContractRecord",
+    "objective": "Produce the Chapter 1 golden vectors and prove the identity tiers.",
+    "predecessors": [],
+    "remote_verification_mode": "PRE_PUBLICATION_REMOTE_VERIFICATION",
+    "repair_policy": {
+      "max_repairs": 1
+    },
+    "resolved_bindings": {
+      "delegation_contract": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+      "mandatory_floor": {
+        "delegation": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+        "mandatory_assertion_ids": [
+          "a1"
+        ]
+      },
+      "repository_authority_declaration": "sha256:0c9846c7a4c7e568b91855cbd3e45ec4c636bc97ce8b3dc4ec52aef011a7c789",
+      "transform_registrations": [
+        "sha256:cb3a7f833011e7c58bbc5eb079e4fcb6bae555766f706703384600ebffba7e43"
+      ],
+      "verifier_registrations": [
+        "sha256:085162bb5f5f49ba655dde0e35cd607696c31ef6ced789c7c37f3575b1757db3",
+        "sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c"
+      ]
+    },
+    "retry_policy": {
+      "max_retries": 5
+    },
+    "reuse_policy": {
+      "mode": "NEVER"
+    },
+    "revision": 1,
+    "role_transforms": {
+      "builder": "identity-projection"
+    },
+    "schema_version": "v1",
+    "source_domain": {
+      "authority_location": "REMOTE",
+      "repository_id": "autobot",
+      "target_ref": "refs/heads/main"
+    },
+    "specification_inputs": {
+      "name_to_exact_byte_sha256": {
+        "chapter1-brief.md": "sha256:65ad744335a3eb7d0cad1dede77d31c9159e1a22a9eb253019644a9747b35623"
+      }
+    },
+    "task_contract_id": "tc_0123456789abcdef0123456789abcdef"
+  },
+  "V-D": {
+    "acceptance_assertions": {
+      "ids_and_environment_constraints": [
+        {
+          "assertion_id": "a1",
+          "environment_constraint": {
+            "interpreter": {
+              "implementations": [
+                "cpython"
+              ],
+              "versions": [
+                "3.12.4"
+              ]
+            }
+          },
+          "mode": "DETERMINISTIC",
+          "verifier_id": "registry-checker"
+        },
+        {
+          "assertion_id": "a2",
+          "mode": "DETERMINISTIC",
+          "verifier_id": "vector-checker"
+        }
+      ]
+    },
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts/ch1"
+      ],
+      "paths": [
+        "docs/architecture/chapter1"
+      ]
+    },
+    "authored_by": "planner",
+    "capability_requirements": [
+      "cap-15",
+      "cap-17"
+    ],
+    "completion_policies": {
+      "builder": {
+        "required": true,
+        "success_outcomes": [
+          "success"
+        ]
+      }
+    },
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "effect_policy": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "evidence_requirements": [
+      "COMMAND_GOVERNANCE",
+      "EXECUTION_LIFECYCLE"
+    ],
+    "finalization_class": "READ_ONLY",
+    "finalization_requirements": [],
+    "force_new_sequence": false,
+    "frozen_utc": "2026-11-08T22:00:00.000Z",
+    "kind": "TaskContractRecord",
+    "objective": "Produce the Chapter 1 golden vectors and prove the identity tiers.",
+    "predecessors": [],
+    "repair_policy": {
+      "max_repairs": 1
+    },
+    "resolved_bindings": {
+      "delegation_contract": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+      "mandatory_floor": {
+        "delegation": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+        "mandatory_assertion_ids": []
+      },
+      "repository_authority_declaration": "sha256:0c9846c7a4c7e568b91855cbd3e45ec4c636bc97ce8b3dc4ec52aef011a7c789",
+      "transform_registrations": [
+        "sha256:cb3a7f833011e7c58bbc5eb079e4fcb6bae555766f706703384600ebffba7e43"
+      ],
+      "verifier_registrations": [
+        "sha256:085162bb5f5f49ba655dde0e35cd607696c31ef6ced789c7c37f3575b1757db3",
+        "sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c"
+      ]
+    },
+    "retry_policy": {
+      "max_retries": 2
+    },
+    "reuse_policy": {
+      "mode": "NEVER"
+    },
+    "revision": 1,
+    "role_transforms": {
+      "builder": "identity-projection"
+    },
+    "schema_version": "v1",
+    "source_domain": {
+      "authority_location": "REMOTE",
+      "repository_id": "autobot"
+    },
+    "specification_inputs": {
+      "name_to_exact_byte_sha256": {
+        "chapter1-brief.md": "sha256:65ad744335a3eb7d0cad1dede77d31c9159e1a22a9eb253019644a9747b35623"
+      }
+    },
+    "task_contract_id": "tc_0123456789abcdef0123456789abcdef"
+  },
+  "V-E": {
+    "acceptance_assertions": {
+      "ids_and_environment_constraints": [
+        {
+          "assertion_id": "a1",
+          "environment_constraint": {
+            "interpreter": {
+              "implementations": [
+                "cpython"
+              ],
+              "versions": [
+                "3.12.4"
+              ]
+            }
+          },
+          "mode": "DETERMINISTIC",
+          "verifier_id": "registry-checker"
+        },
+        {
+          "assertion_id": "a2",
+          "mode": "DETERMINISTIC",
+          "verifier_id": "vector-checker"
+        }
+      ]
+    },
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts/ch1"
+      ],
+      "paths": [
+        "docs/architecture/chapter1"
+      ]
+    },
+    "authored_by": "planner",
+    "capability_requirements": [
+      "cap-15",
+      "cap-17"
+    ],
+    "completion_policies": {
+      "builder": {
+        "required": true,
+        "success_outcomes": [
+          "success"
+        ]
+      }
+    },
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "effect_policy": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "evidence_requirements": [
+      "COMMAND_GOVERNANCE",
+      "EXECUTION_LIFECYCLE"
+    ],
+    "finalization_class": "SOURCE_MODIFYING",
+    "finalization_requirements": [
+      "CANONICAL_PUBLICATION",
+      "REMOTE_VERIFICATION",
+      "SEQUENCE_REF_COMMIT",
+      "STAGING_PUBLICATION"
+    ],
+    "force_new_sequence": true,
+    "frozen_utc": "2026-11-08T22:00:00.000Z",
+    "kind": "TaskContractRecord",
+    "objective": "Produce the Chapter 1 golden vectors and prove the identity tiers.",
+    "predecessors": [],
+    "remote_verification_mode": "PRE_PUBLICATION_REMOTE_VERIFICATION",
+    "repair_policy": {
+      "max_repairs": 1
+    },
+    "resolved_bindings": {
+      "delegation_contract": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+      "mandatory_floor": {
+        "delegation": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+        "mandatory_assertion_ids": [
+          "a1"
+        ]
+      },
+      "repository_authority_declaration": "sha256:0c9846c7a4c7e568b91855cbd3e45ec4c636bc97ce8b3dc4ec52aef011a7c789",
+      "transform_registrations": [
+        "sha256:cb3a7f833011e7c58bbc5eb079e4fcb6bae555766f706703384600ebffba7e43"
+      ],
+      "verifier_registrations": [
+        "sha256:085162bb5f5f49ba655dde0e35cd607696c31ef6ced789c7c37f3575b1757db3",
+        "sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c"
+      ]
+    },
+    "retry_policy": {
+      "max_retries": 2
+    },
+    "reuse_policy": {
+      "mode": "NEVER"
+    },
+    "revision": 1,
+    "role_transforms": {
+      "builder": "identity-projection"
+    },
+    "schema_version": "v1",
+    "source_domain": {
+      "authority_location": "REMOTE",
+      "repository_id": "autobot",
+      "target_ref": "refs/heads/main"
+    },
+    "specification_inputs": {
+      "name_to_exact_byte_sha256": {
+        "chapter1-brief.md": "sha256:65ad744335a3eb7d0cad1dede77d31c9159e1a22a9eb253019644a9747b35623"
+      }
+    },
+    "task_contract_id": "tc_0123456789abcdef0123456789abcdef"
+  },
+  "V-F": {
+    "acceptance_assertions": {
+      "ids_and_environment_constraints": [
+        {
+          "assertion_id": "a1",
+          "environment_constraint": {
+            "interpreter": {
+              "implementations": [
+                "cpython"
+              ],
+              "versions": [
+                "3.12.4"
+              ]
+            }
+          },
+          "mode": "DETERMINISTIC",
+          "verifier_id": "registry-checker"
+        },
+        {
+          "assertion_id": "a2",
+          "mode": "DETERMINISTIC",
+          "verifier_id": "vector-checker"
+        }
+      ]
+    },
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts/ch1"
+      ],
+      "paths": [
+        "docs/architecture/chapter1"
+      ]
+    },
+    "authored_by": "planner",
+    "capability_requirements": [
+      "cap-15",
+      "cap-17"
+    ],
+    "completion_policies": {
+      "builder": {
+        "required": true,
+        "success_outcomes": [
+          "success"
+        ]
+      }
+    },
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "effect_policy": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "evidence_requirements": [
+      "COMMAND_GOVERNANCE",
+      "EXECUTION_LIFECYCLE"
+    ],
+    "finalization_class": "SOURCE_MODIFYING",
+    "finalization_requirements": [
+      "CANONICAL_PUBLICATION",
+      "REMOTE_VERIFICATION",
+      "SEQUENCE_REF_COMMIT",
+      "STAGING_PUBLICATION"
+    ],
+    "force_new_sequence": false,
+    "frozen_utc": "2026-11-08T22:00:00.000Z",
+    "kind": "TaskContractRecord",
+    "objective": "Produce the Chapter 1 golden vectors and prove the identity tiers.",
+    "predecessors": [],
+    "remote_verification_mode": "PRE_PUBLICATION_REMOTE_VERIFICATION",
+    "repair_policy": {
+      "max_repairs": 1
+    },
+    "resolved_bindings": {
+      "delegation_contract": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+      "mandatory_floor": {
+        "delegation": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+        "mandatory_assertion_ids": [
+          "a1"
+        ]
+      },
+      "repository_authority_declaration": "sha256:0c9846c7a4c7e568b91855cbd3e45ec4c636bc97ce8b3dc4ec52aef011a7c789",
+      "transform_registrations": [
+        "sha256:cb3a7f833011e7c58bbc5eb079e4fcb6bae555766f706703384600ebffba7e43"
+      ],
+      "verifier_registrations": [
+        "sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c",
+        "sha256:de0f7ea9aaa9492db550da0a1e5293f1c52cc1bc396b4fb5bcba553605a91d71"
+      ]
+    },
+    "retry_policy": {
+      "max_retries": 2
+    },
+    "reuse_policy": {
+      "mode": "NEVER"
+    },
+    "revision": 1,
+    "role_transforms": {
+      "builder": "identity-projection"
+    },
+    "schema_version": "v1",
+    "source_domain": {
+      "authority_location": "REMOTE",
+      "repository_id": "autobot",
+      "target_ref": "refs/heads/main"
+    },
+    "specification_inputs": {
+      "name_to_exact_byte_sha256": {
+        "chapter1-brief.md": "sha256:65ad744335a3eb7d0cad1dede77d31c9159e1a22a9eb253019644a9747b35623"
+      }
+    },
+    "task_contract_id": "tc_0123456789abcdef0123456789abcdef"
+  },
+  "V-H": {
+    "acceptance_assertions": {
+      "ids_and_environment_constraints": [
+        {
+          "assertion_id": "a1",
+          "environment_constraint": {
+            "interpreter": {
+              "implementations": [
+                "cpython"
+              ],
+              "versions": [
+                "3.12.4"
+              ]
+            }
+          },
+          "mode": "DETERMINISTIC",
+          "verifier_id": "registry-checker"
+        },
+        {
+          "assertion_id": "a2",
+          "mode": "DETERMINISTIC",
+          "verifier_id": "vector-checker"
+        }
+      ]
+    },
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts/ch1"
+      ],
+      "paths": [
+        "docs/architecture/chapter1"
+      ]
+    },
+    "authored_by": "planner",
+    "capability_requirements": [
+      "cap-15",
+      "cap-17"
+    ],
+    "completion_policies": {
+      "builder": {
+        "required": true,
+        "success_outcomes": [
+          "success"
+        ]
+      }
+    },
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "effect_policy": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "evidence_requirements": [
+      "COMMAND_GOVERNANCE",
+      "EXECUTION_LIFECYCLE"
+    ],
+    "finalization_class": "SOURCE_MODIFYING",
+    "finalization_requirements": [
+      "CANONICAL_PUBLICATION",
+      "REMOTE_VERIFICATION",
+      "SEQUENCE_REF_COMMIT",
+      "STAGING_PUBLICATION"
+    ],
+    "force_new_sequence": false,
+    "frozen_utc": "2026-11-08T22:00:00.000Z",
+    "kind": "TaskContractRecord",
+    "objective": "Produce the Chapter 1 golden vectors and prove the identity tiers.",
+    "predecessors": [],
+    "remote_verification_mode": "PRE_PUBLICATION_REMOTE_VERIFICATION",
+    "repair_policy": {
+      "max_repairs": 1
+    },
+    "resolved_bindings": {
+      "delegation_contract": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+      "mandatory_floor": {
+        "delegation": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+        "mandatory_assertion_ids": [
+          "a1"
+        ]
+      },
+      "repository_authority_declaration": "sha256:0c9846c7a4c7e568b91855cbd3e45ec4c636bc97ce8b3dc4ec52aef011a7c789",
+      "transform_registrations": [
+        "sha256:cb3a7f833011e7c58bbc5eb079e4fcb6bae555766f706703384600ebffba7e43"
+      ],
+      "verifier_registrations": [
+        "sha256:085162bb5f5f49ba655dde0e35cd607696c31ef6ced789c7c37f3575b1757db3",
+        "sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c"
+      ]
+    },
+    "retry_policy": {
+      "max_retries": 2
+    },
+    "reuse_policy": {
+      "mode": "NEVER"
+    },
+    "revision": 1,
+    "role_transforms": {
+      "builder": "identity-projection"
+    },
+    "schema_version": "v1",
+    "source_domain": {
+      "authority_location": "REMOTE",
+      "repository_id": "autobot",
+      "target_ref": "refs/heads/main"
+    },
+    "specification_inputs": {
+      "name_to_exact_byte_sha256": {
+        "chapter1-brief.md": "sha256:04dcab02047bb0377cad8d7724e504a44c692d5ff3e48941d6cd3799b1a3e41a"
+      }
+    },
+    "task_contract_id": "tc_0123456789abcdef0123456789abcdef"
+  },
+  "V-M": {
+    "acceptance_assertions": {
+      "ids_and_environment_constraints": [
+        {
+          "assertion_id": "a1",
+          "environment_constraint": {
+            "interpreter": {
+              "implementations": [
+                "cpython"
+              ],
+              "versions": [
+                "3.12.4"
+              ]
+            }
+          },
+          "mode": "DETERMINISTIC",
+          "verifier_id": "registry-checker"
+        },
+        {
+          "assertion_id": "a2",
+          "mode": "DETERMINISTIC",
+          "verifier_id": "vector-checker"
+        }
+      ]
+    },
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts/ch1"
+      ],
+      "paths": [
+        "docs/architecture/chapter1"
+      ]
+    },
+    "authored_by": "planner",
+    "capability_requirements": [
+      "cap-15",
+      "cap-17"
+    ],
+    "completion_policies": {
+      "builder": {
+        "required": true,
+        "success_outcomes": [
+          "success"
+        ]
+      }
+    },
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "effect_policy": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "evidence_requirements": [
+      "COMMAND_GOVERNANCE",
+      "EXECUTION_LIFECYCLE"
+    ],
+    "finalization_class": "SOURCE_MODIFYING",
+    "finalization_requirements": [
+      "LOCAL_CANONICAL_COMMIT"
+    ],
+    "force_new_sequence": false,
+    "frozen_utc": "2026-11-08T22:00:00.000Z",
+    "kind": "TaskContractRecord",
+    "objective": "Produce the Chapter 1 golden vectors and prove the identity tiers.",
+    "predecessors": [],
+    "repair_policy": {
+      "max_repairs": 1
+    },
+    "resolved_bindings": {
+      "delegation_contract": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+      "mandatory_floor": {
+        "delegation": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+        "mandatory_assertion_ids": [
+          "a1"
+        ]
+      },
+      "repository_authority_declaration": "sha256:477f7452410cffc57a4ea727f967fe53ca8ad7e228be2037e500fda4a4c8de69",
+      "transform_registrations": [
+        "sha256:cb3a7f833011e7c58bbc5eb079e4fcb6bae555766f706703384600ebffba7e43"
+      ],
+      "verifier_registrations": [
+        "sha256:085162bb5f5f49ba655dde0e35cd607696c31ef6ced789c7c37f3575b1757db3",
+        "sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c"
+      ]
+    },
+    "retry_policy": {
+      "max_retries": 2
+    },
+    "reuse_policy": {
+      "mode": "NEVER"
+    },
+    "revision": 1,
+    "role_transforms": {
+      "builder": "identity-projection"
+    },
+    "schema_version": "v1",
+    "source_domain": {
+      "authority_location": "LOCAL",
+      "repository_id": "autobot",
+      "target_ref": "refs/heads/main"
+    },
+    "specification_inputs": {
+      "name_to_exact_byte_sha256": {
+        "chapter1-brief.md": "sha256:65ad744335a3eb7d0cad1dede77d31c9159e1a22a9eb253019644a9747b35623"
+      }
+    },
+    "task_contract_id": "tc_0123456789abcdef0123456789abcdef"
+  },
+  "V-N": {
+    "acceptance_assertions": {
+      "ids_and_environment_constraints": [
+        {
+          "assertion_id": "a1",
+          "environment_constraint": {
+            "interpreter": {
+              "implementations": [
+                "cpython"
+              ],
+              "versions": [
+                "3.12.4"
+              ]
+            }
+          },
+          "mode": "DETERMINISTIC",
+          "verifier_id": "registry-checker"
+        },
+        {
+          "assertion_id": "a2",
+          "mode": "DETERMINISTIC",
+          "verifier_id": "vector-checker"
+        }
+      ]
+    },
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts/ch1"
+      ],
+      "paths": [
+        "docs/architecture/chapter1"
+      ]
+    },
+    "authored_by": "planner",
+    "capability_requirements": [
+      "cap-15",
+      "cap-17"
+    ],
+    "completion_policies": {
+      "builder": {
+        "required": true,
+        "success_outcomes": [
+          "success"
+        ]
+      }
+    },
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "effect_policy": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "evidence_requirements": [
+      "COMMAND_GOVERNANCE",
+      "EXECUTION_LIFECYCLE"
+    ],
+    "finalization_class": "SOURCE_MODIFYING",
+    "finalization_requirements": [
+      "CANONICAL_PUBLICATION",
+      "REMOTE_VERIFICATION",
+      "SEQUENCE_REF_COMMIT",
+      "STAGING_PUBLICATION"
+    ],
+    "force_new_sequence": false,
+    "frozen_utc": "2026-11-08T22:00:00.000Z",
+    "kind": "TaskContractRecord",
+    "objective": "Produce the Chapter 1 golden vectors and prove the identity tiers.",
+    "predecessors": [],
+    "remote_verification_mode": "PRE_PUBLICATION_REMOTE_VERIFICATION",
+    "repair_policy": {
+      "max_repairs": 1
+    },
+    "resolved_bindings": {
+      "delegation_contract": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+      "mandatory_floor": {
+        "delegation": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+        "mandatory_assertion_ids": [
+          "a1"
+        ]
+      },
+      "repository_authority_declaration": "sha256:0c9846c7a4c7e568b91855cbd3e45ec4c636bc97ce8b3dc4ec52aef011a7c789",
+      "transform_registrations": [
+        "sha256:6c3bcb9a082dd1f664f86eed3acbaf5faf81cfdde6a086707d1bb1adb187ebc5"
+      ],
+      "verifier_registrations": [
+        "sha256:085162bb5f5f49ba655dde0e35cd607696c31ef6ced789c7c37f3575b1757db3",
+        "sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c"
+      ]
+    },
+    "retry_policy": {
+      "max_retries": 2
+    },
+    "reuse_policy": {
+      "mode": "NEVER"
+    },
+    "revision": 1,
+    "role_transforms": {
+      "builder": "strict-projection"
+    },
+    "schema_version": "v1",
+    "source_domain": {
+      "authority_location": "REMOTE",
+      "repository_id": "autobot",
+      "target_ref": "refs/heads/main"
+    },
+    "specification_inputs": {
+      "name_to_exact_byte_sha256": {
+        "chapter1-brief.md": "sha256:65ad744335a3eb7d0cad1dede77d31c9159e1a22a9eb253019644a9747b35623"
+      }
+    },
+    "task_contract_id": "tc_0123456789abcdef0123456789abcdef"
+  },
+  "V-O": {
+    "acceptance_assertions": {
+      "ids_and_environment_constraints": [
+        {
+          "assertion_id": "a1",
+          "environment_constraint": {
+            "interpreter": {
+              "implementations": [
+                "cpython"
+              ],
+              "versions": [
+                "3.12.4"
+              ]
+            }
+          },
+          "mode": "DETERMINISTIC",
+          "verifier_id": "registry-checker"
+        },
+        {
+          "assertion_id": "a2",
+          "mode": "DETERMINISTIC",
+          "verifier_id": "vector-checker"
+        }
+      ]
+    },
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts/ch1"
+      ],
+      "paths": [
+        "docs/architecture/chapter1"
+      ]
+    },
+    "authored_by": "planner",
+    "capability_requirements": [
+      "cap-15",
+      "cap-17"
+    ],
+    "completion_policies": {
+      "builder": {
+        "required": true,
+        "success_outcomes": [
+          "success"
+        ]
+      }
+    },
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "effect_policy": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "evidence_requirements": [
+      "COMMAND_GOVERNANCE",
+      "EXECUTION_LIFECYCLE"
+    ],
+    "finalization_class": "SOURCE_MODIFYING",
+    "finalization_requirements": [
+      "CANONICAL_PUBLICATION",
+      "REMOTE_VERIFICATION",
+      "SEQUENCE_REF_COMMIT",
+      "STAGING_PUBLICATION"
+    ],
+    "force_new_sequence": false,
+    "frozen_utc": "2026-11-08T22:00:01.000Z",
+    "kind": "TaskContractRecord",
+    "objective": "Produce the Chapter 1 golden vectors and prove the identity tiers.",
+    "predecessors": [],
+    "remote_verification_mode": "PRE_PUBLICATION_REMOTE_VERIFICATION",
+    "repair_policy": {
+      "max_repairs": 1
+    },
+    "resolved_bindings": {
+      "delegation_contract": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+      "mandatory_floor": {
+        "delegation": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+        "mandatory_assertion_ids": [
+          "a1"
+        ]
+      },
+      "repository_authority_declaration": "sha256:0c9846c7a4c7e568b91855cbd3e45ec4c636bc97ce8b3dc4ec52aef011a7c789",
+      "transform_registrations": [
+        "sha256:cb3a7f833011e7c58bbc5eb079e4fcb6bae555766f706703384600ebffba7e43"
+      ],
+      "verifier_registrations": [
+        "sha256:085162bb5f5f49ba655dde0e35cd607696c31ef6ced789c7c37f3575b1757db3",
+        "sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c"
+      ]
+    },
+    "retry_policy": {
+      "max_retries": 2
+    },
+    "reuse_policy": {
+      "mode": "NEVER"
+    },
+    "revision": 1,
+    "role_transforms": {
+      "builder": "identity-projection"
+    },
+    "schema_version": "v1",
+    "source_domain": {
+      "authority_location": "REMOTE",
+      "repository_id": "autobot",
+      "target_ref": "refs/heads/main"
+    },
+    "specification_inputs": {
+      "name_to_exact_byte_sha256": {
+        "chapter1-brief.md": "sha256:65ad744335a3eb7d0cad1dede77d31c9159e1a22a9eb253019644a9747b35623"
+      }
+    },
+    "task_contract_id": "tc_0123456789abcdef0123456789abcdef"
+  },
+  "V-P": {
+    "acceptance_assertions": {
+      "ids_and_environment_constraints": [
+        {
+          "assertion_id": "a1",
+          "environment_constraint": {
+            "interpreter": {
+              "implementations": [
+                "cpython"
+              ],
+              "versions": [
+                "3.12.4"
+              ]
+            }
+          },
+          "mode": "DETERMINISTIC",
+          "verifier_id": "registry-checker"
+        },
+        {
+          "assertion_id": "a2",
+          "mode": "DETERMINISTIC",
+          "verifier_id": "vector-checker"
+        }
+      ]
+    },
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts/ch1"
+      ],
+      "paths": [
+        "docs/architecture/chapter1"
+      ]
+    },
+    "authored_by": "planner",
+    "capability_requirements": [
+      "cap-15",
+      "cap-17"
+    ],
+    "completion_policies": {
+      "builder": {
+        "required": true,
+        "success_outcomes": [
+          "success"
+        ]
+      }
+    },
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "effect_policy": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "evidence_requirements": [
+      "COMMAND_GOVERNANCE",
+      "EXECUTION_LIFECYCLE"
+    ],
+    "finalization_class": "SOURCE_MODIFYING",
+    "finalization_requirements": [
+      "CANONICAL_PUBLICATION",
+      "REMOTE_VERIFICATION",
+      "SEQUENCE_REF_COMMIT",
+      "STAGING_PUBLICATION"
+    ],
+    "force_new_sequence": false,
+    "frozen_utc": "2026-11-08T22:00:00.000Z",
+    "kind": "TaskContractRecord",
+    "objective": "Produce the Chapter 1 golden vectors and prove the identity tiers.",
+    "predecessors": [],
+    "remote_verification_mode": "PRE_PUBLICATION_REMOTE_VERIFICATION",
+    "repair_policy": {
+      "max_repairs": 1
+    },
+    "resolved_bindings": {
+      "delegation_contract": "sha256:db98aa2bad8adb1518182cd2744ae33dfe25b2ba61e890c1a176520042e2cf5f",
+      "mandatory_floor": {
+        "delegation": "sha256:db98aa2bad8adb1518182cd2744ae33dfe25b2ba61e890c1a176520042e2cf5f",
+        "mandatory_assertion_ids": [
+          "a1"
+        ]
+      },
+      "repository_authority_declaration": "sha256:0c9846c7a4c7e568b91855cbd3e45ec4c636bc97ce8b3dc4ec52aef011a7c789",
+      "transform_registrations": [
+        "sha256:cb3a7f833011e7c58bbc5eb079e4fcb6bae555766f706703384600ebffba7e43"
+      ],
+      "verifier_registrations": [
+        "sha256:085162bb5f5f49ba655dde0e35cd607696c31ef6ced789c7c37f3575b1757db3",
+        "sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c"
+      ]
+    },
+    "retry_policy": {
+      "max_retries": 2
+    },
+    "reuse_policy": {
+      "mode": "NEVER"
+    },
+    "revision": 1,
+    "role_transforms": {
+      "builder": "identity-projection"
+    },
+    "schema_version": "v1",
+    "source_domain": {
+      "authority_location": "REMOTE",
+      "repository_id": "autobot",
+      "target_ref": "refs/heads/main"
+    },
+    "specification_inputs": {
+      "name_to_exact_byte_sha256": {
+        "chapter1-brief.md": "sha256:65ad744335a3eb7d0cad1dede77d31c9159e1a22a9eb253019644a9747b35623"
+      }
+    },
+    "task_contract_id": "tc_0123456789abcdef0123456789abcdef"
+  },
+  "V-R": {
+    "acceptance_assertions": {
+      "ids_and_environment_constraints": [
+        {
+          "assertion_id": "a1",
+          "environment_constraint": {
+            "interpreter": {
+              "implementations": [
+                "cpython"
+              ],
+              "versions": [
+                "3.12.4"
+              ]
+            }
+          },
+          "mode": "DETERMINISTIC",
+          "verifier_id": "registry-checker"
+        },
+        {
+          "assertion_id": "a2",
+          "mode": "DETERMINISTIC",
+          "verifier_id": "vector-checker"
+        }
+      ]
+    },
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts/ch1"
+      ],
+      "paths": [
+        "docs/architecture/chapter1"
+      ]
+    },
+    "authored_by": "planner",
+    "capability_requirements": [
+      "cap-15",
+      "cap-17"
+    ],
+    "completion_policies": {
+      "builder": {
+        "required": true,
+        "success_outcomes": [
+          "success"
+        ]
+      }
+    },
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "effect_policy": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "evidence_requirements": [
+      "COMMAND_GOVERNANCE",
+      "EXECUTION_LIFECYCLE"
+    ],
+    "finalization_class": "SOURCE_MODIFYING",
+    "finalization_requirements": [
+      "CANONICAL_PUBLICATION",
+      "REMOTE_VERIFICATION",
+      "SEQUENCE_REF_COMMIT",
+      "STAGING_PUBLICATION"
+    ],
+    "force_new_sequence": false,
+    "frozen_utc": "2026-11-08T22:00:00.000Z",
+    "kind": "TaskContractRecord",
+    "objective": "Produce the Chapter 1 golden vectors and prove the identity tiers.",
+    "predecessors": [],
+    "remote_verification_mode": "PRE_PUBLICATION_REMOTE_VERIFICATION",
+    "repair_policy": {
+      "max_repairs": 1
+    },
+    "resolved_bindings": {
+      "delegation_contract": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+      "mandatory_floor": {
+        "delegation": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+        "mandatory_assertion_ids": [
+          "a1"
+        ]
+      },
+      "repository_authority_declaration": "sha256:0c9846c7a4c7e568b91855cbd3e45ec4c636bc97ce8b3dc4ec52aef011a7c789",
+      "transform_registrations": [
+        "sha256:cb3a7f833011e7c58bbc5eb079e4fcb6bae555766f706703384600ebffba7e43"
+      ],
+      "verifier_registrations": [
+        "sha256:085162bb5f5f49ba655dde0e35cd607696c31ef6ced789c7c37f3575b1757db3",
+        "sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c"
+      ]
+    },
+    "retry_policy": {
+      "max_retries": 2
+    },
+    "reuse_policy": {
+      "freshness_seconds": 86400,
+      "mode": "FRESH_WITHIN"
+    },
+    "revision": 1,
+    "role_transforms": {
+      "builder": "identity-projection"
+    },
+    "schema_version": "v1",
+    "source_domain": {
+      "authority_location": "REMOTE",
+      "repository_id": "autobot",
+      "target_ref": "refs/heads/main"
+    },
+    "specification_inputs": {
+      "name_to_exact_byte_sha256": {
+        "chapter1-brief.md": "sha256:65ad744335a3eb7d0cad1dede77d31c9159e1a22a9eb253019644a9747b35623"
+      }
+    },
+    "task_contract_id": "tc_0123456789abcdef0123456789abcdef"
+  }
+}

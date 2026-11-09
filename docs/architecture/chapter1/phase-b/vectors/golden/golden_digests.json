@@ -1,0 +1,192 @@
+{
+  "JH-1": {
+    "disposition": "executable",
+    "entries": [
+      "sha256:7564362e8cbd4f98332b0ce50dbbcfa2fd6aefa49cf0f658701807db7ceb1923",
+      "sha256:a6befac0b6568085127638366636e39a56bcd539bab590f0823a280708e21a6b",
+      "sha256:d77915e0e08ef8121126c764a495fbfcafcd9b279c0d89953a7cc3fd2ba8dfd9"
+    ]
+  },
+  "P-1": {
+    "disposition": "executable",
+    "outcomes": {
+      "agent_no_delegation": "QUEUED_FOR_YOU",
+      "authored_by_you_no_delegation": "FROZEN",
+      "inside_scope": "FROZEN",
+      "outside_scope": "QUEUED_FOR_YOU"
+    }
+  },
+  "P-2": {
+    "disposition": "executable",
+    "duplicate": {
+      "mints": [
+        "obj-32"
+      ],
+      "records_minted": 0,
+      "returns": "sha256:07acf0d6eba35663d9f2e506255ebcedfbc4f5332994cd1dd3c49c53852b9a3c",
+      "sequences_created": 0
+    },
+    "new_record": {
+      "mints": [
+        "obj-04",
+        "obj-05",
+        "obj-06",
+        "obj-07",
+        "obj-17"
+      ],
+      "records_minted": 1,
+      "sequence_rule": {
+        "basis": "INV-40",
+        "form": "lifecycle_coupling",
+        "object": "obj-08"
+      },
+      "sequences_created": 1
+    }
+  },
+  "V-A": {
+    "canonical_contract_preimage": "{\"capability_requirements\":[\"cap-15\",\"cap-17\"],\"completion_policies\":{\"builder\":{\"required\":true,\"success_outcomes\":[\"success\"]}},\"effect_policy\":{\"effect_hard_timeout_seconds\":240,\"effect_intent_ttl_seconds\":300},\"evidence_requirements\":[\"COMMAND_GOVERNANCE\",\"EXECUTION_LIFECYCLE\"],\"finalization_requirements\":[\"CANONICAL_PUBLICATION\",\"REMOTE_VERIFICATION\",\"SEQUENCE_REF_COMMIT\",\"STAGING_PUBLICATION\"],\"predecessors\":[],\"remote_verification_mode\":\"PRE_PUBLICATION_REMOTE_VERIFICATION\",\"repair_policy\":{\"max_repairs\":1},\"requirement_digest\":\"sha256:c7ca0e44488dd703e09a239cb143d2ab740bc99c0103e77e74650b9117455de9\",\"resolved_bindings\":{\"delegation_contract\":\"sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134\",\"mandatory_floor\":{\"delegation\":\"sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134\",\"mandatory_assertion_ids\":[\"a1\"]},\"repository_authority_declaration\":\"sha256:0c9846c7a4c7e568b91855cbd3e45ec4c636bc97ce8b3dc4ec52aef011a7c789\",\"transform_registrations\":[\"sha256:cb3a7f833011e7c58bbc5eb079e4fcb6bae555766f706703384600ebffba7e43\"],\"verifier_registrations\":[\"sha256:085162bb5f5f49ba655dde0e35cd607696c31ef6ced789c7c37f3575b1757db3\",\"sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c\"]},\"retry_policy\":{\"max_retries\":2},\"reuse_policy\":{\"mode\":\"NEVER\"},\"role_transforms\":{\"builder\":\"identity-projection\"}}",
+    "canonical_record_payload_sha256": "sha256:8b0714095dfeb41898d189e601ea242718dfb6153342c82bcd49af044743308e",
+    "canonical_record_preimage": "{\"authored_by\":\"planner\",\"contract_digest\":\"sha256:10346bc5332c19ce54ddbe789bac52643a7f087f4e929a8f8e11607bb15225b6\",\"delegation_id\":\"dg_000000000000000000000000000000a1\",\"force_new_sequence\":false,\"frozen_utc\":\"2026-11-08T22:00:00.000Z\",\"revision\":1,\"task_contract_id\":\"tc_0123456789abcdef0123456789abcdef\"}",
+    "canonical_requirement_preimage": "{\"acceptance_assertions\":{\"ids_and_environment_constraints\":[{\"assertion_id\":\"a1\",\"environment_constraint\":{\"interpreter\":{\"implementations\":[\"cpython\"],\"versions\":[\"3.12.4\"]}},\"mode\":\"DETERMINISTIC\",\"verifier_id\":\"registry-checker\"},{\"assertion_id\":\"a2\",\"mode\":\"DETERMINISTIC\",\"verifier_id\":\"vector-checker\"}]},\"allowed_scope\":{\"artifact_paths\":[\"artifacts/ch1\"],\"paths\":[\"docs/architecture/chapter1\"]},\"finalization_class\":\"SOURCE_MODIFYING\",\"objective\":\"Produce the Chapter 1 golden vectors and prove the identity tiers.\",\"source_domain\":{\"authority_location\":\"REMOTE\",\"repository_id\":\"autobot\",\"target_ref\":\"refs/heads/main\"},\"specification_inputs\":{\"name_to_exact_byte_sha256\":{\"chapter1-brief.md\":\"sha256:65ad744335a3eb7d0cad1dede77d31c9159e1a22a9eb253019644a9747b35623\"}}}",
+    "contract_digest": "sha256:10346bc5332c19ce54ddbe789bac52643a7f087f4e929a8f8e11607bb15225b6",
+    "disposition": "executable",
+    "eligibility": "AUTOMATIC",
+    "record_hash": "sha256:07acf0d6eba35663d9f2e506255ebcedfbc4f5332994cd1dd3c49c53852b9a3c",
+    "requirement_digest": "sha256:c7ca0e44488dd703e09a239cb143d2ab740bc99c0103e77e74650b9117455de9"
+  },
+  "V-B": {
+    "disposition": "executable",
+    "expected": "same/same/same",
+    "holds": true
+  },
+  "V-C": {
+    "contract_digest": "sha256:4e5d6cab257fc07f6a2c9c6c5ab15d58eca8a1e8706dfa1dba49345b30db349c",
+    "disposition": "executable",
+    "expected": "same/different/different",
+    "record_hash": "sha256:e72df293173868f8ad7295779e57ecf9f44891d4548bea409b807f328c1254e3",
+    "requirement_digest": "sha256:c7ca0e44488dd703e09a239cb143d2ab740bc99c0103e77e74650b9117455de9"
+  },
+  "V-D": {
+    "contract_digest": "sha256:17aac970d1938491945f626a4e34b3be0b78368c10f3b7a415a6b9b0bd6834e6",
+    "disposition": "executable",
+    "expected": "different/different/different",
+    "record_hash": "sha256:c7b399ab4212ccaeceb07e5eb4416a39f1472171866a55b85dc7a4d722e0bda6",
+    "requirement_digest": "sha256:684f2cc1f58b86b028b5154a7f6b16235405eb97c38fdcd17238c9174fce355a"
+  },
+  "V-E": {
+    "contract_digest": "sha256:10346bc5332c19ce54ddbe789bac52643a7f087f4e929a8f8e11607bb15225b6",
+    "disposition": "executable",
+    "expected": "same/same/different",
+    "record_hash": "sha256:ad82e8e3127c6e8bc826787bae94c7b51327e5cfb27e370791c24d2791111b35",
+    "requirement_digest": "sha256:c7ca0e44488dd703e09a239cb143d2ab740bc99c0103e77e74650b9117455de9"
+  },
+  "V-F": {
+    "contract_digest": "sha256:baf5dc4faddae3f99e2829100fdb217cf50bc4e246edd4291589b7cb93bd3504",
+    "disposition": "executable",
+    "expected": "same/different/different",
+    "record_hash": "sha256:b0d3ea91e611bc0b8593650b695a17ecd6f63fe3b71f7cf4da8111b22128e57e",
+    "requirement_digest": "sha256:c7ca0e44488dd703e09a239cb143d2ab740bc99c0103e77e74650b9117455de9"
+  },
+  "V-G": {
+    "contract_digest": "sha256:10346bc5332c19ce54ddbe789bac52643a7f087f4e929a8f8e11607bb15225b6",
+    "disposition": "executable",
+    "expected": "same/same/same",
+    "note": "resolution_path is no field; the identical payload resolved from two machine paths recomputes identical digests",
+    "record_hash": "sha256:07acf0d6eba35663d9f2e506255ebcedfbc4f5332994cd1dd3c49c53852b9a3c",
+    "requirement_digest": "sha256:c7ca0e44488dd703e09a239cb143d2ab740bc99c0103e77e74650b9117455de9"
+  },
+  "V-H": {
+    "contract_digest": "sha256:3132b267c8ef4e0660e8306486374c93b7d14168cc4d8c23f24b609a7bc53860",
+    "disposition": "executable",
+    "expected": "different/different/different",
+    "record_hash": "sha256:edfab3e6eb4e1b4baa9139f341332039070ec8602dadca3802e8d87606ca49fa",
+    "requirement_digest": "sha256:5a4623e8f3e7ab2708f008fce4d1f0a9aa4d32182c37587a5273b52e975a6f05"
+  },
+  "V-I": {
+    "code": "ERR_SET_ORDER",
+    "disposition": "rejection"
+  },
+  "V-J": {
+    "code": "ERR_UNKNOWN_FIELD",
+    "disposition": "rejection"
+  },
+  "V-K": {
+    "code": "ERR_UNSUPPORTED_VERSION",
+    "disposition": "rejection",
+    "malformed_code": "ERR_MALFORMED_VERSION"
+  },
+  "V-L": {
+    "as_delegation_contract": "sha256:da78630ba6858201e42a455c2083dc86a234c59fc58210e2b4f74d671c48ff86",
+    "as_repository_authority_declaration": "sha256:201c2ecc78d851dcf268288c32d6b48fe60e03452eb0c1cca1d8d64c73cb493b",
+    "disposition": "executable",
+    "payload_canonical": "{\"kind\":\"neutral\",\"schema_version\":\"v1\"}"
+  },
+  "V-M": {
+    "contract_digest": "sha256:b19075209ca1fe8c83cff4faf197337b004294b1424b8d9c82ec01664da2cb8d",
+    "disposition": "executable",
+    "expected": "different/different/different",
+    "record_hash": "sha256:1428c3c69aaf32db9e6152fb31434b272399e3d0886cb094e4d6fb6ff4528e1d",
+    "requirement_digest": "sha256:18324e868e9f8c4bc997bb178c72e4401ad4167f227bb07171f6d470b0e5c0ea"
+  },
+  "V-N": {
+    "contract_digest": "sha256:8d894bcb988a6161dafbaa23a6218642f6916dbc4e4f4fac18908b4d59ba5c02",
+    "disposition": "executable",
+    "expected": "same/different/different",
+    "record_hash": "sha256:685a5ee8e702e05a29043ad032fac99e71fe89db0cab9e0cdd6e2f59831296fd",
+    "requirement_digest": "sha256:c7ca0e44488dd703e09a239cb143d2ab740bc99c0103e77e74650b9117455de9"
+  },
+  "V-O": {
+    "contract_digest": "sha256:10346bc5332c19ce54ddbe789bac52643a7f087f4e929a8f8e11607bb15225b6",
+    "disposition": "executable",
+    "expected": "same/same/different",
+    "record_hash": "sha256:09ec204c17f54822deba02954fabd2ad9b939c2d6b23be9df4c764d5df4f788c",
+    "requirement_digest": "sha256:c7ca0e44488dd703e09a239cb143d2ab740bc99c0103e77e74650b9117455de9"
+  },
+  "V-P": {
+    "contract_digest": "sha256:c0448d83e97ed8f13498c5ff9412a84b7d1ae25d120ffb13adb7470b3e84d857",
+    "disposition": "executable",
+    "expected": "same/different/different",
+    "record_hash": "sha256:3582077761c8f92ca5cacaa10fa47ac3f801bef0ce37547b5a72e9fcbe968c83",
+    "requirement_digest": "sha256:c7ca0e44488dd703e09a239cb143d2ab740bc99c0103e77e74650b9117455de9"
+  },
+  "V-Q": {
+    "code": "SEM-09",
+    "disposition": "rejection",
+    "impossibility": "delegation_id is a consistency-constrained copy of the bound record's value (D-44): any payload where they differ is rejected, and the property test varies the id over random values with the binding fixed — none admits. The pair cannot exist."
+  },
+  "V-R": {
+    "contract_digest": "sha256:52f53d9046c771fc34d505a5e2aff273f38415284fe28b1a5afd0b9805874bde",
+    "disposition": "executable",
+    "expected": "same/different/different",
+    "record_hash": "sha256:d162ef82ed07c3278a3f1fe2facaae67494167f446fd42ce8e5399a0fab85d95",
+    "requirement_digest": "sha256:c7ca0e44488dd703e09a239cb143d2ab740bc99c0103e77e74650b9117455de9"
+  },
+  "V-S": {
+    "code": "SEM-01",
+    "disposition": "rejection"
+  },
+  "actual_verification_environment_hash": "sha256:a9c7019c66173ebcc40f439a402218ad8b3e4329c8b933544405da6c64b5d050",
+  "artifact_roots": {
+    "transform_identity_v1": "sha256:fc5ecb91ae0ed50fc0a2021fb52bbcd8876abaeb07afd78e2d9e44c9577bcc5e",
+    "verifier_checker_v1": "sha256:2ee98fc7a9a8e30f506bfd7e4b359db15478b1cc8c28d3f02228501fe2834058"
+  },
+  "content_addresses": {
+    "checker_script_v1": "sha256:a8f87e3731ca5ba2f650f3687a52d6398fb24a74cfe552fdc1f41f2f186cdd90",
+    "va_input_crlf": "sha256:04dcab02047bb0377cad8d7724e504a44c692d5ff3e48941d6cd3799b1a3e41a",
+    "va_input_lf": "sha256:65ad744335a3eb7d0cad1dede77d31c9159e1a22a9eb253019644a9747b35623"
+  },
+  "duplicate_admission_fixture_content": "sha256:ae2605ac5552bfb290958552a5e21aa145f8b57ed4f30599a51bf59773a5069f",
+  "object_hashes": {
+    "declaration_local": "sha256:477f7452410cffc57a4ea727f967fe53ca8ad7e228be2037e500fda4a4c8de69",
+    "declaration_remote": "sha256:0c9846c7a4c7e568b91855cbd3e45ec4c636bc97ce8b3dc4ec52aef011a7c789",
+    "delegation_a": "sha256:13b4891a33e29137607f04d51f7b1c48995aac2fc1a30ae21bec0fbce28b8134",
+    "delegation_b": "sha256:db98aa2bad8adb1518182cd2744ae33dfe25b2ba61e890c1a176520042e2cf5f",
+    "transform_identity_v1": "sha256:cb3a7f833011e7c58bbc5eb079e4fcb6bae555766f706703384600ebffba7e43",
+    "transform_strict_v1": "sha256:6c3bcb9a082dd1f664f86eed3acbaf5faf81cfdde6a086707d1bb1adb187ebc5",
+    "verifier_checker_v1": "sha256:085162bb5f5f49ba655dde0e35cd607696c31ef6ced789c7c37f3575b1757db3",
+    "verifier_checker_v2": "sha256:de0f7ea9aaa9492db550da0a1e5293f1c52cc1bc396b4fb5bcba553605a91d71",
+    "verifier_llm_v1": "sha256:88d4a6576f8907d5060510591403903f27c376fd301bfe2d5d4b405b6571febe",
+    "verifier_vector_v1": "sha256:71a01c779b58558526ccbe73763526783a1f25be7a94a73228bfe002a8b4d23c"
+  },
+  "schema": "autobot-ch1b-golden/v1"
+}

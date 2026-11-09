@@ -1,0 +1,43 @@
+{
+  "schema": "autobot-ch1b-vectors-resolution/v1",
+  "rule": "The final disposition of every Phase A vector (V-A..V-S), predicate test (P-1, P-2) and the Chapter 1 journal-chain test (JH-1), under decisions D-19..D-61. Dispositions: executable (frozen canonical bytes and digests in vectors/golden/golden_digests.json, produced by gen_goldens.py and re-verified every run), rejection (the payload is refused with the named code; equally executable), outcome (a recognition or predicate outcome, not a digest). No Phase A vector is deleted; V-Q's rejection carries its mechanical impossibility proof. Couplings K-1..K-10: every 'pending' coupling is now decided — K-5 and K-10 by D-44 and D-54 — and each coupled fixture satisfies its couplings as Phase A recorded.",
+  "fixture_source": "harness/fixtures.py (constants only); payload copies in vectors/fixtures/",
+  "unblocked_by": {
+    "V-A": ["D-56 (U-10)", "D-22 (U-22)", "D-23 (U-23)", "D-25 (U-25)", "D-26 (U-26)", "D-31 (U-29)", "D-39 (U-33)", "D-42 (U-35)", "D-46 (U-38)", "D-52 (U-49)"],
+    "V-I": ["D-25 (U-25)"],
+    "V-J": ["D-36 (U-32)"],
+    "V-K": ["D-34 (U-31)", "D-35 (U-45)"],
+    "V-L": ["D-29 (U-28)"],
+    "V-Q": ["D-44 (U-37)"],
+    "P-1": ["D-26 (U-26)", "D-44 (U-37)"],
+    "fixture_waits_for_all": ["D-29 (U-28)", "D-33 (U-30)", "D-30 (U-53)"]
+  },
+  "vectors": [
+    {"id": "V-A", "disposition": "executable", "expected": "the base digests", "proof": "golden requirement/contract/record digests plus the three canonical preimages; validates, freezes (FROZEN) and derives AUTOMATIC"},
+    {"id": "V-B", "disposition": "executable", "expected": "same/same/same", "proof": "deep key reordering yields identical canonical bytes and digests under both JCS implementations"},
+    {"id": "V-C", "disposition": "executable", "expected": "same/different/different", "patch": "retry_policy.max_retries 2 to 5"},
+    {"id": "V-D", "disposition": "executable", "expected": "different/different/different", "patch": "finalization_class to READ_ONLY; target_ref and remote_verification_mode removed; finalization_requirements []; floor resolved to the delegation's READ_ONLY entry", "couplings": {"K-6": "READ_ONLY requirements fit", "K-7": "no commit or publication receipt required"}},
+    {"id": "V-E", "disposition": "executable", "expected": "same/same/different", "patch": "force_new_sequence true", "admission_outcome": "NEW_RECORD even when the ContractDigest matches a live Sequence (P-2)"},
+    {"id": "V-F", "disposition": "executable", "expected": "same/different/different", "patch": "registry-checker rebound from registration v1 to v2", "couplings": {"K-3": "every assertion verifier stays bound"}},
+    {"id": "V-G", "disposition": "executable", "expected": "same/same/same", "patch": "none: the identical payload resolved from two machine paths; resolution_path is out-of-band (identity.json exclusion)"},
+    {"id": "V-H", "disposition": "executable", "expected": "different/different/different", "patch": "the one specification input's bytes LF to CRLF (two distinct content addresses, D-31/D-42)"},
+    {"id": "V-I", "disposition": "rejection", "code": "ERR_SET_ORDER", "note": "assertions [a2, a1]: a non-canonical set order is refused, never silently re-sorted (D-25); producers build canonical payloads via the library"},
+    {"id": "V-J", "disposition": "rejection", "code": "ERR_UNKNOWN_FIELD", "note": "one undefined field; Autobot-minted objects are closed (D-36)"},
+    {"id": "V-K", "disposition": "rejection", "code": "ERR_UNSUPPORTED_VERSION", "note": "schema_version v2 is refused as authority; audit-mode parsing stays possible and grants nothing (D-34, D-35); a malformed version is the distinct ERR_MALFORMED_VERSION"},
+    {"id": "V-L", "disposition": "executable", "expected": "two digests from one byte payload", "proof": "the same canonical bytes under the DelegationContract and RepositoryAuthorityDeclaration domains hash apart (D-29)"},
+    {"id": "V-M", "disposition": "executable", "expected": "different/different/different", "patch": "REMOTE to LOCAL with the new declaration bound and LOCAL finalization requirements", "couplings": {"K-6": "requirements fit SOURCE_MODIFYING", "K-10": "target_ref equals the new declaration's canonical_ref (D-54)"}},
+    {"id": "V-N", "disposition": "executable", "expected": "same/different/different", "patch": "builder's transform identity-projection to strict-projection, registration rebound", "couplings": {"K-2": "the role's transform stays bound"}},
+    {"id": "V-O", "disposition": "executable", "expected": "same/same/different", "patch": "frozen_utc +1s (hypothetical RecordHash preimage; not an admission — P-2 governs re-admission)"},
+    {"id": "V-P", "disposition": "executable", "expected": "same/different/different", "patch": "delegation_a rebound to delegation_b (a new record of the same delegation: same delegation_id, same floor)", "couplings": {"K-5": "delegation_id unchanged by D-44 derivation", "K-8": "floor assertions already among the contract's", "K-9": "scope unchanged and containing"}},
+    {"id": "V-Q", "disposition": "rejection", "code": "SEM-09", "impossibility_proof": "delegation_id is defined as a consistency-constrained copy of the bound DelegationContract record's delegation_id (D-44). The validator rejects any payload where they differ (executable), the control with a same-id rebinding freezes (V-P), and the property test varies delegation_id over random values with the binding fixed and never admits one. The inconsistent pair is unrepresentable, which is the mechanical impossibility proof Phase A asked for."},
+    {"id": "V-R", "disposition": "executable", "expected": "same/different/different", "patch": "reuse_policy NEVER to FRESH_WITHIN 86400 seconds (D-24/D-28 structures)"},
+    {"id": "V-S", "disposition": "rejection", "code": "SEM-01", "note": "authority_location changed while the same declaration stays bound: refused at freeze (K-1, INV-45); the payload alone is self-consistent, so only the freeze check catches it"}
+  ],
+  "predicates": [
+    {"id": "P-1", "test": "CH1-scope-check", "disposition": "executable", "outcomes": {"inside_scope": "FROZEN", "outside_scope": "QUEUED_FOR_YOU", "authored_by_you_no_delegation": "FROZEN", "agent_no_delegation": "QUEUED_FOR_YOU"}, "basis": ["INV-28", "t-c02", "t-c04", "t-c05", "D-26", "D-44"]},
+    {"id": "P-2", "test": "CH1-duplicate-admission", "disposition": "executable", "outcomes": {"duplicate": "0 records, 0 sequences, mints obj-32, returns the existing record", "new_record": "1 record, 1 sequence, mints obj-04..obj-07 and obj-17; the Sequence comes from INV-40's lifecycle coupling, not a transition mint"}, "note": "the live-Sequence lookup is a stub for the Chapter 2 ledger, as Phase A recorded. Precedence (RV-57): when a payload matches a live ContractDigest and also sits outside the delegation's scope, the duplicate classification wins — INV-54 says it creates no record and no Sequence, so there is nothing for you to approve; Chapter 0 leaves t-c03 vs t-c04 unordered and this is a stated Chapter 1 reading.", "basis": ["INV-40", "INV-54", "INV-61", "t-c02", "t-c03", "t-c04"]}
+  ],
+  "chapter1_tests": [
+    {"id": "JH-1", "test": "CH1-journal-chain", "disposition": "executable", "note": "three chained TransitionRecord entry hashes; genesis omits previous (D-37); changing the predecessor changes the entry", "basis": ["D-29", "D-55", "INV-10", "obj-36"]}
+  ]
+}
