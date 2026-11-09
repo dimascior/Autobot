@@ -1,6 +1,7 @@
 {
   "schema": "autobot-ch1b-traceability/v1",
   "rule": "One row per Chapter 0 invariant (76, INV-33 replaced). owner says where the invariant's runtime proof lives: ch1 for the three inherited Chapter 1 tests (proven in this workspace), chN for the chapter whose CHn-* test invariants.json names, registry where Chapter 0's checker already proves it structurally and no runtime test is named. ch1_contribution says what Chapter 1 fixes for the invariant now — a representation, a rule, or none — so every owning chapter inherits finished forms, never open questions.",
+  "coverage": "All 76 invariants (INV-01 through INV-75, with INV-33 replaced by INV-41) have owner assignments: 4 proven in this workspace (ch1: INV-05, INV-21, INV-28, INV-40), 72 assigned to their owning runtime chapters or the registry. Every invariant has a ch1_contribution stating what Chapter 1 resolves for it — no invariant is left without a stated disposition.",
   "rows": [
     {"id": "INV-01", "owner": "ch2", "ch1_contribution": "record_hash (D-33) is the identity t-s06's CAS pins"},
     {"id": "INV-02", "owner": "ch2", "ch1_contribution": "source_state binds as digests (D-30)"},

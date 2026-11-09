@@ -7,10 +7,10 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "src"))
+sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
-from autobot_contract import CanonicalizationError, canonicalize  # noqa: E402
+from contract_library import CanonicalizationError, canonicalize  # noqa: E402
 from jcs2 import canonicalize2  # noqa: E402
 
 SEED = 20261108

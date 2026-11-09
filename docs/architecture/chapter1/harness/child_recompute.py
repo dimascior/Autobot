@@ -11,7 +11,7 @@ from pathlib import Path
 def main():
     src_dir, fixtures_dir = sys.argv[1], sys.argv[2]
     sys.path.insert(0, src_dir)
-    from autobot_contract import compute_tiers, object_hash
+    from contract_library import compute_tiers, object_hash
 
     fixtures_path = Path(fixtures_dir)
     graph = json.loads((fixtures_path / "graph.json").read_text(encoding="utf-8"))

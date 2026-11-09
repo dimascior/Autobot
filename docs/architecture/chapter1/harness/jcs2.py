@@ -1,6 +1,6 @@
 """An independent RFC 8785 (JCS) implementation for the D-58 dual-oracle.
 
-Written directly against the RFC, sharing no code with autobot_contract:
+Written directly against the RFC, sharing no code with contract_library:
 different sort-key construction (explicit UTF-16 code-unit tuples instead of
 an encode call), different escaping table construction, different traversal
 (generator-based). It must agree byte-for-byte with the library on every

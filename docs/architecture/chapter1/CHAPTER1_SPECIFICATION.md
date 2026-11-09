@@ -7,13 +7,13 @@ Chapter 0 corrections CORR-55/CORR-56. Every machine-readable registry,
 schema, golden vector and conformance suite in this tree is finished,
 self-consistent and executable. Baseline: merged main
 `5fa870d8444d20d16321be9cad78e8fadca9476e`; handoff chain ch00-phase-c →
-ch01-phase-a → ch00-amendment-01 → ch01-phase-b.
+ch01-phase-a → ch00-amendment-01 → ch01-phase-b → ch01 (unified).
 
 The registries are canonical; this prose explains them and is checked against
 them (`harness/check_chapter1.py`, run by `harness/run_all.py`). Counts this
 document commits to: 43 decisions (D-19..D-61), 76 invariants traced, 42
 object types covered, 19 vectors + 2 predicates + 1 journal test resolved,
-18 semantic rules, 10 complete v1 schemas across 6 schema files.
+19 semantic rules, 10 complete v1 schemas across 6 schema files.
 
 ## 1. Scope (D-19)
 
@@ -41,7 +41,7 @@ Canonical bytes are RFC 8785 (JCS) over a restricted value domain:
   (shorthand escapes, `\u00xx` lowercase for other controls, literal UTF-8
   otherwise).
 
-Reference implementation: `src/autobot_contract/canonical.py`; independent
+Reference implementation: `contract_library/canonical.py`; independent
 implementation: `harness/jcs2.py`; both must agree (D-58).
 
 ## 3. Identifiers (D-22, D-23, D-40)
@@ -119,7 +119,7 @@ exact bytes preserved, tolerant correlation parse, unknown fields grant
 nothing (D-38) — admission living in the ExecutionReceipt's
 admitted_witnesses section (D-21).
 
-## 7. Semantic rules (SEM-01..SEM-18)
+## 7. Semantic rules (SEM-01..SEM-19)
 
 `registries/semantic_rules.json` lists every rule the schemas cannot express,
 each with its Chapter 0 basis, enforcing function and parity test: the freeze
@@ -128,8 +128,12 @@ couplings (K-1..K-10 become SEM-01..SEM-11, including D-54's exact meaning of
 consistency that makes V-Q's object unrepresentable), the window arithmetic
 (SEM-12), derived eligibility (SEM-13, D-52), supersession provenance
 (SEM-14, D-45), artifact-root recomputation (SEM-15), nondeterministic-
-verifier ineligibility (SEM-16, D-57), kind/domain agreement (SEM-17) and
-canonical-form admission (SEM-18).
+verifier ineligibility (SEM-16, D-57), kind/domain agreement (SEM-17),
+canonical-form admission (SEM-18), and repository_id uniqueness (SEM-19,
+D-23: a Registry admission rule — the schema accepts any well-formed slug;
+a new declaration claiming an existing repository_id must come from the
+same operator, enforced by Chapter 2's `registry_admit_declaration`, with
+the parity test proving the schema alone cannot catch it).
 
 ## 8. Vectors and predicates
 
@@ -168,7 +172,7 @@ bindings on obj-25, obj-29 and obj-41 (INV-47, INV-73..INV-75).
 
 ## 11. The contract library (the typed interface)
 
-`src/autobot_contract` exposes, stdlib-only and deterministic:
+`contract_library` exposes, stdlib-only and deterministic:
 
 - `canonicalize(value) -> bytes`; `CanonicalizationError`.
 - `content_address(bytes)`, `domained_digest(domain, payload)`,
@@ -208,7 +212,12 @@ frozen inventory, the D-60 handoff chain, and this document's counts).
   open NFC vocabulary until it resolves; the enum register marks it.
 - U-01..U-05, U-07..U-09, U-11..U-17 carry forward exactly as Chapter 0
   recorded them; none blocks this surface.
-- Publication: D-19..D-61 are DECIDED (ratified 2026-11-08) and the tree is
-  frozen into `docs/architecture/chapter1/phase-b` with its handoff; the
-  commit → push → PR → merge sequence remains four separate operator
-  approvals, none given yet.
+- Publication: D-19..D-61 are DECIDED (ratified 2026-11-08); the ratified
+  tree was frozen into `docs/architecture/chapter1/phase-b` with its handoff,
+  then restructured on 2026-11-09 per the operator's specification into this
+  unified `docs/architecture/chapter1` layout (handoff `ch01.json`,
+  predecessor `ch01-phase-b.json`). The phase-b freeze is committed locally
+  as `1805347c29d7` on branch `chapter1-unified` (parent = main
+  `5fa870d8444d`, which origin still matches); the unified tree's own
+  commit → push → PR → merge remain separate operator approvals, none
+  given yet.

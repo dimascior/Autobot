@@ -11,7 +11,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-SRC = ROOT / "src" / "autobot_contract"
+SRC = ROOT / "contract_library"
 
 ALLOWED_IMPORTS = {"json", "hashlib", "re", "unicodedata", "pathlib", "copy"}
 # urllib is deliberately absent: on Python 3.8 pathlib itself imports
@@ -29,7 +29,7 @@ class TestIsolation(unittest.TestCase):
         for path in sorted(SRC.glob("*.py")):
             for module in _IMPORT_RE.findall(path.read_text(encoding="utf-8")):
                 top = module.split(".")[0]
-                if top in ("autobot_contract",) or module.startswith("."):
+                if top in ("contract_library",) or module.startswith("."):
                     continue
                 self.assertIn(top, ALLOWED_IMPORTS,
                               "%s imports %r outside the D-59 allowlist" % (path.name, module))
@@ -38,9 +38,9 @@ class TestIsolation(unittest.TestCase):
         code = (
             "import sys, json\n"
             "sys.path.insert(0, %r)\n"
-            "import autobot_contract\n"
+            "import contract_library\n"
             "mods = sorted(set(m.split('.')[0] for m in sys.modules))\n"
-            "json.dump(mods, sys.stdout)\n" % str(ROOT / "src")
+            "json.dump(mods, sys.stdout)\n" % str(ROOT)
         )
         result = subprocess.run([sys.executable, "-I", "-c", code],
                                 capture_output=True, text=True, timeout=60)

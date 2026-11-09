@@ -7,9 +7,9 @@ import copy
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from autobot_contract import content_address, object_hash, utf16_key  # noqa: E402
+from contract_library import content_address, object_hash, utf16_key  # noqa: E402
 
 # ---------------------------------------------------------------- inputs
 
@@ -40,7 +40,7 @@ def _python_closure(script_bytes):
 
 
 def _registration(kind, reg_hex, id_field, id_value, version, script, entrypoint, requirements):
-    from autobot_contract import artifact_root
+    from contract_library import artifact_root
     closure = _python_closure(script)
     return {
         "schema_version": "v1",

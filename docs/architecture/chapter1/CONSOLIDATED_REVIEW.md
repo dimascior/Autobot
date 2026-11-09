@@ -178,4 +178,36 @@ only after their chapters fix semantics, under the universal obligations in
 3. ▢ Commit → push → PR → merge: four separate authorizations, as for
    Phase C, Phase A and amendment 1 — none given yet.
 
+## 7. Post-ratification addendum (2026-11-09)
+
+Everything above is the 2026-11-08 ratification review, unchanged — its
+counts, paths and gate ids describe the freeze-time tree. After ratification,
+on your corrections and your restructure specification:
+
+- **D-51 and D-57 refinements** — normative text and reasoning only; the
+  golden digests are unchanged (byte-identical).
+- **SEM-19 added** (repository_id uniqueness is a Registry admission rule,
+  D-23, enforced by Chapter 2's `registry_admit_declaration`; the parity
+  test proves the schema accepts any well-formed slug). The suite is 48
+  tests; the checker stays 17 checks with its SEM range extended.
+- **Unified restructure**: `phase-b/` dissolved into
+  `docs/architecture/chapter1/` — `registries/`, `schemas/`, `vectors/`,
+  `contract_library/` (the package formerly at `src/autobot_contract`,
+  import name now `contract_library`), `harness/`, and the four root
+  documents; `phase-a/` is preserved as the frozen discovery record. The
+  §3 inventory and §5 path above are the freeze-time spellings.
+- The unified handoff `ch01.json` (predecessor `ch01-phase-b.json`) records
+  the restructured tree's artifact hashes; `latest.json` names it.
+- Lineage (gate 20261109-ch1u-010): the freeze-time phase-b tree and the
+  four prior handoffs are committed as `1805347c29d7` ("ch1-B: freeze
+  Chapter 1 Phase B contract surface", parent = main `5fa870d8444d`) on
+  branch `chapter1-unified`, which this checkout is on; SEM-19 is absent
+  from the committed semantic_rules.json, so the refinements and this
+  restructure are the working-tree delta the unified commit will record.
+- Re-run the whole gate any time:
+
+```bash
+python "C:\Users\dimas\swarm-coordinator\docs\architecture\chapter1\harness\run_all.py"
+```
+
 The three previously frozen phases are untouched.

@@ -1,4 +1,4 @@
-"""autobot_contract — the Chapter 1 contract library (D-19..D-61).
+"""contract_library — the Chapter 1 contract library (D-19..D-61).
 
 Deterministic representation, identity and validation for Autobot's
 protocol objects. Dependency boundary (D-59): the Python standard library

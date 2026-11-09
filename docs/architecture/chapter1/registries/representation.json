@@ -2,7 +2,7 @@
   "schema": "autobot-ch1b-representation/v1",
   "rule": "Representation coverage for all 42 Chapter 0 object types (D-19). The ten ch1_scope=required objects have complete v1 schemas here (schema_file); every other object is classified and bound: owner_chapter names the runtime chapter that must write its full schema, and obligations lists the Chapter 1 rules that schema must obey. Classifications (schema_form, authority_effect, storage, hash_form) restate the frozen Phase A inventory against amended Chapter 0; the binding model updates are recorded under amendment_updates.",
   "universal_obligations": [
-    "canonical form: D-24 integers, D-25 sets and maps, D-27 instants, D-28 windows, D-30 digest spelling, D-36 closed objects, D-37 absence by omission, D-46 NFC text",
+    "canonical form: D-24 integers, D-25 sets and maps, D-27 instants, D-28 windows, D-30 digest spelling, D-36 closed objects, D-37 absence by omission (Autobot-minted objects only; raw witnesses follow D-38), D-46 NFC text",
     "identity: D-29 domains (object hash = domain(kind) over the full payload; obj-04's is the three-tier construction, D-33)",
     "identifiers: D-22 grammars from registries/identifiers.json",
     "versioning: D-34 schema_version v1, D-35 compatibility"

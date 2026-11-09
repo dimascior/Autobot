@@ -19,7 +19,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CH1 = HERE.parent
-sys.path.insert(0, str(DEFAULT_CH1 / "src"))
+sys.path.insert(0, str(DEFAULT_CH1))
 
 CHECKS = []
 
@@ -196,7 +196,7 @@ def _tiers_match(ctx):
     """RV-54: the library's tier field tuples and the frozen V-A preimages
     must agree with Chapter 0's identity.json, not merely with each other."""
     problems = []
-    import autobot_contract.digests as digests
+    import contract_library.digests as digests
     identity = _load(ctx.repo / "docs" / "architecture" / "chapter0" / "registries" / "identity.json")
     tiers = {t["id"]: t["fields"] for t in identity["tiers"]}
     expected = {
@@ -233,7 +233,7 @@ def _tiers_match(ctx):
 @check("identifiers.grammar_sync")
 def _i_sync(ctx):
     problems = []
-    from autobot_contract import grammars
+    from contract_library import grammars
     prefixes = sorted(p for p in grammars.MINTED_PREFIXES)
     registered = sorted(i["prefix"] for i in ctx.identifiers["identifiers"] if "prefix" in i)
     if prefixes != registered:
@@ -248,8 +248,8 @@ def _i_sync(ctx):
 @check("schemas.profile_and_coverage")
 def _s_cov(ctx):
     problems = []
-    from autobot_contract import load_schemas
-    from autobot_contract.validate import KIND_TO_SCHEMA
+    from contract_library import load_schemas
+    from contract_library.validate import KIND_TO_SCHEMA
     try:
         schemas = load_schemas(ctx.ch1 / "schemas")
     except Exception as exc:
@@ -273,8 +273,8 @@ def _sem_tests(ctx):
     problems = []
     rules = ctx.semantic["rules"]
     ids = [r["id"] for r in rules]
-    if ids != ["SEM-%02d" % n for n in range(1, 19)]:
-        problems.append("semantic rule ids are not SEM-01..SEM-18")
+    if ids != ["SEM-%02d" % n for n in range(1, 20)]:
+        problems.append("semantic rule ids are not SEM-01..SEM-19")
     harness_text = "\n".join(
         p.read_text(encoding="utf-8") for p in sorted(HERE.glob("test_*.py")))
     for rule in rules:
@@ -418,11 +418,22 @@ def _h_chain(ctx):
         if payload["predecessor"]["handoff"] != "ch00-amendment-01.json" \
                 or payload["predecessor"]["sha256"] != sha("ch00-amendment-01.json"):
             problems.append("phase-b handoff predecessor mismatch")
-        if latest["latest"] != "ch01-phase-b.json" or latest["sha256"] != sha("ch01-phase-b.json"):
-            problems.append("latest.json does not name the frozen phase-b handoff with its hash")
         sidecar = handoffs / "ch01-phase-b.json.sha256"
         if not sidecar.exists() or not sidecar.read_text(encoding="utf-8").startswith(sha("ch01-phase-b.json")):
             problems.append("phase-b sidecar missing or mismatched")
+    unified = handoffs / "ch01.json"
+    if unified.exists():
+        payload = _load(unified)
+        if payload["predecessor"]["handoff"] != "ch01-phase-b.json" \
+                or payload["predecessor"]["sha256"] != sha("ch01-phase-b.json"):
+            problems.append("unified handoff predecessor mismatch")
+        if latest["latest"] != "ch01.json" or latest["sha256"] != sha("ch01.json"):
+            problems.append("latest.json does not name the unified chapter handoff with its hash")
+        sidecar = handoffs / "ch01.json.sha256"
+        if not sidecar.exists() or not sidecar.read_text(encoding="utf-8").startswith(sha("ch01.json")):
+            problems.append("unified sidecar missing or mismatched")
+    elif latest["latest"] != "ch01-phase-b.json":
+        problems.append("latest.json must name ch01-phase-b.json until the unified handoff exists")
     return problems
 
 

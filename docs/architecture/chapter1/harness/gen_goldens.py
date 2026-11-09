@@ -13,12 +13,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
 
 import fixtures  # noqa: E402
 from jcs2 import canonicalize2  # noqa: E402
-from autobot_contract import (  # noqa: E402
+from contract_library import (  # noqa: E402
     admit, canonicalize, compute_tiers, content_address, contract_preimage,
     derive_eligibility, domain_object, domained_digest, freeze_disposition,
     journal_entry_hash, load_schemas, object_hash, record_preimage,

@@ -155,8 +155,13 @@ per-class check lists, and the closed bindings on obj-25/obj-29/obj-41.
 ## Ratification record
 
 You ratified D-19..D-61 on 2026-11-08 ("Ratify and freeze"). The statuses
-are DECIDED in `registries/decisions.json` and the workspace is frozen into
+are DECIDED in `registries/decisions.json`; the workspace was frozen into
 `docs/architecture/chapter1/phase-b` with its handoff (predecessor
-ch00-amendment-01). The commit → push → PR → merge sequence remains four
-separate authorizations, exactly as Phases C/A/amendment did; none has been
-given yet, and the three previously frozen phases are untouched.
+ch00-amendment-01), then restructured on 2026-11-09 per your specification
+into the unified `docs/architecture/chapter1` layout (handoff `ch01.json`,
+predecessor `ch01-phase-b.json`), carrying your post-ratification D-51 and
+D-57 refinements and SEM-19. The phase-b freeze was committed locally as
+`1805347c29d7` on branch `chapter1-unified` (parent = main `5fa870d8444d`);
+the unified tree's own commit → push → PR → merge remain separate
+authorizations, exactly as Phases C/A/amendment did — none given yet, and
+the three previously frozen phases are untouched.

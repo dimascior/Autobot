@@ -1,4 +1,4 @@
-"""SEM-01..SEM-18 parity tests (D-43): each rule rejects a payload or
+"""SEM-01..SEM-19 parity tests (D-43): each rule rejects a payload or
 context the structural schema alone accepts. Also V-Q's property proof and
 the P-1 dispositions."""
 
@@ -10,11 +10,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
 
 import fixtures  # noqa: E402
-from autobot_contract import (  # noqa: E402
+from contract_library import (  # noqa: E402
     DigestError, derive_eligibility, freeze_disposition, load_schemas,
     object_hash, utf16_key, validate_payload,
 )
@@ -215,6 +215,17 @@ class TestPayloadRules(unittest.TestCase):
             "capability_requirements", ["cap-17", "cap-15"]))
         result = validate_payload("TaskContractRecord", record, SCHEMAS)
         self.assertIn("ERR_SET_ORDER", result.codes())
+
+    def test_sem19(self):
+        # SEM-19 parity: the structural schema accepts any valid
+        # repository_id slug; the uniqueness invariant is a Registry
+        # admission rule that the schema alone cannot express.
+        decl = _mut(G["declaration_remote"], lambda d: d.__setitem__(
+            "repository_id", "claimed-by-another"))
+        result = validate_payload("RepositoryAuthorityDeclaration", decl, SCHEMAS)
+        self.assertTrue(result.ok,
+            "Schema must accept any well-formed repository_id; "
+            "SEM-19 uniqueness is a Registry admission check, not structural")
 
 
 if __name__ == "__main__":

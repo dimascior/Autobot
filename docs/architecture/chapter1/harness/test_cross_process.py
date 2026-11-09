@@ -18,7 +18,7 @@ class TestCrossProcess(unittest.TestCase):
             (ROOT / "vectors" / "golden" / "golden_digests.json").read_text(encoding="utf-8"))
         result = subprocess.run(
             [sys.executable, "-I", str(HERE / "child_recompute.py"),
-             str(ROOT / "src"), str(ROOT / "vectors" / "fixtures")],
+             str(ROOT), str(ROOT / "vectors" / "fixtures")],
             capture_output=True, text=True, timeout=120,
         )
         self.assertEqual(result.returncode, 0, result.stderr)

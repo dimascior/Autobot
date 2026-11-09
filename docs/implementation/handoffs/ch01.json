@@ -1,0 +1,108 @@
+{
+  "schema_version": "autobot-phase-handoff.v1",
+  "chapter": "01-contract-surface",
+  "phase": "UNIFIED",
+  "phase_type": "POST-RATIFICATION REFINEMENTS / RESTRUCTURE / FREEZE",
+  "closed_date": "2026-11-09",
+  "ratification": {
+    "date": "2026-11-08",
+    "by": "you",
+    "wording": "Ratify and freeze (Phase B); unified restructure per your specification on 2026-11-09",
+    "decisions": "D-19..D-61 DECIDED; D-49 and D-50 recorded as ACCEPTED_CH0_CORRECTION (merged CORR-55, CORR-56)",
+    "post_ratification": "your two precise adjustments applied to D-51 and D-57 (normative text and reasoning; D-57's service-authority sentence made explicit), V-Q confirmed retained; SEM-19 added — repository_id uniqueness is a Registry admission rule (D-23), the parity test test_sem19 proves the schema accepts any well-formed slug — suite 47 -> 48 tests, checker stays 17 checks; golden digests byte-identical throughout"
+  },
+  "commit_status": "not committed; the unified tree is uncommitted working-tree state on chapter1-unified at 1805347c…; commit only when the user asks",
+  "repository": {
+    "remote": "github.com/dimascior/Autobot",
+    "branch": "chapter1-unified",
+    "base_commit": "1805347c29d72f183585ec15a346438fd014cdf5",
+    "base_commit_subject": "ch1-B: freeze Chapter 1 Phase B contract surface (parent 5fa870d8444d20d16321be9cad78e8fadca9476e = local main = origin/main)",
+    "artifact_root": "docs/architecture/chapter1",
+    "handoff_root": "docs/implementation/handoffs"
+  },
+  "canonical_form": "docs/architecture/chapter1: registries/*.json, schemas/*.schema.json and vectors/golden/golden_digests.json are canonical; phase-a/ is the frozen Phase A discovery record under ch01-phase-a.json; the prose and the library are checked against them by harness/run_all.py",
+  "predecessor": {
+    "handoff": "ch01-phase-b.json",
+    "sha256": "8bc1cb5ba165b872d6f2d547afca62a013fe6ed0d050b0cdca623b819cefc896",
+    "commit": "1805347c29d72f183585ec15a346438fd014cdf5",
+    "entry_evidence": "gate 20261109-ch1u-003 re-proved the phase-b tree immediately before the restructure (goldens VERIFIED, 48 tests, check_chapter1 17/17 including the four-handoff chain recomputed from bytes); gate 20261109-ch1u-010 proved the lineage: HEAD = chapter1-unified = 1805347c…, whose tree holds the 42 freeze-time phase-b files, ch01-phase-b.json (byte-identical to the predecessor hash above) and the three earlier handoffs"
+  },
+  "restructure": {
+    "specified_by": "you",
+    "date": "2026-11-09",
+    "mapping": [
+      "phase-b/registries/ -> registries/",
+      "phase-b/schemas/ -> schemas/",
+      "phase-b/vectors/ -> vectors/",
+      "phase-b/src/autobot_contract/ -> contract_library/ (the package import name is now contract_library)",
+      "phase-b/harness/ -> harness/",
+      "phase-b/{README,CHAPTER1_SPECIFICATION,DECISION_PACKAGE,CONSOLIDATED_REVIEW}.md -> chapter1 root",
+      "phase-a/ preserved unchanged as the frozen Phase A discovery record"
+    ],
+    "changed_since_phase_b_freeze": "the six registries carrying the D-51/D-57 refinements and SEM-19 (decisions, semantic_rules, identifiers, representation, review, traceability), the four root documents (refinements, SEM-19 prose, restructure annotations, the 19-rule count), contract_library/__init__.py (docstring rename), and every harness file (path re-anchoring and the contract_library import)",
+    "unchanged_since_phase_b_freeze": "vectors/golden/golden_digests.json, all four vectors/fixtures files, all six schemas, the five library modules (canonical.py, digests.py, grammars.py, schema_profile.py, validate.py), registries/enums.json and registries/vectors_resolution.json — hash-identical to ch01-phase-b.json's artifact map",
+    "note": "ch01-phase-b.json's artifact_sha256 map describes the freeze-time phase-b tree (47 tests); it remains the frozen record of the ratification state. No protocol preimage changed: canonicalization, digests, schemas, fixtures and goldens are byte-identical.",
+    "lineage_note": "gate 20261109-ch1u-010: commit 1805347c… (branch chapter1-unified, parent 5fa870d8… = origin/main) committed the freeze-time phase-b tree and all four prior handoffs; SEM-19 is absent from its semantic_rules.json, so the D-51/D-57 refinements, SEM-19 and this restructure are exactly the working-tree delta that the unified commit will record (42 renames/deletions + the unified adds + this handoff, its sidecar and latest.json)"
+  },
+  "resolves": {
+    "decisions": "none new — D-19..D-61 carry over as ratified (see ch01-phase-b.json)",
+    "unknowns_resolved": [],
+    "unknowns_left_open": "U-01..U-09, U-11..U-17, exactly as ch01-phase-b.json records them",
+    "note": "this handoff records post-ratification refinements and a layout unification, not new decisions"
+  },
+  "acceptance": {
+    "gate": "harness/run_all.py: golden regeneration must be byte-identical, every unittest suite must pass, check_chapter1 must pass",
+    "staging_evidence": "gates 20261109-ch1u-003 (pre-restructure baseline: 48 tests, 17/17, goldens VERIFIED), 004/005 (moves and final layout, remnants listed before removal), 006 (unified tree: 48 tests, 0 failures, 0 errors; 17/17; goldens VERIFIED), 007 (artifact hashes computed from the passing tree)",
+    "results": "48 tests, 0 failures; check_chapter1 17/17; goldens VERIFIED byte-identical across the refinements, the package rename and the restructure",
+    "final_run": "the acceptance gate re-runs after this handoff, its sidecar and latest.json are written; that run's evidence lives in the 20261109-ch1u gate series"
+  },
+  "artifact_sha256": {
+    "README.md": "6ba19ae6a536f94ae5917b6cc8218afc54fcd4206dcbe02468c0219d78b039a2",
+    "CHAPTER1_SPECIFICATION.md": "7bcc251ad39767fad482b17ce69d91464e3a1c4b554a22cfc1745f90d0d764f0",
+    "DECISION_PACKAGE.md": "b88cd2cbda47b8a1c91fd3e0dd0359dc9a7301769eb8fafdafdcb017eb4cf36c",
+    "CONSOLIDATED_REVIEW.md": "b352c58c7b47968aeb154fbc8544598fa3799dd1457072a97bc553fb7ad7d3eb",
+    "registries/decisions.json": "2e908985e777e66a2fc043aa4398fede63328f7f5185ffc0d9de602ede0b9651",
+    "registries/enums.json": "d63a4babfa2fb786751ac0ff4521d73fe7c01db4f57ebf59f367980244b98e0f",
+    "registries/identifiers.json": "68ffabbc4bdddfe8a7486bf59303662c69738d7c0d24db67fd93eff7ec879292",
+    "registries/semantic_rules.json": "65ee8de1effce8f7b4b3a9f78dbf6dbf1f68fccd4d6e6df58064168f2f134c5a",
+    "registries/vectors_resolution.json": "ffb9d43e8e78b0e4d58021942b008ff7eb17836b42adfbcd1582a19d11a3f006",
+    "registries/representation.json": "1f0b058948c617a2342f211a52a30fe12e894d234fcb2897e757d61bf0c02a90",
+    "registries/traceability.json": "72a757b7e95031d61cfbc392386263f7cd35a92b78fcec2fe3b711d7e9245767",
+    "registries/review.json": "5ea4757e8bc7c38880eeb6359ce697f3f838fe05591d4e4e1bc8aeb98861fd69",
+    "schemas/task_contract_record.schema.json": "b5b75f43c59208c05d849e21774310701bae075e9cf2dc1a9a80877fb8f0c488",
+    "schemas/delegation_contract.schema.json": "9b97d48c035f75ea824c8a2d696004f02ed7e1c96a3a56331e8dbd574478dd84",
+    "schemas/repository_authority_declaration.schema.json": "77becc7e5076e9eb38922953a50c8ee92da7b72fd23f0fbb3ddc0c9c77d164bb",
+    "schemas/registration.schema.json": "c63bf5b639c99601ed8c61337ec57eeb18ee772ba20696d1e9e70766540d4707",
+    "schemas/actual_verification_environment.schema.json": "48d633ba2199fce19a62f22d6e5a4e7fa3c3a9f8eacda5dd5aa65f0fbd04bf0f",
+    "schemas/duplicate_admission_record.schema.json": "36b83f3bc0976be8e98c9cdde975d045eb722e13601a7ffe705115201d47c51b",
+    "contract_library/__init__.py": "28092a66a0b2c689188c19375463f0e1f02bfdb4d9c3adc513588d3ba03a876f",
+    "contract_library/canonical.py": "240ae20a70ec73d5688b339650a524162c4c5fa36fe230c112451157728a1686",
+    "contract_library/grammars.py": "f486cf17c4008b36996a809d6253154e77052d08a75f63eacc4934e6f1b36509",
+    "contract_library/digests.py": "de424d0d502b52d04c63ab39ec7f1de4d2cb43a7d0dc1f4b449a33a2d5c51db7",
+    "contract_library/schema_profile.py": "0854660276f9b20f48aeb2ed8c3ac80ba51d22903344f417b2ab9ba5519e4fe5",
+    "contract_library/validate.py": "c4479dd4eca569ae96650cbde3eb724bbfe35c9c51a0420aaa25fb0b4409ab0b",
+    "harness/fixtures.py": "b3a4643305b7b5d5030d4b741cc74cd8937ebc503271a1a28f3d4e5e6224924b",
+    "harness/jcs2.py": "ecf447ab4063e67b791a294a85ef7bea6056c1c8007617e37aad736d646d5563",
+    "harness/gen_goldens.py": "bb1fac7cadf4e98d6f8e35eedb80a9e3d0301353c6e6fa75c1cbcb2780c3c268",
+    "harness/run_all.py": "532bb5f746b3f65677f8c33312f179391d82dc3a0a7c228d69a3d418f6ae3c83",
+    "harness/check_chapter1.py": "dddc6fde77eb49eb01f4f51e44f62ef240aede07ded9cd3de06fdb04be2d1b12",
+    "harness/child_recompute.py": "aac7e964e04125210b9db001a64b9f1249e6c54b831063f535859e29a075a930",
+    "harness/test_canonicalization.py": "14bf170de7612e06ff901ce90018d2620b59789aa4a928ebf0aeb3169b5fd519",
+    "harness/test_schemas.py": "4372f3f8bde454769a22b9021063fe13f357815799ce68a7876e5167b1986e2f",
+    "harness/test_semantic_rules.py": "3e6657388cc4260d5a5b9065350a5bce075dc6035c30a1bdd04680409e391d85",
+    "harness/test_vectors.py": "f3f306b021a7bc1aff0995135c7419eba0d83175165b3c252af7d40f234af8d7",
+    "harness/test_cross_process.py": "479f5b3b2f3e074cc60dee085a1409f87aa8c945206e8b75b8ce4627dcc608f2",
+    "harness/test_isolation.py": "2f0e45b8e4fb22e2e54b12e1b625efd2bb45805a6311e51178db0501b2226072",
+    "harness/test_checker_negative.py": "e6c6dd83b6d90068c6f02e6fed8e96b110073d49d10fcfa436ab60bc8d4fd920",
+    "vectors/golden/golden_digests.json": "3decd19b9c0db1635d54df86561dac9664c8880a09c4a62be6df1003116eddfe",
+    "vectors/fixtures/graph.json": "6c4da20aebf3258bde9d4fbc24f4e22ed0cbc40b770e1c9eb57e684062d9cc77",
+    "vectors/fixtures/va_record.json": "eb1f5b327e24c92f10cf65c306454c4008dd7b3e667490ad810fbd4f5308750c",
+    "vectors/fixtures/vector_payloads.json": "f249d18b52a154820cd21b20fbefb78439a4b609b6925b46fd42634101a10586",
+    "vectors/fixtures/env_fixture.json": "8edba428ee89795133c65436ca51aa28fa4e7eb2e754e57dd1dd51434a74f6b7"
+  },
+  "next_phase_prerequisites": [
+    "commit, push, PR and merge as four separate operator authorizations",
+    "Chapter 2 (Sequencer and ledger) consumes contract_library and replaces admit()'s live-Sequence stub",
+    "entry check per the established chain pattern before any Chapter 2 work"
+  ]
+}

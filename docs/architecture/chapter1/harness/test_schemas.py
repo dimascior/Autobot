@@ -10,11 +10,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
 
 import fixtures  # noqa: E402
-from autobot_contract import load_schemas, validate_payload  # noqa: E402
+from contract_library import load_schemas, validate_payload  # noqa: E402
 
 SCHEMAS = load_schemas(ROOT / "schemas")
 G, HASHES = fixtures.build_graph()
@@ -42,7 +42,7 @@ class TestPositives(unittest.TestCase):
         self.assertTrue(validate_payload(env["kind"], env, SCHEMAS).ok)
 
     def test_duplicate_admission_validates(self):
-        from autobot_contract import canonicalize, compute_tiers
+        from contract_library import canonicalize, compute_tiers
         rd, cd, rh = compute_tiers(BASE)
         dup = fixtures.duplicate_admission_fixture(rh, cd, canonicalize(BASE))
         self.assertTrue(validate_payload(dup["kind"], dup, SCHEMAS).ok)
