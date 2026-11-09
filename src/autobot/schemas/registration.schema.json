@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "autobot/object/Registration/v1",
+  "title": "VerifierRegistration / TransformRegistration (obj-03): one object type, kind-discriminated (D-20)",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["schema_version", "kind", "registration_id", "verifier_id", "version", "closure", "artifact_root", "entrypoint", "execution_requirements", "registered_by", "registered_utc"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"const": "v1"},
+        "kind": {"const": "VerifierRegistration"},
+        "registration_id": {"type": "string", "pattern": "^rg_[0-9a-f]{32}$"},
+        "verifier_id": {"$ref": "#/$defs/name_id"},
+        "version": {"$ref": "#/$defs/token"},
+        "closure": {"$ref": "#/$defs/closure"},
+        "artifact_root": {"$ref": "#/$defs/digest"},
+        "entrypoint": {"$ref": "#/$defs/rel_path"},
+        "execution_requirements": {"type": "array", "items": {"$ref": "#/$defs/requirement"}},
+        "registered_by": {"$ref": "#/$defs/principal"},
+        "registered_utc": {"$ref": "#/$defs/instant"}
+      }
+    },
+    {
+      "type": "object",
+      "required": ["schema_version", "kind", "registration_id", "transform_id", "version", "closure", "artifact_root", "entrypoint", "execution_requirements", "registered_by", "registered_utc"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"const": "v1"},
+        "kind": {"const": "TransformRegistration"},
+        "registration_id": {"type": "string", "pattern": "^rg_[0-9a-f]{32}$"},
+        "transform_id": {"$ref": "#/$defs/name_id"},
+        "version": {"$ref": "#/$defs/token"},
+        "closure": {"$ref": "#/$defs/closure"},
+        "artifact_root": {"$ref": "#/$defs/digest"},
+        "entrypoint": {"$ref": "#/$defs/rel_path"},
+        "execution_requirements": {"type": "array", "items": {"$ref": "#/$defs/requirement"}},
+        "registered_by": {"$ref": "#/$defs/principal"},
+        "registered_utc": {"$ref": "#/$defs/instant"}
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "instant": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"},
+    "name_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "principal": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "token": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$"},
+    "rel_path": {"type": "string", "pattern": "^[^\\\\/\\s][^\\\\]*$"},
+    "requirement": {"type": "string", "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"},
+    "closure": {
+      "oneOf": [
+        {
+          "type": "object", "required": ["kind", "executable_sha256"], "additionalProperties": false,
+          "properties": {"kind": {"const": "native"}, "executable_sha256": {"$ref": "#/$defs/digest"}}
+        },
+        {
+          "type": "object", "required": ["kind", "script_sha256", "interpreter_id", "dependency_lock_sha256"], "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "python"},
+            "script_sha256": {"$ref": "#/$defs/digest"},
+            "interpreter_id": {"$ref": "#/$defs/token"},
+            "dependency_lock_sha256": {"$ref": "#/$defs/digest"}
+          }
+        },
+        {
+          "type": "object", "required": ["kind", "manifest_sha256"], "additionalProperties": false,
+          "properties": {"kind": {"const": "packaged"}, "manifest_sha256": {"$ref": "#/$defs/digest"}}
+        },
+        {
+          "type": "object", "required": ["kind", "image_digest"], "additionalProperties": false,
+          "properties": {"kind": {"const": "packaged"}, "image_digest": {"$ref": "#/$defs/digest"}}
+        }
+      ]
+    }
+  }
+}

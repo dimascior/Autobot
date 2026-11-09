@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "autobot/object/TaskContractRecord/v1",
+  "title": "TaskContractRecord (obj-04) with embedded SpecificationInputs (obj-05), RoleTransform (obj-06), DependencyEdge (obj-07) and VerificationEnvironmentConstraint (obj-17)",
+  "type": "object",
+  "required": [
+    "schema_version", "kind",
+    "objective", "finalization_class", "source_domain", "specification_inputs", "allowed_scope", "acceptance_assertions",
+    "retry_policy", "repair_policy", "reuse_policy", "effect_policy", "finalization_requirements",
+    "capability_requirements", "role_transforms", "completion_policies", "evidence_requirements",
+    "predecessors", "resolved_bindings",
+    "task_contract_id", "revision", "authored_by", "frozen_utc", "force_new_sequence"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "kind": {"const": "TaskContractRecord"},
+
+    "objective": {"type": "string", "pattern": "^\\S(?:[\\s\\S]*\\S)?$"},
+    "finalization_class": {"enum": ["READ_ONLY", "SOURCE_MODIFYING"]},
+    "source_domain": {
+      "type": "object",
+      "required": ["repository_id", "authority_location"],
+      "additionalProperties": false,
+      "properties": {
+        "repository_id": {"$ref": "#/$defs/name_id"},
+        "authority_location": {"enum": ["LOCAL", "REMOTE"]},
+        "target_ref": {"$ref": "#/$defs/ref_name"}
+      }
+    },
+    "specification_inputs": {
+      "type": "object",
+      "required": ["name_to_exact_byte_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "name_to_exact_byte_sha256": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/name_id"},
+          "additionalProperties": {"$ref": "#/$defs/digest"}
+        }
+      }
+    },
+    "allowed_scope": {
+      "type": "object",
+      "required": ["paths", "artifact_paths"],
+      "additionalProperties": false,
+      "properties": {
+        "paths": {"type": "array", "items": {"$ref": "#/$defs/scope_path"}},
+        "artifact_paths": {"type": "array", "items": {"$ref": "#/$defs/scope_path"}}
+      }
+    },
+    "acceptance_assertions": {
+      "type": "object",
+      "required": ["ids_and_environment_constraints"],
+      "additionalProperties": false,
+      "properties": {
+        "ids_and_environment_constraints": {
+          "type": "array", "minItems": 1,
+          "items": {"$ref": "#/$defs/assertion"}
+        }
+      }
+    },
+
+    "retry_policy": {
+      "type": "object", "required": ["max_retries"], "additionalProperties": false,
+      "properties": {"max_retries": {"$ref": "#/$defs/uint"}}
+    },
+    "repair_policy": {
+      "type": "object", "required": ["max_repairs"], "additionalProperties": false,
+      "properties": {"max_repairs": {"$ref": "#/$defs/uint"}}
+    },
+    "reuse_policy": {
+      "type": "object", "required": ["mode"], "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["NEVER", "FRESH_WITHIN"]},
+        "freshness_seconds": {"$ref": "#/$defs/uint"}
+      }
+    },
+    "effect_policy": {
+      "type": "object",
+      "required": ["effect_intent_ttl_seconds", "effect_hard_timeout_seconds"],
+      "additionalProperties": false,
+      "properties": {
+        "effect_intent_ttl_seconds": {"$ref": "#/$defs/uint"},
+        "effect_hard_timeout_seconds": {"$ref": "#/$defs/uint"}
+      }
+    },
+    "finalization_requirements": {
+      "type": "array",
+      "items": {"enum": ["LOCAL_CANONICAL_COMMIT", "SEQUENCE_REF_COMMIT", "STAGING_PUBLICATION", "REMOTE_VERIFICATION", "CANONICAL_PUBLICATION", "POST_PUBLICATION_OBSERVATION"]}
+    },
+    "remote_verification_mode": {"enum": ["PRE_PUBLICATION_REMOTE_VERIFICATION", "POST_PUBLICATION_OBSERVATION"]},
+    "capability_requirements": {"type": "array", "items": {"type": "string", "pattern": "^cap-[0-9]{2}$"}},
+    "role_transforms": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/name_id"},
+      "additionalProperties": {"$ref": "#/$defs/name_id"}
+    },
+    "completion_policies": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/name_id"},
+      "additionalProperties": {
+        "type": "object", "required": ["required", "success_outcomes"], "additionalProperties": false,
+        "properties": {
+          "required": {"type": "boolean"},
+          "success_outcomes": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"}}
+        }
+      }
+    },
+    "evidence_requirements": {
+      "type": "array",
+      "items": {"enum": ["EXECUTION_LIFECYCLE", "COMMAND_GOVERNANCE", "SESSION_TRANSCRIPT", "REMOTE_CHECK"]}
+    },
+    "predecessors": {"type": "array", "items": {"$ref": "#/$defs/dependency_edge"}},
+    "resolved_bindings": {
+      "type": "object",
+      "required": ["repository_authority_declaration", "verifier_registrations", "transform_registrations"],
+      "additionalProperties": false,
+      "properties": {
+        "repository_authority_declaration": {"$ref": "#/$defs/digest"},
+        "verifier_registrations": {"type": "array", "items": {"$ref": "#/$defs/digest"}},
+        "transform_registrations": {"type": "array", "items": {"$ref": "#/$defs/digest"}},
+        "delegation_contract": {"$ref": "#/$defs/digest"},
+        "mandatory_floor": {
+          "type": "object",
+          "required": ["delegation", "mandatory_assertion_ids"],
+          "additionalProperties": false,
+          "properties": {
+            "delegation": {"$ref": "#/$defs/digest"},
+            "mandatory_assertion_ids": {"type": "array", "items": {"$ref": "#/$defs/name_id"}}
+          }
+        }
+      }
+    },
+
+    "task_contract_id": {"type": "string", "pattern": "^tc_[0-9a-f]{32}$"},
+    "revision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "authored_by": {"$ref": "#/$defs/principal"},
+    "frozen_utc": {"$ref": "#/$defs/instant"},
+    "delegation_id": {"type": "string", "pattern": "^dg_[0-9a-f]{32}$"},
+    "supersession_provenance": {
+      "type": "object",
+      "required": ["supersedes_record", "authorized_by"],
+      "additionalProperties": false,
+      "properties": {
+        "supersedes_record": {"$ref": "#/$defs/digest"},
+        "authorized_by": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "force_new_sequence": {"type": "boolean"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "instant": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"},
+    "name_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "principal": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "ref_name": {"type": "string", "pattern": "^refs/[^\\\\ ~^:?*\\[]+$"},
+    "scope_path": {"type": "string", "pattern": "^(\\.|[^\\\\/\\s][^\\\\]*)$"},
+    "uint": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "assertion": {
+      "type": "object",
+      "required": ["assertion_id", "verifier_id", "mode"],
+      "additionalProperties": false,
+      "properties": {
+        "assertion_id": {"$ref": "#/$defs/name_id"},
+        "verifier_id": {"$ref": "#/$defs/name_id"},
+        "mode": {"enum": ["DETERMINISTIC", "HUMAN_ATTESTED"]},
+        "environment_constraint": {"$ref": "#/$defs/environment_constraint"}
+      }
+    },
+    "token": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$"},
+    "environment_constraint": {
+      "type": "object", "minProperties": 1, "additionalProperties": false,
+      "properties": {
+        "interpreter": {
+          "type": "object", "minProperties": 1, "additionalProperties": false,
+          "properties": {
+            "implementations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/token"}},
+            "versions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/token"}}
+          }
+        },
+        "platform": {
+          "type": "object", "minProperties": 1, "additionalProperties": false,
+          "properties": {
+            "os": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/token"}},
+            "architectures": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/token"}}
+          }
+        },
+        "tools": {
+          "type": "object", "minProperties": 1,
+          "propertyNames": {"$ref": "#/$defs/name_id"},
+          "additionalProperties": {
+            "type": "object", "required": ["versions"], "additionalProperties": false,
+            "properties": {"versions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/token"}}}
+          }
+        },
+        "env": {
+          "type": "object", "minProperties": 1,
+          "propertyNames": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"},
+          "additionalProperties": {"type": "string", "pattern": "^$|^\\S(?:[^\\n]*\\S)?$"}
+        }
+      }
+    },
+    "dependency_edge": {
+      "type": "object",
+      "required": ["edge_id", "edge_kind", "target", "observation_requirement"],
+      "additionalProperties": false,
+      "properties": {
+        "edge_id": {"$ref": "#/$defs/name_id"},
+        "edge_kind": {"enum": ["RECORD", "CONTRACT", "REQUIREMENT"]},
+        "target": {"$ref": "#/$defs/digest"},
+        "observation_requirement": {"enum": ["ACCEPTANCE", "ACCEPTANCE_FRESH"]}
+      }
+    }
+  }
+}

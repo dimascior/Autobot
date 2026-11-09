@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "autobot/object/DuplicateAdmissionRecord/v1",
+  "title": "DuplicateAdmissionRecord (obj-32): the Registry's journal fact for a duplicate admission (INV-61, t-c03)",
+  "type": "object",
+  "required": ["schema_version", "kind", "duplicate_admission_id", "payload_contract_digest", "existing_record_hash", "payload_content_address", "submitted_by", "received_utc"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "kind": {"const": "DuplicateAdmissionRecord"},
+    "duplicate_admission_id": {"type": "string", "pattern": "^da_[0-9a-f]{32}$"},
+    "payload_contract_digest": {"$ref": "#/$defs/digest"},
+    "existing_record_hash": {"$ref": "#/$defs/digest"},
+    "payload_content_address": {"$ref": "#/$defs/digest"},
+    "submitted_by": {"$ref": "#/$defs/principal"},
+    "received_utc": {"$ref": "#/$defs/instant"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "instant": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"},
+    "principal": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}
+  }
+}

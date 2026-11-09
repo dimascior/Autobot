@@ -7,3 +7,7 @@ docs/ARCHITECTURE.md text=auto eol=lf
 # Chapter 1 Phase A's files are hashed in its handoff, ch01-phase-a.json, so they check out with LF
 # for the same reason.
 docs/architecture/chapter1/** text=auto eol=lf
+# Chapter 2's runtime mirrors must stay byte-identical to the frozen Chapter 1
+# artifacts above (D-65), so they check out with the same LF bytes everywhere.
+src/contract_library/** text=auto eol=lf
+src/autobot/schemas/** text=auto eol=lf

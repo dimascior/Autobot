@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "autobot/object/RepositoryAuthorityDeclaration/v1",
+  "title": "RepositoryAuthorityDeclaration (obj-02)",
+  "type": "object",
+  "required": ["schema_version", "kind", "repository_id", "authority_location", "canonical_ref", "publication_mode", "authored_by", "declared_utc"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "kind": {"const": "RepositoryAuthorityDeclaration"},
+    "repository_id": {"$ref": "#/$defs/name_id"},
+    "authority_location": {"enum": ["LOCAL", "REMOTE"]},
+    "canonical_ref": {"$ref": "#/$defs/ref_name"},
+    "publication_mode": {"enum": ["DIRECT_REF_CAS", "MEDIATED"]},
+    "authored_by": {"$ref": "#/$defs/principal"},
+    "declared_utc": {"$ref": "#/$defs/instant"}
+  },
+  "$defs": {
+    "instant": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"},
+    "name_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "principal": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "ref_name": {"type": "string", "pattern": "^refs/[^\\\\ ~^:?*\\[]+$"}
+  }
+}

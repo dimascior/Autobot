@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "autobot/object/ActualVerificationEnvironment/v1",
+  "title": "ActualVerificationEnvironment (obj-18): what the probe captured (D-56)",
+  "type": "object",
+  "required": ["schema_version", "kind", "environment_id", "attempt", "probed_utc", "interpreter", "platform", "env_vars", "tools"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "kind": {"const": "ActualVerificationEnvironment"},
+    "environment_id": {"type": "string", "pattern": "^ve_[0-9a-f]{32}$"},
+    "attempt": {
+      "type": "object",
+      "required": ["sequence_id", "attempt_id", "version", "fence"],
+      "additionalProperties": false,
+      "properties": {
+        "sequence_id": {"type": "string", "pattern": "^sq_[0-9a-f]{32}$"},
+        "attempt_id": {"type": "string", "pattern": "^at_[0-9a-f]{32}$"},
+        "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "fence": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "probed_utc": {"$ref": "#/$defs/instant"},
+    "interpreter": {
+      "type": "object",
+      "required": ["implementation", "version", "executable_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "implementation": {"$ref": "#/$defs/token"},
+        "version": {"$ref": "#/$defs/token"},
+        "executable_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "platform": {
+      "type": "object",
+      "required": ["os", "os_version", "architecture"],
+      "additionalProperties": false,
+      "properties": {
+        "os": {"$ref": "#/$defs/token"},
+        "os_version": {"$ref": "#/$defs/token"},
+        "architecture": {"$ref": "#/$defs/token"}
+      }
+    },
+    "env_vars": {
+      "type": "object",
+      "propertyNames": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"},
+      "additionalProperties": {"type": "string", "pattern": "^$|^\\S(?:[^\\n]*\\S)?$"}
+    },
+    "tools": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/name_id"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["version", "executable_sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "version": {"$ref": "#/$defs/token"},
+          "executable_sha256": {"$ref": "#/$defs/digest"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "instant": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"},
+    "name_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "token": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$"}
+  }
+}
