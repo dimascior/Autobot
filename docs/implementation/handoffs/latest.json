@@ -1,7 +1,7 @@
 {
   "schema_version": "autobot-handoff-latest.v1",
-  "chapter": "00",
-  "phase": "amendment-01",
-  "latest": "ch00-amendment-01.json",
-  "sha256": "293c9878d4a2e7c416d6195521202862fc1e69384345ce2abb14b04da0b4b3a0"
+  "chapter": "01",
+  "phase": "UNIFIED",
+  "latest": "ch01.json",
+  "sha256": "5c9cfb063de4ae07a2e2e330f2be671a5c73154b136c2ba745d10a53440ec5c6"
 }

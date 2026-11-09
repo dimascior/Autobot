@@ -1,0 +1,30 @@
+{
+  "schema": "autobot-ch1b-enums/v1",
+  "rule": "The single register of wire enumerations (D-39). closed=true sets are frozen per schema version: a value is added only by a schema_version bump of every object carrying the enum. closed=false marks the one deliberately open vocabulary, pending the named unknown. Spellings are exact; validation rejects anything else.",
+  "enums": [
+    {"name": "finalization_class", "closed": true, "values": ["READ_ONLY", "SOURCE_MODIFYING"], "basis": ["transitions.json paths", "CORR-47"]},
+    {"name": "authority_location", "closed": true, "values": ["LOCAL", "REMOTE"], "basis": ["ARCHITECTURE §12", "CORR-25", "INV-45"]},
+    {"name": "publication_mode", "closed": true, "values": ["DIRECT_REF_CAS", "MEDIATED"], "basis": ["INV-56", "CORR-45"]},
+    {"name": "remote_verification_mode", "closed": true, "values": ["PRE_PUBLICATION_REMOTE_VERIFICATION", "POST_PUBLICATION_OBSERVATION"], "absence_means": "no remote check (the RO/SL/SRD case), per D-37", "basis": ["D-14", "transitions.json paths"]},
+    {"name": "eligibility", "closed": true, "values": ["AUTOMATIC", "HUMAN_REQUIRED"], "derived": "from assertion modes per D-52; never stored", "basis": ["ARCHITECTURE §11", "CORR-10"]},
+    {"name": "assertion_mode", "closed": true, "values": ["DETERMINISTIC", "HUMAN_ATTESTED"], "basis": ["INV-07", "INV-32", "ARCHITECTURE §11"]},
+    {"name": "effect_result", "closed": true, "values": ["HAPPENED", "EXPECTED_OLD_STALE"], "basis": ["Phase A effect_results", "t-s16", "t-s17", "t-s18", "INV-62"]},
+    {"name": "effect_intent_state", "closed": true, "values": ["PENDING", "HAPPENED", "ABSENT", "UNKNOWN_OUTCOME", "SUPERSEDED_BY_RETRY", "HUMAN_RESOLVED"], "basis": ["states.json effect_intent"]},
+    {"name": "intent_class", "closed": true, "values": ["attempt_scoped", "staging_delete", "workspace_sync"], "case_note": "lowercase, exactly as transitions.json intent_classes spells them", "basis": ["CORR-55", "INV-74", "transitions.json intent_classes"]},
+    {"name": "effect_id", "closed": true, "values": ["eff-local-canonical-cas", "eff-local-sequence-ref", "eff-staging-push", "eff-canonical-push", "eff-staging-delete", "eff-workspace-sync"], "basis": ["transitions.json effects"]},
+    {"name": "closure_kind", "closed": true, "values": ["native", "python", "packaged"], "basis": ["registrations.json artifact_closure"]},
+    {"name": "registration_kind", "closed": true, "values": ["VerifierRegistration", "TransformRegistration"], "basis": ["objects.json obj-03"]},
+    {"name": "attestation_kind", "closed": true, "values": ["ManualAttestation.ASSERTION", "ManualAttestation.EFFECT_OUTCOME"], "basis": ["objects.json obj-37"]},
+    {"name": "termination_kind", "closed": true, "values": ["SupersessionRecord", "AbandonRecord"], "basis": ["objects.json obj-38"]},
+    {"name": "edge_kind", "closed": true, "values": ["RECORD", "CONTRACT", "REQUIREMENT"], "basis": ["obj-07", "INV-09", "ARCHITECTURE §7"]},
+    {"name": "edge_observation_requirement", "closed": true, "values": ["ACCEPTANCE", "ACCEPTANCE_FRESH"], "meaning": "ACCEPTANCE: satisfied by the target's durable acceptance (INV-09). ACCEPTANCE_FRESH: re-evaluated now when the successor leaves BLOCKED/DECLARED (t-s02, t-s03 freshness_reevaluated_now).", "basis": ["CORR-21", "INV-09", "t-s02"]},
+    {"name": "finalization_requirement", "closed": true, "values": ["LOCAL_CANONICAL_COMMIT", "SEQUENCE_REF_COMMIT", "STAGING_PUBLICATION", "REMOTE_VERIFICATION", "CANONICAL_PUBLICATION", "POST_PUBLICATION_OBSERVATION"], "meaning": "each names the receipt or check a path's acceptance consumes: obj-26 (t-s16 / t-s17 contexts), obj-27, obj-21, obj-28, and the SRPO observation (t-s39)", "basis": ["INV-16", "K-6", "K-7", "transitions.json paths"]},
+    {"name": "evidence_requirement", "closed": true, "values": ["EXECUTION_LIFECYCLE", "COMMAND_GOVERNANCE", "SESSION_TRANSCRIPT", "REMOTE_CHECK"], "meaning": "the four witness kinds (obj-11..obj-14) a contract may require joined", "basis": ["D-10", "D-12", "INV-69", "objects.json obj-11..obj-14"]},
+    {"name": "reuse_mode", "closed": true, "values": ["NEVER", "FRESH_WITHIN"], "basis": ["CORR-26", "CORR-36", "INV-50"]},
+    {"name": "version_recognition", "closed": true, "values": ["SUPPORTED", "UNSUPPORTED_VERSION", "MALFORMED_VERSION"], "basis": ["D-34"]},
+    {"name": "decision_kind", "closed": true, "values": ["BUDGET_GRANT", "ADMISSION_REJECTION"], "meaning": "the journaled decision payloads of t-s13 and t-c06 (D-55)", "basis": ["cap-47", "cap-02", "ARCHITECTURE §15"]},
+    {"name": "verification_outcome_source", "closed": true, "values": ["BY_VERIFIER", "BY_ATTESTATION"], "basis": ["INV-17", "INV-32", "D-53"]},
+    {"name": "part_kind", "closed": true, "values": ["ASSERTION", "DEPENDENCY_EDGE", "ENVIRONMENT_CONSTRAINT", "ROLE_TRANSFORM"], "basis": ["D-47", "obj-05..obj-07", "obj-17"]},
+    {"name": "completion_outcome", "closed": false, "pending": "U-06 (AutoSwarm's outcome vocabulary)", "values_rule": "non-empty NFC strings; the set closes when U-06 resolves", "basis": ["CORR-08", "CORR-20", "C8"]}
+  ]
+}

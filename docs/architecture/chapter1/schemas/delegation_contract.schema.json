@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "autobot/object/DelegationContract/v1",
+  "title": "DelegationContract (obj-00)",
+  "type": "object",
+  "required": ["schema_version", "kind", "delegation_id", "delegated_to", "repository_ids", "allowed_scope", "mandatory_floors", "authored_by", "created_utc", "expires_utc"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "kind": {"const": "DelegationContract"},
+    "delegation_id": {"type": "string", "pattern": "^dg_[0-9a-f]{32}$"},
+    "delegated_to": {"$ref": "#/$defs/principal"},
+    "repository_ids": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/name_id"}},
+    "allowed_scope": {
+      "type": "object",
+      "required": ["paths", "artifact_paths"],
+      "additionalProperties": false,
+      "properties": {
+        "paths": {"type": "array", "items": {"$ref": "#/$defs/scope_path"}},
+        "artifact_paths": {"type": "array", "items": {"$ref": "#/$defs/scope_path"}}
+      }
+    },
+    "mandatory_floors": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/name_id"},
+      "additionalProperties": {
+        "type": "object", "minProperties": 1, "additionalProperties": false,
+        "properties": {
+          "READ_ONLY": {"type": "array", "items": {"$ref": "#/$defs/name_id"}},
+          "SOURCE_MODIFYING": {"type": "array", "items": {"$ref": "#/$defs/name_id"}}
+        }
+      }
+    },
+    "policy_bounds": {
+      "type": "object", "minProperties": 1, "additionalProperties": false,
+      "properties": {
+        "effect_intent_ttl_seconds": {"$ref": "#/$defs/uint"},
+        "effect_hard_timeout_seconds": {"$ref": "#/$defs/uint"},
+        "reservation_lease_seconds": {"$ref": "#/$defs/uint"},
+        "max_wait_seconds": {"$ref": "#/$defs/uint"},
+        "staging_ref_retention_days": {"$ref": "#/$defs/uint"},
+        "standing_publication_permits": {"$ref": "#/$defs/uint"}
+      }
+    },
+    "authored_by": {"$ref": "#/$defs/principal"},
+    "created_utc": {"$ref": "#/$defs/instant"},
+    "expires_utc": {"$ref": "#/$defs/instant"}
+  },
+  "$defs": {
+    "instant": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"},
+    "name_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "principal": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "scope_path": {"type": "string", "pattern": "^(\\.|[^\\\\/\\s][^\\\\]*)$"},
+    "uint": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
+  }
+}

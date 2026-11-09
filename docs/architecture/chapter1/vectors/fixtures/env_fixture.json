@@ -1,0 +1,31 @@
+{
+  "attempt": {
+    "attempt_id": "at_00000000000000000000000000000001",
+    "fence": 1,
+    "sequence_id": "sq_00000000000000000000000000000001",
+    "version": 1
+  },
+  "env_vars": {
+    "PYTHONUTF8": "1"
+  },
+  "environment_id": "ve_000000000000000000000000000000e1",
+  "interpreter": {
+    "executable_sha256": "sha256:169f39228e27fe4f241c362ff7d30326a501ca80f3350eee8e68692c1657bb06",
+    "implementation": "cpython",
+    "version": "3.12.4"
+  },
+  "kind": "ActualVerificationEnvironment",
+  "platform": {
+    "architecture": "x86_64",
+    "os": "windows",
+    "os_version": "10.0.19045"
+  },
+  "probed_utc": "2026-11-08T22:00:00.000Z",
+  "schema_version": "v1",
+  "tools": {
+    "git": {
+      "executable_sha256": "sha256:3975013e5f50ef455a85aabbd3d439fba58a605d74b248379e1429dd1858a5b7",
+      "version": "2.47.0"
+    }
+  }
+}

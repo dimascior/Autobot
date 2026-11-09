@@ -1,0 +1,198 @@
+{
+  "declaration_local": {
+    "authored_by": "you",
+    "authority_location": "LOCAL",
+    "canonical_ref": "refs/heads/main",
+    "declared_utc": "2026-11-08T22:05:00.000Z",
+    "kind": "RepositoryAuthorityDeclaration",
+    "publication_mode": "DIRECT_REF_CAS",
+    "repository_id": "autobot",
+    "schema_version": "v1"
+  },
+  "declaration_remote": {
+    "authored_by": "you",
+    "authority_location": "REMOTE",
+    "canonical_ref": "refs/heads/main",
+    "declared_utc": "2026-11-08T22:00:00.000Z",
+    "kind": "RepositoryAuthorityDeclaration",
+    "publication_mode": "DIRECT_REF_CAS",
+    "repository_id": "autobot",
+    "schema_version": "v1"
+  },
+  "delegation_a": {
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts"
+      ],
+      "paths": [
+        "artifacts",
+        "docs"
+      ]
+    },
+    "authored_by": "you",
+    "created_utc": "2026-11-08T22:00:00.000Z",
+    "delegated_to": "planner",
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "expires_utc": "2027-01-01T00:00:00.000Z",
+    "kind": "DelegationContract",
+    "mandatory_floors": {
+      "autobot": {
+        "READ_ONLY": [],
+        "SOURCE_MODIFYING": [
+          "a1"
+        ]
+      }
+    },
+    "policy_bounds": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "repository_ids": [
+      "autobot"
+    ],
+    "schema_version": "v1"
+  },
+  "delegation_b": {
+    "allowed_scope": {
+      "artifact_paths": [
+        "artifacts"
+      ],
+      "paths": [
+        "artifacts",
+        "docs"
+      ]
+    },
+    "authored_by": "you",
+    "created_utc": "2026-11-08T22:00:00.000Z",
+    "delegated_to": "planner",
+    "delegation_id": "dg_000000000000000000000000000000a1",
+    "expires_utc": "2027-06-01T00:00:00.000Z",
+    "kind": "DelegationContract",
+    "mandatory_floors": {
+      "autobot": {
+        "READ_ONLY": [],
+        "SOURCE_MODIFYING": [
+          "a1"
+        ]
+      }
+    },
+    "policy_bounds": {
+      "effect_hard_timeout_seconds": 240,
+      "effect_intent_ttl_seconds": 300
+    },
+    "repository_ids": [
+      "autobot"
+    ],
+    "schema_version": "v1"
+  },
+  "transform_identity_v1": {
+    "artifact_root": "sha256:fc5ecb91ae0ed50fc0a2021fb52bbcd8876abaeb07afd78e2d9e44c9577bcc5e",
+    "closure": {
+      "dependency_lock_sha256": "sha256:1e00f47d2b8f8747aef7d543aa9b8b7cac9e7b87ecc8946b033730c02868ea0e",
+      "interpreter_id": "cpython-3.12.4-windows-x86_64",
+      "kind": "python",
+      "script_sha256": "sha256:adbe8a62cdc4c06fb18c7f43ad09563b2be45e1faab3cdbd8db1ebd41669cb32"
+    },
+    "entrypoint": "project.py",
+    "execution_requirements": [],
+    "kind": "TransformRegistration",
+    "registered_by": "you",
+    "registered_utc": "2026-11-08T22:00:00.000Z",
+    "registration_id": "rg_00000000000000000000000000000004",
+    "schema_version": "v1",
+    "transform_id": "identity-projection",
+    "version": "1.0.0"
+  },
+  "transform_strict_v1": {
+    "artifact_root": "sha256:9ae0e439585097d5e62023026d018bf06cabafc6feeeec75844379012e41c118",
+    "closure": {
+      "dependency_lock_sha256": "sha256:1e00f47d2b8f8747aef7d543aa9b8b7cac9e7b87ecc8946b033730c02868ea0e",
+      "interpreter_id": "cpython-3.12.4-windows-x86_64",
+      "kind": "python",
+      "script_sha256": "sha256:e69d16f6362d12e9b0dd523be99d9e2b83d4edde5823a6b7cb4061a78288daf2"
+    },
+    "entrypoint": "project.py",
+    "execution_requirements": [],
+    "kind": "TransformRegistration",
+    "registered_by": "you",
+    "registered_utc": "2026-11-08T22:00:00.000Z",
+    "registration_id": "rg_00000000000000000000000000000005",
+    "schema_version": "v1",
+    "transform_id": "strict-projection",
+    "version": "1.0.0"
+  },
+  "verifier_checker_v1": {
+    "artifact_root": "sha256:2ee98fc7a9a8e30f506bfd7e4b359db15478b1cc8c28d3f02228501fe2834058",
+    "closure": {
+      "dependency_lock_sha256": "sha256:1e00f47d2b8f8747aef7d543aa9b8b7cac9e7b87ecc8946b033730c02868ea0e",
+      "interpreter_id": "cpython-3.12.4-windows-x86_64",
+      "kind": "python",
+      "script_sha256": "sha256:a8f87e3731ca5ba2f650f3687a52d6398fb24a74cfe552fdc1f41f2f186cdd90"
+    },
+    "entrypoint": "check.py",
+    "execution_requirements": [],
+    "kind": "VerifierRegistration",
+    "registered_by": "you",
+    "registered_utc": "2026-11-08T22:00:00.000Z",
+    "registration_id": "rg_00000000000000000000000000000001",
+    "schema_version": "v1",
+    "verifier_id": "registry-checker",
+    "version": "1.0.0"
+  },
+  "verifier_checker_v2": {
+    "artifact_root": "sha256:d0a257f4b01bc8d209686f02783fb1b3cf51e87bc44f04a4b324e171026e5be5",
+    "closure": {
+      "dependency_lock_sha256": "sha256:1e00f47d2b8f8747aef7d543aa9b8b7cac9e7b87ecc8946b033730c02868ea0e",
+      "interpreter_id": "cpython-3.12.4-windows-x86_64",
+      "kind": "python",
+      "script_sha256": "sha256:286e6bfb560a8f6b7276523230ca88421d9ef9c94106c958cd1c4567d6eea92b"
+    },
+    "entrypoint": "check.py",
+    "execution_requirements": [],
+    "kind": "VerifierRegistration",
+    "registered_by": "you",
+    "registered_utc": "2026-11-08T22:00:00.000Z",
+    "registration_id": "rg_00000000000000000000000000000002",
+    "schema_version": "v1",
+    "verifier_id": "registry-checker",
+    "version": "1.1.0"
+  },
+  "verifier_llm_v1": {
+    "artifact_root": "sha256:070e18801c569c9725c718b825713b795765e4ea3e0f70441f45e61da53b063c",
+    "closure": {
+      "dependency_lock_sha256": "sha256:1e00f47d2b8f8747aef7d543aa9b8b7cac9e7b87ecc8946b033730c02868ea0e",
+      "interpreter_id": "cpython-3.12.4-windows-x86_64",
+      "kind": "python",
+      "script_sha256": "sha256:6a85391ee0239cbff22c89d79a0aabbeea4b351e1f35e1f9a965c85972e6f0ed"
+    },
+    "entrypoint": "review.py",
+    "execution_requirements": [
+      "service:anthropic-api"
+    ],
+    "kind": "VerifierRegistration",
+    "registered_by": "you",
+    "registered_utc": "2026-11-08T22:00:00.000Z",
+    "registration_id": "rg_00000000000000000000000000000006",
+    "schema_version": "v1",
+    "verifier_id": "llm-reviewer",
+    "version": "1.0.0"
+  },
+  "verifier_vector_v1": {
+    "artifact_root": "sha256:1f8060195e5b9109b9267c580711efca64cfadec938ee350d33daeb1dd29deff",
+    "closure": {
+      "dependency_lock_sha256": "sha256:1e00f47d2b8f8747aef7d543aa9b8b7cac9e7b87ecc8946b033730c02868ea0e",
+      "interpreter_id": "cpython-3.12.4-windows-x86_64",
+      "kind": "python",
+      "script_sha256": "sha256:2f41233955e6f28734a8114118e06abbc732639365b6db42f8a558b97c699a7c"
+    },
+    "entrypoint": "vectors.py",
+    "execution_requirements": [],
+    "kind": "VerifierRegistration",
+    "registered_by": "you",
+    "registered_utc": "2026-11-08T22:00:00.000Z",
+    "registration_id": "rg_00000000000000000000000000000003",
+    "schema_version": "v1",
+    "verifier_id": "vector-checker",
+    "version": "1.0.0"
+  }
+}
