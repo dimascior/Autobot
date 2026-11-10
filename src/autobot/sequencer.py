@@ -1131,23 +1131,45 @@ class Sequencer:
                 from_state="DISPATCHED", to_state="FAILED",
                 recorded_utc=now, facts=facts))
 
+    def _admitted_classification(self, cur, att, receipt):
+        """The t-a13 authority seam (operator correction, 2026-11-10).
+
+        The registered condition —
+        ``execution_receipt_integrity_failed_or_incomplete_beyond_bound`` —
+        needs facts no receipt can self-assert: an INTEGRITY_FAILED
+        classification established by the authorized receipt-admission
+        mechanism, and an INCOMPLETE completion bound derived from an
+        authoritative policy/window or validated admission record (D-28
+        over D-21 admission facts). Both are Chapter 3 inputs that do not
+        exist yet, so this seam FAILS CLOSED: an identity-bound receipt
+        (INV-68/INV-69, enforced by ``_resolve_receipt``) still carries no
+        classification authority, and t-a13 stays explicitly PARTIAL.
+        When the M3 admission seam lands, this method instead returns the
+        admitted facts ``{"completeness": ..., "evidence_complete_by_utc":
+        ...}`` and the arms in ``fail_candidate`` become live."""
+        raise ConflictError(
+            "t-a13 receipt-classification authority is PARTIAL:"
+            " Chapter 3's receipt-admission mechanism must"
+            " establish the completeness and deadline fields as"
+            " authoritative before this transition can proceed"
+            " (failing closed)")
+
     def fail_candidate(self, attempt_id, expected_fence,
                        execution_receipt_address, reason):
-        """t-a13 CANDIDATE_FROZEN→FAILED. Registered preconditions enforced
-        exactly (operator-identified corrections, 2026-11-10):
+        """t-a13 CANDIDATE_FROZEN→FAILED — currently FAIL-CLOSED (PARTIAL).
 
-        * ``fence_matches``: the presented fence, the row fence and the
-          owning Sequence's fence must agree, with the equality a condition
-          of the mutating SQL — the same discipline as t-a05/t-a06.
-        * ``execution_receipt_integrity_failed_or_incomplete_beyond_bound``:
-          an INTEGRITY_FAILED receipt is final and fails the candidate at
-          once; an INCOMPLETE receipt fails it only once its permitted
-          completion bound has ELAPSED — the bound is the receipt-declared
-          ``evidence_complete_by_utc`` (HOW that bound derives from D-21
-          admission facts is Chapter 3's receipt semantics, so an
-          INCOMPLETE receipt that declares no bound is refused as
-          unevaluable: that arm stays PARTIAL until Chapter 3 supplies it).
-          Premature incomplete evidence never fails the candidate."""
+        Live and enforced, in order: the caller's lease, the registered
+        ``fence_matches`` (presented fence plus attempt↔sequence agreement,
+        with the correlated equality in the mutating SQL, as on
+        t-a05/t-a06), the CANDIDATE_FROZEN state, and the receipt's
+        identity binding (INV-68/INV-69: kind, attempt_id,
+        attempt_contract_hash). The transition then stops at the
+        ``_admitted_classification`` authority seam: receipt-DECLARED
+        completeness and deadlines carry no authority, so no candidate can
+        fail by t-a13 until Chapter 3's receipt admission supplies the
+        inputs. The arms below execute on the seam's admitted facts only:
+        INTEGRITY_FAILED fails at once; INCOMPLETE fails only once its
+        derived bound has elapsed, never prematurely."""
         now = instant(self.clock.now())
         with self.db.transaction() as cur:
             self._assert_lease(cur)
@@ -1163,32 +1185,16 @@ class Sequencer:
                     % att["state"])
             receipt = self._resolve_receipt(
                 cur, execution_receipt_address, att)
-            # --- Authority boundary (fail-closed, PARTIAL until Ch3) ---
-            # The receipt's completeness classification and any declared
-            # deadline are self-asserted fields.  An INTEGRITY_FAILED
-            # classification requires Chapter 3's receipt-admission
-            # mechanism to establish it authoritatively; an INCOMPLETE
-            # deadline must derive from an authoritative policy/window
-            # or validated admission record (D-28).  Until those inputs
-            # exist, fail_candidate cannot treat the receipt as
-            # authoritative evidence for failing the candidate.
-            raise ConflictError(
-                "t-a13 receipt-classification authority is PARTIAL:"
-                " Chapter 3's receipt-admission mechanism must"
-                " establish the completeness and deadline fields as"
-                " authoritative before this transition can proceed")
-            # The classification logic below is preserved for Chapter 3.
-            completeness = receipt.get("completeness")
+            admitted = self._admitted_classification(cur, att, receipt)
+            completeness = admitted.get("completeness")
             if completeness == "INTEGRITY_FAILED":
                 bound_fact = None
             elif completeness == "INCOMPLETE":
-                bound = receipt.get("evidence_complete_by_utc")
+                bound = admitted.get("evidence_complete_by_utc")
                 if not isinstance(bound, str):
                     raise ConflictError(
-                        "t-a13: an INCOMPLETE receipt must declare its"
-                        " completion bound (evidence_complete_by_utc, a"
-                        " Chapter 3 receipt fact) before it can fail the"
-                        " candidate")
+                        "t-a13: the admitted INCOMPLETE classification"
+                        " carries no derived completion bound")
                 if bound > now:
                     raise ConflictError(
                         "t-a13: incomplete evidence is premature — the"
@@ -1196,7 +1202,7 @@ class Sequencer:
                 bound_fact = bound
             else:
                 raise ConflictError(
-                    "t-a13 requires a receipt whose completeness is"
+                    "t-a13 requires an admitted classification of"
                     " INTEGRITY_FAILED or INCOMPLETE")
             self._cas_attempt(cur, att, "FAILED", now,
                               require_sequence_fence=True)

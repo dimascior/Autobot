@@ -43,8 +43,14 @@ semantics of the evidence seam.
    reconciliation query. **Launch/restart protocol**: an interrupted
    process that restarts into a DISPATCHED attempt with no
    `native_session_id` asks `find_session(call_id)` — an existing provider
-   session is ADOPTED (t-a03 with its native id), an absent one is a
-   launch failure (t-a10); a second `launch` with the same `call_id` must
+   session is ADOPTED (t-a03 with its native id). **A `None` answer is
+   NOT positive proof the launch failed** (the same principle as the
+   effect outcome rules: absence must be proven, never inferred): the
+   launch outcome stays UNCERTAIN, the attempt holds in DISPATCHED, and
+   t-a10 fires only on the transport's positive failure determination —
+   a provider-side error record, or the transport's registered bounded
+   rule establishing that a session with this `call_id` can no longer
+   come into existence. A second `launch` with the same `call_id` must
    return the existing session, never create a duplicate execution.
    `collect(call_id) -> {witness_files, outcome}` reads results.
    Implemented twice: a **deterministic fake transport** (scripted session
