@@ -129,6 +129,79 @@ class RestartTests(unittest.TestCase):
                                                 snapshot["fence"])
                 db.close()
 
+    def test_crash_intent_stages(self):
+        """D-68's boundary across crashes: a durably committed intent
+        survives exactly once (reported in-doubt, resumable to resolution),
+        and a torn intent transition vanishes whole."""
+        for stage in ("intent", "mid_intent_tx"):
+            with self.subTest(stage=stage):
+                data_dir = self.dir / stage
+                proc = subprocess.run(
+                    [sys.executable, "-I", str(CHILD), str(data_dir), stage],
+                    capture_output=True, text=True, timeout=120,
+                )
+                self.assertEqual(proc.returncode, 137, proc.stdout + proc.stderr)
+                snapshot = json.loads(proc.stdout.strip().splitlines()[-1])
+
+                db = Database(data_dir / "autobot.db")
+                store = Store(data_dir / "store")
+                seq = Sequencer(db, store, support.manual_clock(),
+                                holder="crash-child")
+                report = seq.recover()
+                self.assertEqual(
+                    [d["intent_id"] for d in report["intents_in_doubt"]],
+                    [snapshot["intent_id"]])
+                row = db.conn.execute(
+                    "SELECT state, version, fence FROM effect_intents"
+                    " WHERE intent_id = ?", (snapshot["intent_id"],),
+                ).fetchone()
+                self.assertEqual(dict(row), snapshot["intent"])
+                count = db.conn.execute(
+                    "SELECT COUNT(*) AS n FROM transition_journal"
+                ).fetchone()["n"]
+                self.assertEqual(count, snapshot["journal_entries"])
+
+                seq.acquire_lease(ttl_seconds=3600)
+                self.assertEqual(
+                    seq.resolve_intent(snapshot["intent_id"], "target_equals_new"),
+                    "HAPPENED")
+                db.close()
+
+    def test_crash_dispatched_stage(self):
+        """The M3 criterion at slice level: a restart reconstructs the
+        execution relationship (attempt ↔ bound call ↔ projection) from
+        durable state alone, and the lifecycle resumes from it."""
+        data_dir = self.dir / "dispatched"
+        proc = subprocess.run(
+            [sys.executable, "-I", str(CHILD), str(data_dir), "dispatched"],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(proc.returncode, 137, proc.stdout + proc.stderr)
+        snapshot = json.loads(proc.stdout.strip().splitlines()[-1])
+
+        db = Database(data_dir / "autobot.db")
+        store = Store(data_dir / "store")
+        seq = Sequencer(db, store, support.manual_clock(), holder="crash-child")
+        seq.recover()  # includes the call↔state pairing and projection resolve
+        crow = db.conn.execute(
+            "SELECT role, provider, call_id, projection_address,"
+            " native_session_id FROM attempt_calls WHERE attempt_id = ?",
+            (snapshot["attempt_id"],)).fetchone()
+        self.assertEqual(dict(crow), snapshot["call"])
+        att = db.conn.execute(
+            "SELECT state FROM attempts WHERE attempt_id = ?",
+            (snapshot["attempt_id"],)).fetchone()
+        self.assertEqual(att["state"], "DISPATCHED")
+        count = db.conn.execute(
+            "SELECT COUNT(*) AS n FROM transition_journal").fetchone()["n"]
+        self.assertEqual(count, snapshot["journal_entries"])
+
+        seq.acquire_lease(ttl_seconds=3600)
+        witness = store.put(b"post-restart witness\n")
+        seq.attempt_running(snapshot["attempt_id"], "native-after-restart",
+                            witness)
+        db.close()
+
     def test_takeover_after_expiry_advances_epoch_and_fences_stale_authority(self):
         """The review's fourth property: restart by the same still-valid
         holder (above) is distinct from takeover. A different holder is
