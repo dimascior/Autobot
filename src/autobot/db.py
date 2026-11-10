@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 from .models import SchemaTooNew
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 # Schema v1 (D-67): explicit state tables for Sequence, Attempt,
 # InstanceLease, permit state/reservations and EffectIntent, plus the
@@ -157,7 +157,32 @@ _DDL_V1 = (
     )""",
 )
 
-_MIGRATIONS = {1: _DDL_V1}
+# Schema v2 (D-70: explicit, monotonic, non-destructive): the obj-25 retry
+# identity columns (t-i06's retry_same_effect/target/expected_old are checked
+# against durable facts, CORR-56/INV-73).
+_DDL_V2 = (
+    "ALTER TABLE effect_intents ADD COLUMN target TEXT",
+    "ALTER TABLE effect_intents ADD COLUMN expected_old TEXT",
+    "ALTER TABLE effect_intents ADD COLUMN new_value TEXT",
+)
+
+# Schema v3 (D-70, additive): the attempt execution reference (t-a02's bound
+# call identity, the dispatched role, provider, projection and native session
+# handle) — one execution per attempt, keyed by the attempt itself.
+_DDL_V3 = (
+    """CREATE TABLE IF NOT EXISTS attempt_calls (
+        attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id),
+        role TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        call_id TEXT NOT NULL,
+        projection_address TEXT NOT NULL,
+        native_session_id TEXT,
+        created_utc TEXT NOT NULL,
+        updated_utc TEXT NOT NULL
+    )""",
+)
+
+_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3}
 
 
 class Database:
@@ -172,7 +197,13 @@ class Database:
         cur.execute("PRAGMA foreign_keys=ON")
         cur.execute("PRAGMA synchronous=FULL")
         cur.execute("PRAGMA busy_timeout=%d" % int(busy_timeout_ms))
-        self._migrate()
+        try:
+            self._migrate()
+        except BaseException:
+            # A refused open (e.g. SchemaTooNew, D-70) must not leak the
+            # connection handle it opened.
+            self.conn.close()
+            raise
 
     def close(self):
         self.conn.close()

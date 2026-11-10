@@ -55,6 +55,53 @@ Once that passes: permit races (INV-42/48/60 beyond the primitives) and
 EffectIntent persistence. Only then does Chapter 2 connect AutoSwarm or Git
 effects.
 
+## Milestone 2 — the EffectIntent lifecycle (2026-11-09/10)
+
+The crash-safe external-effect boundary, as authority primitives with no
+external executor yet (D-71's ordering):
+
+- `effects.py`: the six registered effects, four outcome rules, the
+  architectural retryable split (INV-73) and the attempt_scoped checks,
+  pinned byte-for-byte to chapter 0's transitions.json by
+  `test_effects_registry.py`.
+- Schema v2 (D-70, additive): the obj-25 retry-identity columns
+  (`target`, `expected_old`, `new_value`); a database newer than the code
+  is refused, and a refused open closes its connection.
+- `Sequencer.mint_intent` (attempt_scoped only): delegation active,
+  reservation held with a live INV-60 lease, fence equality, and the
+  SEM-12/INV-67 window rule, all inside one transaction ending in a
+  `ch2:mint-intent` TransitionRecord.
+- The boundary itself: `committed_intent()` is the executor's read — only a
+  durably committed, still-PENDING intent inside its hard-timeout window
+  authorizes beginning the effect (`effect_intent_committed`).
+- The machine: t-i01/t-i02 from PENDING; t-i03 only once the window expired
+  (before that, PENDING holds because the effect may still land — CORR-49's
+  rule that the old value is not evidence of absence); t-i04/t-i05 from
+  UNKNOWN_OUTCOME; `expire_intents()` as t-i03's sweep arm; t-i06 retries
+  bind the superseded intent and re-run the full checks; t-i07 resolves by
+  your attestation once authority is inactive.
+- Recovery: journal↔row reconciliation covers intents, windows must satisfy
+  INV-67, retry chains must be intact in both directions, and PENDING or
+  UNKNOWN_OUTCOME intents are reported as the in-doubt set the restart must
+  resolve by observation, never by inference (D-69). The crash matrix gains
+  `intent` and `mid_intent_tx` stages.
+
+Deferred by design: the standalone intent classes (staging_delete,
+workspace_sync) mint through their own machines (t-g01/t-w01) in a later
+milestone, and the sequence-machine wiring that mints intents on the real
+paths (t-s15a/b, t-s21, t-s31/32) lands with the verification milestone
+that can reach VERIFIED.
+
+### Finding for the operator (correction candidate)
+
+The frozen D-29 kind grammar (`^[A-Za-z][A-Za-z0-9.]*$`,
+contract_library/digests.py) cannot express obj-37's registry kind
+`ManualAttestation.EFFECT_OUTCOME` — the underscore is outside the
+grammar — so no object hash exists for that kind under Chapter 1 as
+frozen. Until obj-37's owning chapter fixes its per-kind domain label (or
+a correction renames the kind), t-i07 preserves the attestation by exact
+bytes (D-31 content address), referenced from the journal entry.
+
 ## Layout
 
 - `src/autobot/` — the authority core: `db.py` (D-62/D-68/D-70 database),
@@ -117,6 +164,32 @@ recovery suite):
    then also advances the epoch; the dead process's old token has no
    authority afterwards, and neither path can duplicate dispatch. The lease
    row must match its last journal entry, so authority is itself journaled.
+
+### Closure pass (2026-11-10)
+
+Milestone 2 closed with one review correction (terminal Sequences grant no
+intent authority) and the M3-preparation slice: the attempt-execution
+transitions t-a02..t-a06 with their t-a10/t-a11/t-a13 arms, schema v3's
+`attempt_calls` execution binding, recovery pairing for executions, and
+the `dispatched` crash stage. Proof of record: autobot 82/82 on CPython
+3.8.10 and 3.12.11, coordinator 41/41, CORR-57 conformance 12/12 (gates
+20261110-ch2m2-001..010). [M3_SPEC.md](M3_SPEC.md) is the executable
+vertical-slice specification for the first contract-authorized specialist
+execution.
+
+## Reconciliation and progression
+
+[RECONCILIATION.md](RECONCILIATION.md) is the row-by-row reconciliation of
+milestone 2 against the frozen transition registry (2026-11-10, in-session
+review): every t-i rule's enforcement point and test, the declared partial
+arms (t-i05 positive-cancellation proof, t-i07 retry-permit), and the
+deferred surfaces. [INTEGRATION_PLAN.md](INTEGRATION_PLAN.md) maps the full
+engineering loop onto owners and sequences the remaining Chapter 2
+milestones (M3 attempt execution + evidence seam, M4 verification
+transitions, M5 finalization wiring SL-first, M6 acceptance/release/
+ProjectState). The CORR-57 package (exact diff, compatibility proof
+12/12 PASS under gate 20261110-ch2m2-007, conformance script) awaits the
+operator's disposition in the chapter1-amendment-01 draft.
 
 ## Traceability
 
