@@ -172,19 +172,21 @@ class DispatchTests(ExecutionTestCase):
                 self._receipt(witnesses=["sha256:" + "0" * 64]))
         self.seq.complete_evidence(self.attempt_id, self.fence, self._receipt())
 
-    def test_integrity_failed_candidate_is_t_a13(self):
-        """INTEGRITY_FAILED is final: it fails the candidate at once; a
-        COMPLETE receipt can never justify this arm."""
+    def test_integrity_failed_candidate_is_partial(self):
+        """t-a13 is PARTIAL until Chapter 3's receipt-admission authority
+        establishes the completeness classification. Even a correctly
+        bound INTEGRITY_FAILED receipt is refused at the authority
+        boundary; the attempt state and journal are unchanged."""
         self._to_candidate_frozen()
-        with self.assertRaises(ConflictError):
-            self.seq.fail_candidate(self.attempt_id, self.fence,
-                                    self._receipt(),
-                                    reason="but it is COMPLETE")
-        self.seq.fail_candidate(
-            self.attempt_id, self.fence,
-            self._receipt(completeness="INTEGRITY_FAILED"),
-            reason="witness hash mismatch")
-        self.assertIn("t-a13", self._rules())
+        before = self._journal_count()
+        with self.assertRaises(ConflictError) as ctx:
+            self.seq.fail_candidate(
+                self.attempt_id, self.fence,
+                self._receipt(completeness="INTEGRITY_FAILED"),
+                reason="witness hash mismatch")
+        self.assertIn("PARTIAL", str(ctx.exception))
+        self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
+        self.assertEqual(self._journal_count(), before)
 
     def test_t_a13_stale_fence_changes_nothing(self):
         """Registered fence_matches on t-a13 (operator-identified
@@ -200,33 +202,23 @@ class DispatchTests(ExecutionTestCase):
         self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
         self.assertEqual(self._journal_count(), before)
 
-    def test_t_a13_incomplete_requires_elapsed_bound(self):
-        """incomplete_beyond_bound: premature incomplete evidence never
-        fails the candidate; an elapsed receipt-declared bound does; a
-        boundless INCOMPLETE receipt is unevaluable (the bound's derivation
-        is Chapter 3's receipt semantics — PARTIAL until supplied)."""
+    def test_t_a13_incomplete_is_partial(self):
+        """t-a13 is PARTIAL: an INCOMPLETE receipt with a correctly bound
+        attempt and an elapsed deadline is still refused at the authority
+        boundary, because the deadline's derivation from D-28 policy
+        requires Chapter 3's receipt-admission authority."""
         self._to_candidate_frozen()
         before = self._journal_count()
-        with self.assertRaises(ConflictError):
+        past = "2026-11-09T11:00:00.000Z"
+        self.rt.clock.advance(3601)
+        with self.assertRaises(ConflictError) as ctx:
             self.seq.fail_candidate(
                 self.attempt_id, self.fence,
-                self._receipt(completeness="INCOMPLETE"),
-                reason="no bound declared")
-        future = "2026-11-09T13:00:00.000Z"  # an hour past T_START
-        with self.assertRaises(ConflictError):
-            self.seq.fail_candidate(
-                self.attempt_id, self.fence,
-                self._receipt(completeness="INCOMPLETE", bound=future),
-                reason="premature")
+                self._receipt(completeness="INCOMPLETE", bound=past),
+                reason="evidence never completed")
+        self.assertIn("PARTIAL", str(ctx.exception))
         self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
         self.assertEqual(self._journal_count(), before)
-        self.rt.clock.advance(3601)  # the bound elapses
-        self.seq.fail_candidate(
-            self.attempt_id, self.fence,
-            self._receipt(completeness="INCOMPLETE", bound=future),
-            reason="evidence never completed")
-        self.assertEqual(self._attempt_state(), "FAILED")
-        self.assertIn("t-a13", self._rules())
 
     def test_terminal_sequence_grants_no_intent_authority(self):
         """Closure-pass review correction: a forged terminal Sequence must
@@ -298,19 +290,72 @@ class DispatchTests(ExecutionTestCase):
         self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
         self.assertEqual(self._journal_count(), before)
 
-    def test_t_a13_forged_past_deadline_preserves_state(self):
+    def test_t_a13_forged_past_deadline_wrong_binding(self):
         """Adversarial: a forged past deadline on an INCOMPLETE receipt
         whose attempt_id is wrong is caught by the binding check before
-        the deadline is even evaluated."""
+        the authority boundary is reached."""
         self._to_candidate_frozen()
         before = self._journal_count()
         past = "2026-11-09T11:00:00.000Z"
-        with self.assertRaises(ConflictError):
+        with self.assertRaises(ConflictError) as ctx:
             self.seq.fail_candidate(
                 self.attempt_id, self.fence,
                 self._receipt(completeness="INCOMPLETE", bound=past,
                               attempt_id="at_forged"),
                 reason="forged deadline + binding")
+        self.assertNotIn("PARTIAL", str(ctx.exception))
+        self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
+        self.assertEqual(self._journal_count(), before)
+
+    def test_t_a13_correct_binding_forged_classification(self):
+        """Adversarial: a receipt with correct attempt binding and
+        contract hash but a self-asserted INTEGRITY_FAILED classification
+        is stopped at the authority boundary — the classification is not
+        treated as authoritative without Chapter 3's receipt-admission."""
+        self._to_candidate_frozen()
+        before = self._journal_count()
+        with self.assertRaises(ConflictError) as ctx:
+            self.seq.fail_candidate(
+                self.attempt_id, self.fence,
+                self._receipt(completeness="INTEGRITY_FAILED"),
+                reason="forged classification")
+        self.assertIn("PARTIAL", str(ctx.exception))
+        self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
+        self.assertEqual(self._journal_count(), before)
+
+    def test_t_a13_correct_binding_forged_deadline(self):
+        """Adversarial: a receipt with correct binding and a fabricated
+        past deadline is stopped at the authority boundary — not at the
+        deadline comparison, which it would otherwise pass."""
+        self._to_candidate_frozen()
+        before = self._journal_count()
+        past = "2026-11-09T11:00:00.000Z"
+        self.rt.clock.advance(3601)
+        with self.assertRaises(ConflictError) as ctx:
+            self.seq.fail_candidate(
+                self.attempt_id, self.fence,
+                self._receipt(completeness="INCOMPLETE", bound=past),
+                reason="forged deadline, correct binding")
+        self.assertIn("PARTIAL", str(ctx.exception))
+        self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
+        self.assertEqual(self._journal_count(), before)
+
+    def test_receipt_requires_contract_hash(self):
+        """INV-68: attempt_contract_hash is required in the receipt —
+        a receipt that omits it is rejected at the identity boundary."""
+        self._to_candidate_frozen()
+        before = self._journal_count()
+        fake = self.rt.store.put(json.dumps(
+            {"schema_version": "v1", "kind": "ExecutionReceipt",
+             "attempt_id": self.attempt_id,
+             "completeness": "INTEGRITY_FAILED",
+             "admitted_witnesses": []},
+            sort_keys=True).encode("utf-8"))
+        with self.assertRaises(ConflictError) as ctx:
+            self.seq.fail_candidate(
+                self.attempt_id, self.fence, fake,
+                reason="no contract hash")
+        self.assertIn("INV-68", str(ctx.exception))
         self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
         self.assertEqual(self._journal_count(), before)
 

@@ -58,6 +58,22 @@ the chapter that owns the full payload schema per representation.json.
   (obj-33/34); the Taskforce/Chief Engineer intelligence itself stays in
   the integration layer throughout (D-63/D-64).
 
+## M3 specification carry-forwards
+
+- **`find_session(call_id)` returning `None` is not proof of launch
+  failure.** A provider session lookup that returns no result may mean the
+  session was never created, OR that the transport cannot yet observe it
+  (eventual consistency, network partition, provider delay). Recovery must
+  preserve an uncertain launch outcome as UNKNOWN_OUTCOME or
+  DISPATCHED (not FAILED) until the transport positively establishes the
+  outcome. The DISPATCHED→FAILED arm (t-a10) requires positive evidence
+  of launch failure, not absence of a session lookup result.
+- **t-a13 receipt-classification authority.** The fail-closed boundary in
+  `fail_candidate` blocks until Chapter 3's receipt-admission mechanism
+  establishes the `completeness` and `evidence_complete_by_utc` fields as
+  authoritative. M3's evidence seam provides the admission path; the
+  classification logic already exists below the boundary.
+
 ## Standing constraints
 
 Every milestone: invariant-named tests, adversarial arms, crash/restart

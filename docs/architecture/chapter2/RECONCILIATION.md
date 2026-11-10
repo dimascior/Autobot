@@ -118,10 +118,13 @@ correction and the M3-preparation slice:
      evidence never fails the candidate
      (`test_t_a13_incomplete_requires_elapsed_bound`).
 - **Classification summary**: contract admission t-c01..t-c04/t-c07,
-  sequence t-s01/t-s03/t-s06/t-s08, attempt t-a01..t-a06/t-a09..t-a11/
-  t-a13, permit t-r01/t-r02, intents t-i01..t-i07 — IMPLEMENTED with named
-  tests. PARTIAL, declared: t-i05 cancellation-proof arm, t-i07
-  retry-permit arm. DEFERRED, declared: t-c05/t-c06 (queued-freeze
+  sequence t-s01/t-s03/t-s06/t-s08, attempt t-a01..t-a06/t-a09..t-a11,
+  permit t-r01/t-r02, intents t-i01..t-i07 — IMPLEMENTED with named
+  tests. PARTIAL, declared: t-a13 receipt-classification authority
+  (fail-closed: the completeness and deadline fields are structurally
+  present but not authoritatively established until Chapter 3's
+  receipt-admission mechanism exists), t-i05 cancellation-proof arm,
+  t-i07 retry-permit arm. DEFERRED, declared: t-c05/t-c06 (queued-freeze
   triggers), t-a12, remaining sequence machine, standalone effect
   machines, wildcards.
 - **Proof of record** (exact counts, after the final correction pass):
@@ -145,41 +148,50 @@ evidence (CAS resolution, D-66) and authoritative receipt conclusions
   CAS (D-66 re-hash).  Step 2 validates the receipt's authoritative
   identity: (a) `kind == "ExecutionReceipt"` (INV-68 identity),
   (b) `attempt_id` matches the durable attempt row (INV-69 binding),
-  (c) `attempt_contract_hash`, when declared, matches the durable contract
-  (INV-68 integrity).  Chapter 3 owns the deeper receipt-admission
-  semantics; this boundary enforces the invariants the Sequencer can
-  verify from its own durable state.
-- **Adversarial tests added** (test_attempts_execution.py):
-  - `test_t_a13_rejects_unbound_receipt`: wrong attempt_id → refused,
-    attempt state and journal preserved.
+  (c) `attempt_contract_hash` matches the durable contract (INV-68
+  integrity — now required, not optional).
+- **t-a13 declared PARTIAL (fail-closed)**: operator code-level review
+  identified that the previous implementation trusted a receipt's
+  self-declared `completeness` and `evidence_complete_by_utc` fields
+  without establishing their authority.  An INTEGRITY_FAILED
+  classification requires Chapter 3's receipt-admission mechanism; an
+  INCOMPLETE deadline must derive from an authoritative policy/window
+  (D-28).  `fail_candidate` now raises at the authority boundary before
+  the completeness classification logic, which is preserved for Chapter 3.
+  The classification logic (INTEGRITY_FAILED immediate failure,
+  INCOMPLETE with elapsed-bound evaluation, unsupported-classification
+  refusal) remains in the source below the boundary for Chapter 3 to
+  activate when it supplies the receipt-admission authority.
+- **Adversarial tests** (test_attempts_execution.py):
+  - `test_t_a13_rejects_unbound_receipt`: wrong attempt_id → refused at
+    identity boundary, state preserved.
   - `test_t_a13_rejects_wrong_contract_hash`: forged contract hash →
     refused, state preserved.
   - `test_t_a13_rejects_wrong_receipt_kind`: CAS object that is not an
     ExecutionReceipt → refused, state preserved.
   - `test_t_a06_rejects_unbound_receipt`: the evidence-completion path
-    enforces the same authority boundary.
-  - `test_t_a13_forged_past_deadline_preserves_state`: forged past
-    deadline combined with wrong binding → caught at binding check before
-    deadline evaluation, state preserved.
-- **Completion deadline semantics** (Section 2): the INCOMPLETE branch
-  continues to use the receipt-declared `evidence_complete_by_utc` bound,
-  evaluated against the Sequencer's own clock (D-28).  The bound's
-  derivation from D-21 admission facts remains Chapter 3's receipt
-  semantics — an INCOMPLETE receipt declaring no bound is refused as
-  unevaluable (PARTIAL until Chapter 3 supplies it).  The adversarial
-  tests now cover forged past deadlines and mismatched bindings, proving
-  that rejected requests preserve exact Attempt state and
-  TransitionRecord journal.
-- **M3 execution integration preserved** (Section 3): the durable
-  `call_id`, PromptProjection binding, AutoSwarm transport interface, and
-  D-21 witness-admission specification are unchanged.  The `dispatched`
-  crash stage continues to prove the restart relationship.
-- **Proof of record** (authority-boundary pass):
-  autobot suite **89/89 OK** under PATH CPython 3.8.10
-  (gate 20261110-ch2m2-authority-001) and under the repo venv CPython
-  3.12 (ch2m2-authority-006); coordinator regression **41/41 OK** under
-  the venv (ch2m2-authority-005).  Gate chain for this pass:
-  20261110-ch2m2-authority-001..006.
+    enforces the same identity boundary.
+  - `test_receipt_requires_contract_hash`: receipt omitting
+    attempt_contract_hash → refused at INV-68.
+  - `test_t_a13_forged_past_deadline_wrong_binding`: forged deadline +
+    wrong attempt_id → caught at binding check.
+  - `test_t_a13_correct_binding_forged_classification`: correct binding
+    + INTEGRITY_FAILED → caught at the PARTIAL authority boundary, not
+    at the classification logic.
+  - `test_t_a13_correct_binding_forged_deadline`: correct binding +
+    INCOMPLETE + elapsed deadline → caught at the PARTIAL authority
+    boundary, not at the deadline comparison.
+  - `test_integrity_failed_candidate_is_partial`: INTEGRITY_FAILED with
+    correct binding → authority boundary, state preserved.
+  - `test_t_a13_incomplete_is_partial`: INCOMPLETE with elapsed bound
+    and correct binding → authority boundary, state preserved.
+- **M3 execution integration preserved**: the durable `call_id`,
+  PromptProjection binding, AutoSwarm transport interface, and D-21
+  witness-admission specification are unchanged.
+- **M3 specification carry-forward**: `find_session(call_id)` returning
+  `None` is not positive proof that an external launch failed; recovery
+  must preserve an uncertain launch outcome until the transport
+  establishes it (noted in INTEGRATION_PLAN.md).
 
 ## Journal honesty
 

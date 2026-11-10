@@ -904,12 +904,10 @@ class Sequencer:
                 "receipt attempt_id %r does not bind to attempt %s"
                 " (INV-69: receipt must bind its Attempt)"
                 % (receipt.get("attempt_id"), att["attempt_id"]))
-        declared_hash = receipt.get("attempt_contract_hash")
-        if (declared_hash is not None
-                and declared_hash != att["attempt_contract_hash"]):
+        if receipt.get("attempt_contract_hash") != att["attempt_contract_hash"]:
             raise ConflictError(
-                "receipt attempt_contract_hash does not match the"
-                " durable contract (INV-68: receipt integrity)")
+                "receipt attempt_contract_hash must match the durable"
+                " contract (INV-68: receipt integrity)")
         return receipt
 
     def _cas_attempt(self, cur, att, to_state, now, require_sequence_fence=False):
@@ -1165,6 +1163,21 @@ class Sequencer:
                     % att["state"])
             receipt = self._resolve_receipt(
                 cur, execution_receipt_address, att)
+            # --- Authority boundary (fail-closed, PARTIAL until Ch3) ---
+            # The receipt's completeness classification and any declared
+            # deadline are self-asserted fields.  An INTEGRITY_FAILED
+            # classification requires Chapter 3's receipt-admission
+            # mechanism to establish it authoritatively; an INCOMPLETE
+            # deadline must derive from an authoritative policy/window
+            # or validated admission record (D-28).  Until those inputs
+            # exist, fail_candidate cannot treat the receipt as
+            # authoritative evidence for failing the candidate.
+            raise ConflictError(
+                "t-a13 receipt-classification authority is PARTIAL:"
+                " Chapter 3's receipt-admission mechanism must"
+                " establish the completeness and deadline fields as"
+                " authoritative before this transition can proceed")
+            # The classification logic below is preserved for Chapter 3.
             completeness = receipt.get("completeness")
             if completeness == "INTEGRITY_FAILED":
                 bound_fact = None
