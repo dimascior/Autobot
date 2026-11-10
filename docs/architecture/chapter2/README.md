@@ -109,8 +109,11 @@ bytes (D-31 content address), referenced from the journal entry.
   `journal.py` (obj-36 hash chain), `registry.py` (actor `registry`:
   object admission, SEM-19, t-c01..t-c07 over P-1/P-2), `sequencer.py`
   (actor `sequencer`: instance lease, sequence/attempt transitions,
-  permit arithmetic, recovery), `schemas/` (byte mirror of the six v1
-  schemas).
+  permit arithmetic, witness admission, recovery), `effects.py`,
+  `principals.py` and `witnesses.py` (registry-pinned vocabularies),
+  `projection.py` (obj-10 minimal form), `project_state.py` (the read-only
+  view), `transport.py` (the transport contract + `reconcile_dispatched`),
+  `schemas/` (byte mirror of the six v1 schemas).
 - `src/contract_library/` — byte-identical mirror of
   `docs/architecture/chapter1/contract_library/` (D-65).
 - `tests/autobot/` — the CH2-* runtime tests named by Chapter 0's
@@ -129,7 +132,8 @@ TransitionRecord payloads carry `rule`: a Chapter 0 transition id (`t-…`)
 when a registered machine transition happened, or a `ch2:`-prefixed rule for
 authority primitives the full protocol later subsumes into their owning
 transitions (`ch2:admit-object`, `ch2:instance-lease`, `ch2:lease-renew`,
-`ch2:grant-permit`, `ch2:reserve-use`, `ch2:renew-reservation`). The journal
+`ch2:grant-permit`, `ch2:reserve-use`, `ch2:renew-reservation`,
+`ch2:mint-intent`, `ch2:admit-witness`). The journal
 records exactly what happened; no entry ever claims a protocol transition
 that did not occur. The chain construction is JH-1 (`journal_entry_hash`,
 genesis omits `previous`).
@@ -176,6 +180,67 @@ the `dispatched` crash stage. Proof of record: autobot 82/82 on CPython
 20261110-ch2m2-001..010). [M3_SPEC.md](M3_SPEC.md) is the executable
 vertical-slice specification for the first contract-authorized specialist
 execution.
+
+## Milestone 3 — the first contract-authorized specialist execution (2026-11-10)
+
+The [M3_SPEC.md](M3_SPEC.md) vertical slice, implemented against the
+deterministic fake transport (the operator's first acceptance gate; the
+bounded real-provider test follows it):
+
+- **call_id ownership reconciled** (operator's review point): the Sequencer
+  mints the call identity inside the t-a02 transaction — the `call_id` and
+  its `attempt_calls` row are durably committed BEFORE any external launch,
+  and no caller can supply or reuse one. `dispatch_attempt` returns the
+  minted id, the provider-side idempotency key.
+- **Schema v4** (D-70, additive): `attempt_witnesses` — one row per D-21
+  structured admission entry (`witness_kind` = a registered WitnessRecord
+  object id, `producer` = that kind's registered minter, `content_sha256` =
+  the D-31 address of the exact bytes, `admitted_utc`, and the execution
+  correlation read from `attempt_calls`), with an identity index making
+  re-admission idempotent.
+- **`Sequencer.admit_witness`** — the admission seam (D-21/D-38): exact
+  producer bytes to the CAS, the entry journaled (`ch2:admit-witness`) in
+  the same transaction, correlation ledger-derived (never caller-supplied),
+  producers validated against the pinned principals/witness registries
+  (`principals.py`, `witnesses.py`, cross-checked by
+  `test_principals_registry.py`). Admission requires a bound, unfrozen
+  execution; payload SEMANTICS stay Chapter 3's.
+- **t-a06's `required_joins_present` is now a real join**: the receipt's
+  `admitted_witnesses` must be D-21 structured entries, each matching an
+  admitted row FOR THIS ATTEMPT — receipt entries ⊆ admitted rows; a
+  receipt cannot introduce evidence the seam never saw.
+- **PromptProjection** (`projection.py`, obj-10's minimal indexed form):
+  a pure deterministic renderer binding the recomputed record tiers, the
+  dispatched role and transform, the exact attempt identity and the
+  attributed Chief Engineer guidance, with `authority_effect: none` stated
+  in the artifact; same inputs, same content address.
+- **ProjectState** (`project_state.py`): the Chief Engineer's read-only
+  view — sequences by state, attempts with bound calls and witness counts,
+  state-derived work eligibility, outstanding obligations (verification
+  named as the gate after EVIDENCE_COMPLETE), in-doubt intents, permits,
+  lease, journal head. No writes, no interpretation (D-63/D-64).
+- **The transport contract and restart protocol** (`transport.py`):
+  idempotent launch on the minted `call_id`; `find_session -> None` is
+  UNOBSERVED, never FAILED — `reconcile_dispatched` adopts an observable
+  session (admitting the provider's own record as the obj-11 witness,
+  t-a03), fails only on the transport's positive determination (t-a10),
+  and otherwise HOLDS the attempt in DISPATCHED. The deterministic
+  `FakeTransport` (tests) implements the contract with injection controls;
+  [TRANSPORT_GUARANTEES.md](TRANSPORT_GUARANTEES.md) grounds the real
+  AutoSwarm mapping and names the one gap (native launch idempotency) with
+  its closure designs.
+- **The acceptance scenario** (`test_acceptance_m3.py`): the published 11
+  criteria in one integration test, plus the adversarial arms — uncertain
+  launch outcome held, hidden-session adoption, stale-authority dispatch
+  refused, duplicate launch collapsed, missing-evidence receipts refused,
+  and the t-a13 boundary still failing closed. The crash matrix gains the
+  `running` stage; recovery pairs witness rows with their journaled
+  admissions in both directions.
+
+Still deferred: t-a12 (member-lease staleness), t-a07/t-a08 (verification,
+M4), receipt completeness classification (the t-a13 seam, Chapter 3),
+standalone effect machines, and the bounded real-provider test (the gate
+after this one).
 
 ## Reconciliation and progression
 

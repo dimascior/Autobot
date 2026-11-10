@@ -23,16 +23,17 @@ TARGET = "refs/heads/main"
 
 class SchemaEvolutionTests(unittest.TestCase):
     def test_v2_columns_and_newer_db_refusal(self):
-        """D-70: schema v2 added the obj-25 retry-identity columns and v3
-        the attempt_calls execution binding, all additively; a database
-        newer than the running code is refused."""
+        """D-70: schema v2 added the obj-25 retry-identity columns, v3 the
+        attempt_calls execution binding and v4 the attempt_witnesses D-21
+        admission entries, all additively; a database newer than the running
+        code is refused."""
         tmp = tempfile.TemporaryDirectory()
         try:
             path = Path(tmp.name) / "autobot.db"
             db = Database(path)
             row = db.conn.execute(
                 "SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            self.assertEqual(row["value"], "3")
+            self.assertEqual(row["value"], "4")
             columns = {r["name"] for r in db.conn.execute(
                 "PRAGMA table_info(effect_intents)").fetchall()}
             self.assertLessEqual(
@@ -42,6 +43,12 @@ class SchemaEvolutionTests(unittest.TestCase):
             self.assertLessEqual(
                 {"attempt_id", "role", "provider", "call_id",
                  "projection_address", "native_session_id"}, call_columns)
+            witness_columns = {r["name"] for r in db.conn.execute(
+                "PRAGMA table_info(attempt_witnesses)").fetchall()}
+            self.assertLessEqual(
+                {"admission_id", "attempt_id", "witness_kind", "producer",
+                 "content_sha256", "call_id", "native_session_id",
+                 "admitted_utc"}, witness_columns)
             db.close()
             raw = sqlite3.connect(str(path))
             raw.execute("UPDATE meta SET value='99' WHERE key='schema_version'")

@@ -6,7 +6,7 @@ the committed durable facts as JSON, then dies hard (os._exit) — for the
 restart must erase. Not a test module; test_recovery.py drives it.
 
 Stages: admitted | ready | executing | reserved | mid_transaction
-      | intent | mid_intent_tx | dispatched
+      | intent | mid_intent_tx | dispatched | running
 """
 
 import json
@@ -33,18 +33,27 @@ def main():
         rt.sequencer.acquire_lease(ttl_seconds=3600)
         rt.sequencer.mark_ready(sequence_id)
     if stage in ("executing", "reserved", "mid_transaction", "intent",
-                 "mid_intent_tx", "dispatched"):
+                 "mid_intent_tx", "dispatched", "running"):
         info = rt.sequencer.start_execution(sequence_id)
         snapshot["attempt_id"] = info["attempt_id"]
         snapshot["fence"] = info["fence"]
     if stage in ("reserved", "mid_transaction", "intent", "mid_intent_tx",
-                 "dispatched"):
+                 "dispatched", "running"):
         rt.sequencer.reserve_attempt(snapshot["attempt_id"], snapshot["fence"])
-    if stage == "dispatched":
+    if stage in ("dispatched", "running"):
         projection = rt.store.put(b"projection bytes for the crash test\n")
-        rt.sequencer.dispatch_attempt(
+        dispatched = rt.sequencer.dispatch_attempt(
             snapshot["attempt_id"], role="builder", provider="fake",
-            call_id="call-crash-1", projection_address=projection)
+            projection_address=projection)
+        snapshot["call_id"] = dispatched["call_id"]
+    if stage == "running":
+        admitted = rt.sequencer.admit_witness(
+            snapshot["attempt_id"], "obj-11", "autoswarm",
+            b"provider session record for the crash test\n")
+        snapshot["witness_admission_id"] = admitted["admission_id"]
+        rt.sequencer.attempt_running(
+            snapshot["attempt_id"], "native-crash-1",
+            admitted["content_address"])
     if stage in ("intent", "mid_intent_tx"):
         rt.sequencer.grant_permit(sequence_id, permitted_uses=2)
         rt.sequencer.reserve_use(sequence_id, snapshot["attempt_id"])
@@ -66,13 +75,18 @@ def main():
             " WHERE intent_id = ?", (snapshot["intent_id"],),
         ).fetchone()
         snapshot["intent"] = dict(irow)
-    if stage == "dispatched":
+    if stage in ("dispatched", "running"):
         crow = cur.execute(
             "SELECT role, provider, call_id, projection_address,"
             " native_session_id FROM attempt_calls WHERE attempt_id = ?",
             (snapshot["attempt_id"],),
         ).fetchone()
         snapshot["call"] = dict(crow)
+    if stage == "running":
+        snapshot["witnesses"] = cur.execute(
+            "SELECT COUNT(*) AS n FROM attempt_witnesses"
+            " WHERE attempt_id = ?", (snapshot["attempt_id"],),
+        ).fetchone()["n"]
     print(json.dumps(snapshot), flush=True)
 
     if stage == "mid_intent_tx":

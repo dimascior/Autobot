@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 from .models import SchemaTooNew
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Schema v1 (D-67): explicit state tables for Sequence, Attempt,
 # InstanceLease, permit state/reservations and EffectIntent, plus the
@@ -182,7 +182,30 @@ _DDL_V3 = (
     )""",
 )
 
-_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3}
+# Schema v4 (D-70, additive): the witness-admission seam (M3). Each row is
+# one Chapter 1 D-21 structured admission entry — the witness_kind
+# discriminator (a registered WitnessRecord object id, obj-11..obj-14), the
+# producer (that kind's registered minter, a principals.json id), the D-31
+# content address of the exact producer bytes, the D-27 admission instant,
+# and the execution correlation (call_id; native session id once known) read
+# from the ledger at admission. The identity index makes re-admission of
+# identical evidence idempotent. Witness payload SEMANTICS stay Chapter 3's.
+_DDL_V4 = (
+    """CREATE TABLE IF NOT EXISTS attempt_witnesses (
+        admission_id TEXT PRIMARY KEY,
+        attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+        witness_kind TEXT NOT NULL,
+        producer TEXT NOT NULL,
+        content_sha256 TEXT NOT NULL,
+        call_id TEXT NOT NULL,
+        native_session_id TEXT,
+        admitted_utc TEXT NOT NULL
+    )""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_witness_identity
+        ON attempt_witnesses(attempt_id, witness_kind, producer, content_sha256)""",
+)
+
+_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4}
 
 
 class Database:

@@ -202,6 +202,49 @@ class RestartTests(unittest.TestCase):
                             witness)
         db.close()
 
+    def test_crash_running_stage(self):
+        """M3 criterion 10 at the RUNNING boundary: hard death after t-a03
+        restarts into the full execution relationship — attempt RUNNING,
+        bound call with its native session id, the admitted witness row
+        resolving to exact bytes — and the lifecycle resumes from it."""
+        data_dir = self.dir / "running"
+        proc = subprocess.run(
+            [sys.executable, "-I", str(CHILD), str(data_dir), "running"],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(proc.returncode, 137, proc.stdout + proc.stderr)
+        snapshot = json.loads(proc.stdout.strip().splitlines()[-1])
+
+        db = Database(data_dir / "autobot.db")
+        store = Store(data_dir / "store")
+        seq = Sequencer(db, store, support.manual_clock(), holder="crash-child")
+        seq.recover()  # includes the witness row ↔ journal pairing + bytes
+        crow = db.conn.execute(
+            "SELECT role, provider, call_id, projection_address,"
+            " native_session_id FROM attempt_calls WHERE attempt_id = ?",
+            (snapshot["attempt_id"],)).fetchone()
+        self.assertEqual(dict(crow), snapshot["call"])
+        self.assertEqual(crow["native_session_id"], "native-crash-1")
+        att = db.conn.execute(
+            "SELECT state FROM attempts WHERE attempt_id = ?",
+            (snapshot["attempt_id"],)).fetchone()
+        self.assertEqual(att["state"], "RUNNING")
+        wrow = db.conn.execute(
+            "SELECT content_sha256 FROM attempt_witnesses"
+            " WHERE admission_id = ?",
+            (snapshot["witness_admission_id"],)).fetchone()
+        self.assertEqual(store.get(wrow["content_sha256"]),
+                         b"provider session record for the crash test\n")
+
+        seq.acquire_lease(ttl_seconds=3600)
+        resumed = seq.admit_witness(
+            snapshot["attempt_id"], "obj-13", "agent_clis",
+            b"post-restart transcript\n")
+        self.assertEqual(
+            seq.finish_attempt(snapshot["attempt_id"], "builder", "success",
+                               resumed["content_address"]), "FINISHED")
+        db.close()
+
     def test_takeover_after_expiry_advances_epoch_and_fences_stale_authority(self):
         """The review's fourth property: restart by the same still-valid
         holder (above) is distinct from takeover. A different holder is

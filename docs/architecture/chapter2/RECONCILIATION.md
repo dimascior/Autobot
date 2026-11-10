@@ -199,3 +199,22 @@ Only real machine transitions carry `t-…` rule ids (t-i01..t-i07 inclusive);
 the mint uses `ch2:mint-intent` because the registered minting transitions
 (t-s15a/b, t-s21, t-s31/32) are sequence-machine rows this milestone does
 not reach. No journal entry claims a protocol transition that did not occur.
+
+## M3 slice addendum (2026-11-10)
+
+The operator's five-part M3 scope against the frozen registries, with the
+two named reconciliation details:
+
+| Surface | Disposition |
+|---|---|
+| call_id ownership (operator detail 1) | CORRECTED: `dispatch_attempt` mints `call_id` inside the t-a02 transaction and returns it; the caller-supplied parameter is gone; `call_id_bound` holds by construction; durable before any launch |
+| t-a02..t-a04 | IMPLEMENTED (milestone 2), now driven end-to-end by the acceptance scenario over the fake transport |
+| t-a06 `required_joins_present` | UPGRADED to the real join: receipt `admitted_witnesses` = D-21 structured entries, each matching an `attempt_witnesses` row for THIS attempt (receipt ⊆ admitted); completeness CLASSIFICATION stays Chapter 3's |
+| Witness admission (D-21/D-38) | IMPLEMENTED as `admit_witness` + schema v4 `attempt_witnesses`: exact producer bytes, ledger-derived correlation, registered kind/minter vocabulary (pinned `witnesses.py`/`principals.py`), idempotent on identity, journaled `ch2:admit-witness`, recovery-paired both directions; witness payload SEMANTICS deferred to Chapter 3 |
+| PromptProjection (obj-10) | IMPLEMENTED minimal indexed form: pure deterministic renderer, recomputed record binding, attributed guidance, `authority_effect: none`; full obj-10 schema stays Chapter 3's |
+| ProjectState | IMPLEMENTED read-only (`project_state`): no writes, no interpretation (D-63/D-64); deep validation remains `recover()`'s |
+| Transport contract + restart protocol | IMPLEMENTED (`transport.py`): idempotent launch on the minted key; `find_session -> None` = UNOBSERVED (the attempt HOLDS in DISPATCHED); t-a10 only on the transport's positive determination; adoption admits the provider's own record as the obj-11 witness before t-a03 |
+| Real-provider guarantees (operator detail 2) | ANALYZED in TRANSPORT_GUARANTEES.md: correlation/observation/determination surfaces PROVEN by inspection of the installed AutoSwarm home and the coordinator's production discipline; native launch idempotency is the one gap, closed by the named A1 (adapter registry) or A2 (fork `--call-id`) design — executable proof belongs to the bounded real-provider test, the gate AFTER the fake-transport acceptance |
+| t-a13 | UNCHANGED and fail-closed (PARTIAL): the `_admitted_classification` seam still refuses receipt-declared completeness/deadlines pending Chapter 3 receipt admission — re-proven inside the integrated scenario |
+| t-a12, t-a07/t-a08 | DEFERRED (M4, member-lease and verification semantics) |
+| Crash matrix | EXTENDED: `running` stage (restart reconstructs attempt ↔ call ↔ witness and resumes); the acceptance scenario restarts in-process at DISPATCHED and adopts via `find_session` |

@@ -39,10 +39,22 @@ class ExecutionTestCase(unittest.TestCase):
         self.tmp.cleanup()
 
     def _dispatch(self, **kwargs):
-        args = {"role": "builder", "provider": "fake", "call_id": "call-1",
+        args = {"role": "builder", "provider": "fake",
                 "projection_address": self.projection}
         args.update(kwargs)
-        return self.seq.dispatch_attempt(self.attempt_id, **args)
+        result = self.seq.dispatch_attempt(self.attempt_id, **args)
+        self.call_id = result["call_id"]
+        return result
+
+    def _admit(self, witness_kind, producer, data):
+        return self.seq.admit_witness(self.attempt_id, witness_kind,
+                                      producer, data)
+
+    @staticmethod
+    def _entry(admitted, witness_kind, producer):
+        """The D-21 structured admission entry a receipt carries."""
+        return {"witness_kind": witness_kind, "producer": producer,
+                "content_sha256": admitted["content_address"]}
 
     def _receipt(self, witnesses=None, completeness="COMPLETE", bound=None,
                  attempt_id=None, attempt_contract_hash=None):
@@ -54,16 +66,27 @@ class ExecutionTestCase(unittest.TestCase):
                    else self.attempt_contract_hash,
                    "completeness": completeness,
                    "admitted_witnesses": witnesses if witnesses is not None
-                   else [self.w_start, self.w_end]}
+                   else [self.entry_start, self.entry_end]}
         if bound is not None:
             payload["evidence_complete_by_utc"] = bound
         return self.rt.store.put(
             json.dumps(payload, sort_keys=True).encode("utf-8"))
 
-    def _to_candidate_frozen(self):
+    def _run_and_finish(self, outcome="success"):
+        """dispatch → admit the lifecycle witness → t-a03 → admit the
+        transcript witness → t-a04/t-a11 per the role policy."""
         self._dispatch()
-        self.seq.attempt_running(self.attempt_id, "native-sess-9", self.w_start)
-        self.seq.finish_attempt(self.attempt_id, "builder", "success", self.w_end)
+        start = self._admit("obj-11", "autoswarm", WITNESS_START)
+        self.entry_start = self._entry(start, "obj-11", "autoswarm")
+        self.seq.attempt_running(self.attempt_id, "native-sess-9",
+                                 start["content_address"])
+        end = self._admit("obj-13", "agent_clis", WITNESS_END)
+        self.entry_end = self._entry(end, "obj-13", "agent_clis")
+        return self.seq.finish_attempt(self.attempt_id, "builder", outcome,
+                                       end["content_address"])
+
+    def _to_candidate_frozen(self):
+        self._run_and_finish()
         self.seq.freeze_candidate(self.attempt_id, self.fence,
                                   self.rt.store.put(CANDIDATE))
 
@@ -86,24 +109,31 @@ class ExecutionTestCase(unittest.TestCase):
 class DispatchTests(ExecutionTestCase):
     def test_full_execution_chain(self):
         """RESERVED→DISPATCHED→RUNNING→FINISHED→CANDIDATE_FROZEN→
-        EVIDENCE_COMPLETE, each under its registered rule id."""
+        EVIDENCE_COMPLETE, each under its registered rule id, with the
+        Sequencer-minted call identity and the admitted-witness join."""
         self._dispatch()
         call = self.rt.db.conn.execute(
             "SELECT * FROM attempt_calls WHERE attempt_id = ?",
             (self.attempt_id,)).fetchone()
-        self.assertEqual((call["role"], call["provider"], call["call_id"],
+        self.assertEqual((call["role"], call["provider"],
                           call["projection_address"]),
-                         ("builder", "fake", "call-1", self.projection))
+                         ("builder", "fake", self.projection))
+        self.assertEqual(call["call_id"], self.call_id)
+        self.assertRegex(call["call_id"], r"^call_[0-9a-f]{32}$")  # D-22
         self.assertIsNone(call["native_session_id"])
+        start = self._admit("obj-11", "autoswarm", WITNESS_START)
+        self.entry_start = self._entry(start, "obj-11", "autoswarm")
         self.seq.attempt_running(self.attempt_id, "native-sess-9",
-                                 self.w_start)
+                                 start["content_address"])
         call = self.rt.db.conn.execute(
             "SELECT native_session_id FROM attempt_calls WHERE attempt_id = ?",
             (self.attempt_id,)).fetchone()
         self.assertEqual(call["native_session_id"], "native-sess-9")
+        end = self._admit("obj-13", "agent_clis", WITNESS_END)
+        self.entry_end = self._entry(end, "obj-13", "agent_clis")
         self.assertEqual(
             self.seq.finish_attempt(self.attempt_id, "builder", "success",
-                                    self.w_end), "FINISHED")
+                                    end["content_address"]), "FINISHED")
         candidate = self.rt.store.put(CANDIDATE)
         self.seq.freeze_candidate(self.attempt_id, self.fence, candidate)
         self.seq.complete_evidence(self.attempt_id, self.fence,
@@ -113,20 +143,24 @@ class DispatchTests(ExecutionTestCase):
             (self.attempt_id,)).fetchone()["state"]
         self.assertEqual(state, "EVIDENCE_COMPLETE")
         rules = self._rules()
-        for rule in ("t-a02", "t-a03", "t-a04", "t-a05", "t-a06"):
+        for rule in ("t-a02", "t-a03", "t-a04", "t-a05", "t-a06",
+                     "ch2:admit-witness"):
             self.assertIn(rule, rules)
         self.assertEqual(self.seq.recover()["intents_in_doubt"], [])
 
     def test_dispatch_requirements(self):
         with self.assertRaises(ConflictError):
-            self._dispatch(call_id="")  # call_id_bound
-        with self.assertRaises(ConflictError):
             self._dispatch(role="reviewer")  # not in completion_policies
         with self.assertRaises(ConflictError):
             self._dispatch(projection_address="sha256:" + "0" * 64)  # no obj-10
-        self._dispatch()
+        first = self._dispatch()
         with self.assertRaises(ConflictError):
-            self._dispatch(call_id="call-2")  # already DISPATCHED
+            self._dispatch()  # already DISPATCHED
+        # the one committed call identity is the first mint, untouched
+        call = self.rt.db.conn.execute(
+            "SELECT call_id FROM attempt_calls WHERE attempt_id = ?",
+            (self.attempt_id,)).fetchone()
+        self.assertEqual(call["call_id"], first["call_id"])
 
     def test_running_requirements(self):
         self._dispatch()
@@ -153,9 +187,7 @@ class DispatchTests(ExecutionTestCase):
         self.assertIn("t-a10", self._rules())
 
     def test_freeze_and_evidence_guards(self):
-        self._dispatch()
-        self.seq.attempt_running(self.attempt_id, "native-sess-9", self.w_start)
-        self.seq.finish_attempt(self.attempt_id, "builder", "success", self.w_end)
+        self._run_and_finish()
         candidate = self.rt.store.put(CANDIDATE)
         with self.assertRaises(StaleFenceError):
             self.seq.freeze_candidate(self.attempt_id, self.fence + 1, candidate)
@@ -167,9 +199,17 @@ class DispatchTests(ExecutionTestCase):
             self.seq.complete_evidence(self.attempt_id, self.fence,
                                        self._receipt(witnesses=[]))
         with self.assertRaises(ConflictError):
+            # a bare address is not a D-21 structured admission entry
             self.seq.complete_evidence(
                 self.attempt_id, self.fence,
                 self._receipt(witnesses=["sha256:" + "0" * 64]))
+        with self.assertRaises(ConflictError):
+            # structurally valid, but this evidence was never admitted
+            self.seq.complete_evidence(
+                self.attempt_id, self.fence,
+                self._receipt(witnesses=[
+                    {"witness_kind": "obj-11", "producer": "autoswarm",
+                     "content_sha256": "sha256:" + "0" * 64}]))
         self.seq.complete_evidence(self.attempt_id, self.fence, self._receipt())
 
     def test_integrity_failed_candidate_is_partial(self):
@@ -366,6 +406,91 @@ class DispatchTests(ExecutionTestCase):
         with self.rt.db.transaction() as tx:
             tx.execute("DELETE FROM attempt_calls WHERE attempt_id = ?",
                        (self.attempt_id,))
+        with self.assertRaises(IntegrityHalt):
+            self.seq.recover()
+
+
+class WitnessAdmissionTests(ExecutionTestCase):
+    """The M3 admission seam: D-21 structured entries, ledger-derived
+    correlation, idempotency, state gating, and recovery pairing."""
+
+    def test_admission_requires_bound_unfrozen_execution(self):
+        with self.assertRaises(ConflictError):
+            # RESERVED: no bound call yet, nothing to correlate with
+            self._admit("obj-11", "autoswarm", WITNESS_START)
+        self._to_candidate_frozen()
+        with self.assertRaises(ConflictError):
+            # after t-a05 the candidate is frozen: late evidence is refused
+            self._admit("obj-12", "helios", b"late governance witness\n")
+
+    def test_admission_vocabulary_and_producer_binding(self):
+        self._dispatch()
+        with self.assertRaises(ConflictError):
+            self._admit("obj-99", "autoswarm", WITNESS_START)  # unknown kind
+        with self.assertRaises(ConflictError):
+            # helios is not the registered minter of execution-lifecycle
+            self._admit("obj-11", "helios", WITNESS_START)
+        with self.assertRaises(ConflictError):
+            self._admit("obj-11", "nobody", WITNESS_START)
+
+    def test_admission_entry_carries_ledger_correlation(self):
+        """The D-21 correlation comes from attempt_calls, never the caller:
+        before t-a03 the native id is absent (D-37); after it, present."""
+        self._dispatch()
+        first = self._admit("obj-11", "autoswarm", WITNESS_START)
+        row = self.rt.db.conn.execute(
+            "SELECT * FROM attempt_witnesses WHERE admission_id = ?",
+            (first["admission_id"],)).fetchone()
+        self.assertEqual(row["call_id"], self.call_id)
+        self.assertIsNone(row["native_session_id"])
+        self.assertEqual(row["producer"], "autoswarm")
+        # byte identity through the seam (D-38)
+        self.assertEqual(self.rt.store.get(row["content_sha256"]),
+                         WITNESS_START)
+        self.seq.attempt_running(self.attempt_id, "native-sess-9",
+                                 first["content_address"])
+        second = self._admit("obj-13", "agent_clis", WITNESS_END)
+        row = self.rt.db.conn.execute(
+            "SELECT * FROM attempt_witnesses WHERE admission_id = ?",
+            (second["admission_id"],)).fetchone()
+        self.assertEqual(row["native_session_id"], "native-sess-9")
+
+    def test_admission_is_idempotent_on_identity(self):
+        self._dispatch()
+        first = self._admit("obj-11", "autoswarm", WITNESS_START)
+        self.assertFalse(first["duplicate"])
+        before = self._journal_count()
+        again = self._admit("obj-11", "autoswarm", WITNESS_START)
+        self.assertTrue(again["duplicate"])
+        self.assertEqual(again["admission_id"], first["admission_id"])
+        self.assertEqual(self._journal_count(), before)  # nothing claimed
+        rows = self.rt.db.conn.execute(
+            "SELECT COUNT(*) AS n FROM attempt_witnesses").fetchone()["n"]
+        self.assertEqual(rows, 1)
+
+    def test_recovery_pairs_witness_rows_and_journal(self):
+        """D-68 pairing both ways: a journaled admission without its row
+        HALTs, and a forged row without its journal entry HALTs."""
+        self._dispatch()
+        admitted = self._admit("obj-11", "autoswarm", WITNESS_START)
+        with self.rt.db.transaction() as tx:
+            tx.execute("DELETE FROM attempt_witnesses WHERE admission_id = ?",
+                       (admitted["admission_id"],))
+        with self.assertRaises(IntegrityHalt):
+            self.seq.recover()
+
+    def test_recovery_rejects_forged_witness_row(self):
+        self._dispatch()
+        self._admit("obj-11", "autoswarm", WITNESS_START)
+        with self.rt.db.transaction() as tx:
+            tx.execute(
+                "INSERT INTO attempt_witnesses (admission_id, attempt_id,"
+                " witness_kind, producer, content_sha256, call_id,"
+                " native_session_id, admitted_utc)"
+                " SELECT 'wit_' || lower(hex(randomblob(16))), attempt_id,"
+                " 'obj-12', 'helios', content_sha256, call_id,"
+                " native_session_id, admitted_utc FROM attempt_witnesses"
+                " LIMIT 1")
         with self.assertRaises(IntegrityHalt):
             self.seq.recover()
 

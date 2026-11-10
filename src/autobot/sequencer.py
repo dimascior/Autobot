@@ -20,6 +20,7 @@ from contract_library import canonicalize, compute_tiers, object_hash
 
 from . import journal
 from .effects import EFFECTS, OUTCOME_RULES, RETRYABLE
+from .witnesses import WITNESS_KINDS
 from .models import (
     ATTEMPT_TERMINAL,
     INT_MAX,
@@ -684,6 +685,7 @@ class Sequencer:
             "standing_permit_state": ("permit_state", "sequence_id"),
             "registry_objects": ("objects", "object_hash"),
             "effect_intent": ("effect_intents", "intent_id"),
+            "attempt_witness": ("attempt_witnesses", "admission_id"),
         }
         for (machine, subject) in last:
             mapped = reverse_tables.get(machine)
@@ -792,6 +794,27 @@ class Sequencer:
                     % row["attempt_id"])
             self.store.get(row["projection_address"])
             referenced.add(row["projection_address"])
+
+        # -- 8b. witness admissions (M3 seam): every row joins a bound
+        #        execution, resolves to its exact bytes, and has its
+        #        journaled admission (D-68 pairing, both directions via
+        #        reverse_tables above).
+        for row in cur.execute(
+                "SELECT admission_id, attempt_id, content_sha256"
+                " FROM attempt_witnesses").fetchall():
+            if cur.execute(
+                    "SELECT 1 FROM attempt_calls WHERE attempt_id = ?",
+                    (row["attempt_id"],)).fetchone() is None:
+                raise IntegrityHalt(
+                    "witness admission %s joins no bound execution"
+                    " (D-21 correlation)" % row["admission_id"])
+            self.store.get(row["content_sha256"])  # re-hashes (D-66)
+            referenced.add(row["content_sha256"])
+            entry = last.get(("attempt_witness", row["admission_id"]))
+            if entry is None or entry.get("to_state") != "ADMITTED":
+                raise IntegrityHalt(
+                    "witness admission %s has no journaled admission"
+                    " (D-68 pairing)" % row["admission_id"])
 
         # -- resumable view + fence coherence
         current = []
@@ -933,11 +956,16 @@ class Sequencer:
                 "attempt_id": att["attempt_id"],
                 "version": att["version"] + 1, "fence": att["fence"]}
 
-    def dispatch_attempt(self, attempt_id, role, provider, call_id,
+    def dispatch_attempt(self, attempt_id, role, provider,
                          projection_address):
-        """t-a02 RESERVED→DISPATCHED (trigger: dispatcher). call_id_bound and
-        the obj-10 projection reference are the registered requirements; the
-        role must be one the frozen record's completion_policies name."""
+        """t-a02 RESERVED→DISPATCHED (trigger: dispatcher). The SEQUENCER
+        mints the call identity inside this transaction (M3 ownership
+        reconciliation): the ``call_id`` and its ``attempt_calls`` row are
+        durably committed BEFORE any external launch may use them, no caller
+        can supply or reuse one, and ``call_id_bound`` holds by construction.
+        The obj-10 projection reference must resolve, and the role must be
+        one the frozen record's completion_policies name. Returns
+        ``{"call_id": ...}`` — the provider-side idempotency key."""
         now = instant(self.clock.now())
         with self.db.transaction() as cur:
             self._assert_lease(cur)
@@ -945,8 +973,7 @@ class Sequencer:
             if att["state"] != "RESERVED":
                 raise ConflictError(
                     "dispatch expects RESERVED, found %s" % att["state"])
-            if not (isinstance(call_id, str) and call_id):
-                raise ConflictError("call_id_bound requires a non-empty call id")
+            call_id = mint_id("call")
             if not self.store.has(projection_address):
                 raise ConflictError(
                     "projection %s does not resolve in the content store"
@@ -972,6 +999,7 @@ class Sequencer:
                 machine="attempt", subject_id=attempt_id, rule="t-a02",
                 from_state="RESERVED", to_state="DISPATCHED",
                 recorded_utc=now, facts=facts))
+            return {"call_id": call_id}
 
     def attempt_running(self, attempt_id, native_session_id, witness_address):
         """t-a03 DISPATCHED→RUNNING (trigger: collector): the execution
@@ -1005,6 +1033,72 @@ class Sequencer:
                 machine="attempt", subject_id=attempt_id, rule="t-a03",
                 from_state="DISPATCHED", to_state="RUNNING",
                 recorded_utc=now, facts=facts))
+
+    def admit_witness(self, attempt_id, witness_kind, producer, data):
+        """The M3 witness-admission seam (D-21/D-38): the exact producer
+        bytes go to the CAS, and one ``attempt_witnesses`` row carries
+        Chapter 1 D-21's structured admission entry — ``witness_kind`` (a
+        registered WitnessRecord object id), ``producer`` (that kind's
+        registered minter), ``content_sha256`` (the D-31 address of the
+        exact bytes), ``admitted_utc`` (D-27), and the execution correlation
+        (call_id and, once known, the native session id) read from the
+        ledger's ``attempt_calls`` row, never caller-supplied — journaled in
+        the same transaction. Admission requires a bound, not-yet-frozen
+        execution (DISPATCHED/RUNNING/FINISHED): everything a frozen
+        candidate's receipt references must already be admitted (t-a05
+        precedes t-a06's join). Witness payload SEMANTICS are Chapter 3's;
+        this seam makes the admission lifecycle durable now.
+
+        Idempotent on identity: re-admitting the same (attempt, kind,
+        producer, content) returns the existing entry and journals nothing —
+        the journal never claims an admission that did not occur."""
+        kind = WITNESS_KINDS.get(witness_kind)
+        if kind is None:
+            raise ConflictError(
+                "witness_kind %r is not a registered WitnessRecord object"
+                % (witness_kind,))
+        if producer != kind["producer"]:
+            raise ConflictError(
+                "producer %r is not the registered minter %r of %s (D-21)"
+                % (producer, kind["producer"], witness_kind))
+        data = bytes(data)
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            att = self._attempt(cur, attempt_id)
+            if att["state"] not in ("DISPATCHED", "RUNNING", "FINISHED"):
+                raise ConflictError(
+                    "witness admission requires a bound, unfrozen execution"
+                    " (DISPATCHED/RUNNING/FINISHED), found %s" % att["state"])
+            call = self._attempt_call(cur, attempt_id)
+            address = self.store.put(data)
+            existing = cur.execute(
+                "SELECT admission_id FROM attempt_witnesses WHERE attempt_id = ?"
+                " AND witness_kind = ? AND producer = ? AND content_sha256 = ?",
+                (attempt_id, witness_kind, producer, address)).fetchone()
+            if existing is not None:
+                return {"admission_id": existing["admission_id"],
+                        "content_address": address, "duplicate": True}
+            admission_id = mint_id("wit")
+            cur.execute(
+                "INSERT INTO attempt_witnesses (admission_id, attempt_id,"
+                " witness_kind, producer, content_sha256, call_id,"
+                " native_session_id, admitted_utc)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (admission_id, attempt_id, witness_kind, producer, address,
+                 call["call_id"], call["native_session_id"], now))
+            facts = {"attempt_id": attempt_id,
+                     "sequence_id": att["sequence_id"],
+                     "witness_kind": witness_kind, "producer": producer,
+                     "content_sha256": address, "call_id": call["call_id"]}
+            if call["native_session_id"] is not None:  # D-37
+                facts["native_session_id"] = call["native_session_id"]
+            journal.append(cur, journal.transition_record(
+                machine="attempt_witness", subject_id=admission_id,
+                rule="ch2:admit-witness", to_state="ADMITTED",
+                recorded_utc=now, facts=facts))
+            return {"admission_id": admission_id,
+                    "content_address": address, "duplicate": False}
 
     def finish_attempt(self, attempt_id, role, outcome, witness_address):
         """RUNNING→FINISHED (t-a04, completion_policy_satisfied_per_role) or
@@ -1075,9 +1169,14 @@ class Sequencer:
     def complete_evidence(self, attempt_id, expected_fence,
                           execution_receipt_address):
         """t-a06 CANDIDATE_FROZEN→EVIDENCE_COMPLETE: fence_matches plus
-        required_joins_present — v1 reads the obj-15 reference and requires a
-        non-empty admitted_witnesses list whose every address resolves; the
-        full admission-join semantics are the M3 evidence seam's."""
+        required_joins_present as a REAL JOIN (M3): the receipt's
+        ``admitted_witnesses`` must be a non-empty list of D-21 structured
+        admission entries, and every entry must match an
+        ``attempt_witnesses`` row admitted FOR THIS ATTEMPT (by
+        witness_kind + producer + content_sha256). Receipt entries are a
+        subset of the admitted rows — a receipt cannot introduce evidence
+        the admission seam never saw. Completeness CLASSIFICATION stays
+        Chapter 3's (the t-a13 seam)."""
         now = instant(self.clock.now())
         with self.db.transaction() as cur:
             self._assert_lease(cur)
@@ -1098,16 +1197,35 @@ class Sequencer:
                 raise ConflictError(
                     "required_joins_present: the execution receipt names no"
                     " admitted witnesses")
-            missing = [w for w in witnesses
-                       if not (isinstance(w, str) and self.store.has(w))]
-            if missing:
-                raise ConflictError(
-                    "required_joins_present: admitted witnesses do not"
-                    " resolve: %s" % ", ".join(missing[:3]))
+            for entry in witnesses:
+                if not (isinstance(entry, dict)
+                        and isinstance(entry.get("witness_kind"), str)
+                        and isinstance(entry.get("producer"), str)
+                        and isinstance(entry.get("content_sha256"), str)):
+                    raise ConflictError(
+                        "required_joins_present: receipt witness entries"
+                        " must be D-21 structured admission entries"
+                        " (witness_kind, producer, content_sha256)")
+                row = cur.execute(
+                    "SELECT admission_id FROM attempt_witnesses"
+                    " WHERE attempt_id = ? AND witness_kind = ?"
+                    " AND producer = ? AND content_sha256 = ?",
+                    (att["attempt_id"], entry["witness_kind"],
+                     entry["producer"], entry["content_sha256"])).fetchone()
+                if row is None:
+                    raise ConflictError(
+                        "required_joins_present: the receipt names evidence"
+                        " never admitted for this attempt (%s by %s)"
+                        % (entry["witness_kind"], entry["producer"]))
+                if not self.store.has(entry["content_sha256"]):
+                    raise IntegrityHalt(
+                        "admitted witness %s has lost its bytes (D-66 HALT)"
+                        % entry["content_sha256"])
             self._cas_attempt(cur, att, "EVIDENCE_COMPLETE", now,
                               require_sequence_fence=True)
             facts = self._quadruple(att)
             facts["execution_receipt_address"] = execution_receipt_address
+            facts["admitted_witness_count"] = len(witnesses)
             journal.append(cur, journal.transition_record(
                 machine="attempt", subject_id=attempt_id, rule="t-a06",
                 from_state="CANDIDATE_FROZEN", to_state="EVIDENCE_COMPLETE",
