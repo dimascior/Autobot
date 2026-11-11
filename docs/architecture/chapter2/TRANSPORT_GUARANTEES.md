@@ -77,20 +77,76 @@ real-provider test proves whichever lands:
   claim point (the same directory-exclusivity its `runner.lock` already
   relies on), and `find_session` needs no adapter mapping at all.
 
+## G2 closure — A2 executed (2026-11-11)
+
+The bounded real-provider test ran against the installed provider and the
+live home, per the operator's directive (Helios gates 20261110-g2-001..008):
+
+- **The A2 mechanism landed** as fork commit
+  `2bbaca726a3776e136623310fc436f302968c858` on base `addc189` (clean
+  tree): `engine.start_call` accepts a caller-supplied `call_id` (strictly
+  `call_` + 32 lowercase hex, the native mint's own shape), adopts an
+  existing complete claim by returning `inspect_call` instead of launching,
+  arbitrates races at the provider's own atomic claim point (the
+  `exist_ok=False` call-directory create), and refuses a claim directory
+  without a task record with the distinct `call_claim_incomplete` error —
+  "refuses or adopts", exactly. The `run` command exposes it as
+  `--call-id`; no behavior changes when the flag is absent (the self-mint
+  remains). Fork suite: 209/211 passing — regression-stable against the
+  clean baseline, not fully green (the same two pre-existing Kimi
+  failures, g2-003 before / g2-004 after); the new
+  `test_supplied_call_id_is_exclusive_and_adoptive` covers mint-shape
+  refusal, adoption without rewrite, single-record identity, and the
+  incomplete-claim refusal. Reinstalled via uv from the clone (g2-005/006)
+  and verified live (g2-007).
+- **The bounded live run** (`tests/autobot/live_g2.py`, g2-008, one real
+  claude-code child on `claude-opus-4-6[1m]` per the operator's standing
+  model policy) drove the REAL Sequencer end to end and passed all checks:
+  - **T3 (uncertainty honesty)**: before any launch, `find_session` on the
+    minted id returned None and `reconcile_dispatched` HELD the attempt in
+    DISPATCHED with the journal untouched — absence never became failure
+    evidence.
+  - **T1 (idempotent launch)**: two real CLI launches with the one
+    Sequencer-minted key `call_944b0c33c5975c3b1178c2bd0635c800` produced
+    exactly one new call directory and one task record; the second launch
+    adopted.
+  - **T2 (recovery from durable state)**: `handle.json` alone yielded
+    native session `ffda9300-6c41-4507-a6fd-a234db5b2fd3`;
+    `reconcile_dispatched` admitted the exact handle bytes as the obj-11
+    witness and t-a03 bound the native id; the attempt reached RUNNING,
+    then FINISHED on the child's completed result (admitted as evidence),
+    and `recover()` passed over the whole live flow.
+
+  Evidence (retained per the operator's auditability requirement): the
+  run report with full provenance — fork commit, model, provider home,
+  observed outcomes — at
+  [evidence/g2-report-20261111.json](evidence/g2-report-20261111.json);
+  the provider's own durable records in the live home's
+  `calls/call_944b0c33…` directory; the Autobot ledger under the session
+  scratchpad; and the gate records above.
+
+  Scope qualifications (the operator's, preserved): the live run proves
+  **sequential** adoption — concurrent-launch and crash-interleaving
+  cases are not independently established by it and rest on the atomic
+  directory claim (the intended mechanism, with the fork's explicit race
+  arbiter on `FileExistsError`). `call_claim_incomplete` fails closed by
+  design; **recovering** from an incomplete claim is a separate
+  availability concern outside this closure.
+
 ## Status
 
 | Guarantee | Status |
 |---|---|
 | G1 | PROVEN in the runtime (t-a02 commits before launch; crash stage `dispatched`) |
-| G2 | NOT native; closed by A1 or A2 above — design named, not yet executed |
-| G3 | PROVEN by inspection + the coordinator's production discipline |
-| G4 | PROVEN surface (`result.json` outcome); the bounded rule for "can no longer come into existence" is A1/A2-dependent |
-| G5 | PROVEN surface (call directory + result content; witness files are producer originals on disk) |
+| G2 | CLOSED LIVE via A2 (2026-11-11): one minted key, two launches, one session — see the execution record above |
+| G3 | PROVEN live: pre-launch None held the attempt; the real session was observed from `handle.json` alone |
+| G4 | PROVEN surface (`result.json` outcome); the bounded "can no longer come into existence" rule remains design-stated — t-a10's positive-failure path stays proven by the deterministic arms, not live |
+| G5 | PROVEN live: handle and result bytes admitted as obj-11 witnesses byte-identically |
 
-**Conclusion.** The fake transport's contract is implementable over the
-real provider: correlation, honest observation and positive determination
-exist today as durable provider state; launch idempotency requires the
-named A1/A2 mechanism. Until the bounded real-provider test executes one
-of them, the fake transport is representative of the CONTRACT, and G2's
-real-world closure remains an explicitly open obligation of that test —
-nothing in M3's acceptance claims it is already proven live.
+**Conclusion.** The transport contract is now executed over the real
+provider: durable pre-launch correlation, launch idempotency on the
+Sequencer-minted key, honest observation, and byte-exact evidence
+collection are demonstrated live; positive launch-failure determination
+(t-a10) remains exercised only by the deterministic arms, since no live
+failure was fabricated. The fake transport is thereby representative of
+the contract AND of the deployed provider's observed behavior.

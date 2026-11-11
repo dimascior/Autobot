@@ -1,0 +1,110 @@
+{
+  "started_utc": "2026-11-11T05:19:55Z",
+  "autoswarm_home": "E:\\Users\\dimas\\autoswarm-home",
+  "provider": "claude-code",
+  "checks": [
+    {
+      "check": "T3_unobserved_holds",
+      "pass": true,
+      "reconcile": [
+        {
+          "attempt_id": "at_6c4b34d1f2b2f905ca690e9586e99874",
+          "call_id": "call_944b0c33c5975c3b1178c2bd0635c800",
+          "action": "held"
+        }
+      ],
+      "state": "DISPATCHED"
+    },
+    {
+      "check": "T1_idempotent_launch",
+      "pass": true,
+      "new_call_dirs": [
+        "call_944b0c33c5975c3b1178c2bd0635c800"
+      ],
+      "native_first": null,
+      "native_second": null
+    },
+    {
+      "check": "T2_adopted_from_durable_state",
+      "pass": true,
+      "adopted": [
+        {
+          "attempt_id": "at_6c4b34d1f2b2f905ca690e9586e99874",
+          "call_id": "call_944b0c33c5975c3b1178c2bd0635c800",
+          "action": "adopted",
+          "native_session_id": "ffda9300-6c41-4507-a6fd-a234db5b2fd3"
+        }
+      ],
+      "native_session_id": "ffda9300-6c41-4507-a6fd-a234db5b2fd3"
+    },
+    {
+      "check": "completion_observed",
+      "pass": true,
+      "outcome": "success",
+      "final_state": "FINISHED"
+    },
+    {
+      "check": "recover_clean",
+      "pass": true,
+      "intents_in_doubt": []
+    }
+  ],
+  "call_id": "call_944b0c33c5975c3b1178c2bd0635c800",
+  "launches": [
+    {
+      "argv_model": {
+        "model": "claude-opus-4-6[1m]"
+      },
+      "call_id": "call_944b0c33c5975c3b1178c2bd0635c800",
+      "state": "running",
+      "native_session_id": null
+    },
+    {
+      "argv_model": {
+        "model": "claude-opus-4-6[1m]"
+      },
+      "call_id": "call_944b0c33c5975c3b1178c2bd0635c800",
+      "state": "running",
+      "native_session_id": null
+    }
+  ],
+  "project_state": {
+    "attempt": [
+      {
+        "attempt_id": "at_6c4b34d1f2b2f905ca690e9586e99874",
+        "sequence_id": "sq_e43176ba212307d17bb863e0cc157e22",
+        "state": "FINISHED",
+        "version": 5,
+        "fence": 1,
+        "attempt_contract_hash": "sha256:e80a4162649113010ca02cce8202b2a4d48394557c771117c3715980aa681b37",
+        "witnesses": 2,
+        "call": {
+          "role": "builder",
+          "provider": "claude-code",
+          "call_id": "call_944b0c33c5975c3b1178c2bd0635c800",
+          "projection_address": "sha256:66ab39c609b589b9f6df7b6327716ed652a40c5dbf2c1b9f2d0c4a894ed440a6",
+          "native_session_id": "ffda9300-6c41-4507-a6fd-a234db5b2fd3"
+        }
+      }
+    ]
+  },
+  "all_passed": true,
+  "provenance": {
+    "amended_note": "This block was added when the evidence was retained into the repository (2026-11-11, the run itself predates the fork commit): the run used the installed tool built at gate 20261110-g2-006 from the fork working tree that was then committed UNCHANGED as fork_commit below (three-file diff reviewed at g2-011, staged at g2-013, committed at g2-014 with no intervening edits). Everything above this block is the run's original output, byte-identical to the session-scratchpad g2-report.json except for this key.",
+    "fork_commit": "2bbaca726a3776e136623310fc436f302968c858",
+    "fork_base": "addc18935b1eb38230e73f4465127bc9ea325073",
+    "fork_repo": "dimascior/AutoSwarm (local clone C:/Users/dimas/source/AutoSwarm, the uv tool's install source)",
+    "tool_version": "AutoSwarm 2.0.0.dev0 (uv tool install from the clone, gates g2-005/g2-006)",
+    "autoswarm_exe": "C:\\Users\\dimas\\.local\\bin\\autoswarm.exe",
+    "model": "claude-opus-4-6[1m]",
+    "provider_home": "E:\\Users\\dimas\\autoswarm-home",
+    "durable_provider_records": "E:\\Users\\dimas\\autoswarm-home\\calls\\call_944b0c33c5975c3b1178c2bd0635c800",
+    "native_session_id": "ffda9300-6c41-4507-a6fd-a234db5b2fd3",
+    "helios_gates": "20261110-g2-001..009 (the run is g2-008)",
+    "operator_qualifications": [
+      "the live run proves sequential adoption; concurrent-launch and crash-interleaving cases rest on the provider's atomic directory claim, the intended mechanism for them",
+      "call_claim_incomplete fails closed; recovery from an incomplete claim is a separate availability concern",
+      "fork suite 209/211 passing - regression-stable against the pre-edit baseline (the same two pre-existing Kimi failures), not fully green"
+    ]
+  }
+}
