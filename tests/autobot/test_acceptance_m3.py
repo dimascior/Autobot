@@ -240,8 +240,10 @@ class AcceptanceScenario(AcceptanceBase):
         # 11. the Chief Engineer's ProjectState reflects the execution and
         #     its next obligations: verification is the named next gate.
         view = project_state(db)
+        # M4: the sequence walks beside its attempt (t-s07 then t-s09), so
+        # evidence completion leaves it VERIFYING, awaiting the M4 gates.
         self.assertEqual(view["sequences_by_state"],
-                         {"EXECUTING": [self.sequence_id]})
+                         {"VERIFYING": [self.sequence_id]})
         entry = [a for a in view["attempts"]
                  if a["attempt_id"] == self.attempt_id][0]
         self.assertEqual(entry["state"], "EVIDENCE_COMPLETE")

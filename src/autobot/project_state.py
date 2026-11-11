@@ -40,7 +40,9 @@ def project_state(db):
             " c.role, c.provider, c.call_id, c.projection_address,"
             " c.native_session_id,"
             " (SELECT COUNT(*) FROM attempt_witnesses w"
-            "   WHERE w.attempt_id = a.attempt_id) AS witnesses"
+            "   WHERE w.attempt_id = a.attempt_id) AS witnesses,"
+            " (SELECT COUNT(*) FROM attempt_verifications v"
+            "   WHERE v.attempt_id = a.attempt_id) AS verifications"
             " FROM attempts a LEFT JOIN attempt_calls c"
             " ON c.attempt_id = a.attempt_id"
             " ORDER BY a.attempt_id").fetchall():
@@ -48,7 +50,8 @@ def project_state(db):
                  "sequence_id": row["sequence_id"], "state": row["state"],
                  "version": row["version"], "fence": row["fence"],
                  "attempt_contract_hash": row["attempt_contract_hash"],
-                 "witnesses": row["witnesses"], "call": None}
+                 "witnesses": row["witnesses"],
+                 "verifications": row["verifications"], "call": None}
         if row["call_id"] is not None:
             entry["call"] = {"role": row["role"], "provider": row["provider"],
                              "call_id": row["call_id"],
@@ -71,10 +74,13 @@ def project_state(db):
         "running": _attempts_in("RUNNING"),
         "finished_awaiting_freeze": _attempts_in("FINISHED"),
         "frozen_awaiting_evidence": _attempts_in("CANDIDATE_FROZEN"),
-        # The gate after the M3 slice: verification (M4) consumes these.
+        # The M4 verification surface consumes these; the gate after a
+        # VERIFIED sequence is finalization (M5).
         "awaiting_verification": [
             {"attempt_id": a, "next_gate": "verification"}
             for a in _attempts_in("EVIDENCE_COMPLETE")],
+        "halted_sequences": by_state.get("HALTED", []),
+        "verified_awaiting_finalization": by_state.get("VERIFIED", []),
         "intents_in_doubt": _rows(cur, (
             "SELECT intent_id, state, effect_id, attempt_id"
             " FROM effect_intents WHERE state IN"

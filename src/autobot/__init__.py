@@ -35,5 +35,6 @@ from .registry import Registry
 from .sequencer import Sequencer
 from .store import Store
 from .transport import Transport, reconcile_dispatched
+from .verification import VerifierRunner
 
 __all__ = [name for name in dir() if not name.startswith("_")]

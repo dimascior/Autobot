@@ -20,6 +20,15 @@ from contract_library import canonicalize, compute_tiers, object_hash
 
 from . import journal
 from .effects import EFFECTS, OUTCOME_RULES, RETRYABLE
+from .verification import (
+    ATTESTATION_PRODUCER,
+    RESULT_PRODUCER,
+    VERIFIER_OUTCOMES,
+    environment_satisfies,
+    validate_assertion_attestation,
+    validate_environment_capture,
+    verifier_eligibility,
+)
 from .witnesses import WITNESS_KINDS
 from .models import (
     ATTEMPT_TERMINAL,
@@ -686,6 +695,8 @@ class Sequencer:
             "registry_objects": ("objects", "object_hash"),
             "effect_intent": ("effect_intents", "intent_id"),
             "attempt_witness": ("attempt_witnesses", "admission_id"),
+            "attempt_verification": ("attempt_verifications",
+                                     "verification_id"),
         }
         for (machine, subject) in last:
             mapped = reverse_tables.get(machine)
@@ -816,6 +827,64 @@ class Sequencer:
                     "witness admission %s has no journaled admission"
                     " (D-68 pairing)" % row["admission_id"])
 
+        # -- 8c. verification results (M4): every row joins an attempt at
+        #        or past EVIDENCE_COMPLETE, its receipt (and environment)
+        #        bytes re-hash (D-66), and its admission is journaled —
+        #        both directions, via reverse_tables above. A VERIFIED or
+        #        REJECTED attempt without a single admitted result, or a
+        #        repair counter that disagrees with the journaled t-s11
+        #        history, is forged state and HALTs.
+        _VERIFICATION_ATTEMPT_STATES = frozenset((
+            "EVIDENCE_COMPLETE", "VERIFIED", "REJECTED", "FENCED",
+            "RECONCILED"))
+        for row in cur.execute(
+                "SELECT verification_id, attempt_id, receipt_sha256,"
+                " environment_sha256 FROM attempt_verifications").fetchall():
+            att = cur.execute(
+                "SELECT state FROM attempts WHERE attempt_id = ?",
+                (row["attempt_id"],)).fetchone()
+            if att is None or att["state"] not in _VERIFICATION_ATTEMPT_STATES:
+                raise IntegrityHalt(
+                    "verification %s joins attempt state %r: results are"
+                    " admitted at EVIDENCE_COMPLETE only"
+                    % (row["verification_id"],
+                       att["state"] if att else None))
+            self.store.get(row["receipt_sha256"])  # re-hashes (D-66)
+            referenced.add(row["receipt_sha256"])
+            if row["environment_sha256"] is not None:
+                self.store.get(row["environment_sha256"])
+                referenced.add(row["environment_sha256"])
+            entry = last.get(("attempt_verification", row["verification_id"]))
+            if entry is None or entry.get("to_state") != "RECORDED":
+                raise IntegrityHalt(
+                    "verification %s has no journaled admission (D-68"
+                    " pairing)" % row["verification_id"])
+        for row in cur.execute(
+                "SELECT attempt_id, state FROM attempts"
+                " WHERE state IN ('VERIFIED','REJECTED')").fetchall():
+            n = cur.execute(
+                "SELECT COUNT(*) AS n FROM attempt_verifications"
+                " WHERE attempt_id = ?", (row["attempt_id"],)).fetchone()["n"]
+            if n == 0:
+                raise IntegrityHalt(
+                    "attempt %s is %s with no admitted verification result"
+                    " (t-a07/t-a08 require obj-19/obj-20)"
+                    % (row["attempt_id"], row["state"]))
+        repair_history = {}
+        for payload in payloads:
+            if (payload.get("machine") == "sequence"
+                    and payload.get("rule") == "t-s11"):
+                subject = payload["subject_id"]
+                repair_history[subject] = repair_history.get(subject, 0) + 1
+        for row in cur.execute(
+                "SELECT sequence_id, repairs_used FROM sequences").fetchall():
+            if row["repairs_used"] != repair_history.get(row["sequence_id"], 0):
+                raise IntegrityHalt(
+                    "sequence %s repairs_used %d disagrees with its journaled"
+                    " t-s11 history %d"
+                    % (row["sequence_id"], row["repairs_used"],
+                       repair_history.get(row["sequence_id"], 0)))
+
         # -- resumable view + fence coherence
         current = []
         for row in cur.execute(
@@ -887,14 +956,15 @@ class Sequencer:
 
     # ------------------------------------------------ attempt execution
     #
-    # t-a02..t-a06 plus the t-a10/t-a11/t-a13 failure arms: the authoritative
-    # attempt lifecycle for one bound execution. The dispatcher/collector
-    # TRIGGER these; the Sequencer applies them (chapter 0's actor model).
-    # Receipt and witness payload SCHEMAS are later chapters' (obj-10/11/15/16
-    # are form_only here): the transitions take content-addressed references
-    # that must resolve in the CAS, and the deeper admission-join semantics
-    # land with the M3 evidence seam (declared in INTEGRATION_PLAN.md).
-    # t-a12 (STALE on member-lease expiry) is deferred with them.
+    # t-a02..t-a06 plus the t-a10/t-a11/t-a12/t-a13 failure/staleness arms:
+    # the authoritative attempt lifecycle for one bound execution. The
+    # dispatcher/collector TRIGGER these; the Sequencer applies them
+    # (chapter 0's actor model). Receipt and witness payload SCHEMAS are
+    # later chapters' (obj-10/11/15/16 are form_only here): the transitions
+    # take content-addressed references that must resolve in the CAS; the
+    # admission-join is the M3 evidence seam, and verification (t-a07/t-a08
+    # with the sequence arc t-s07/t-s09..t-s12/t-s45) is the M4 surface
+    # below.
 
     def _attempt_call(self, cur, attempt_id):
         row = cur.execute(
@@ -1001,11 +1071,16 @@ class Sequencer:
                 recorded_utc=now, facts=facts))
             return {"call_id": call_id}
 
-    def attempt_running(self, attempt_id, native_session_id, witness_address):
+    def attempt_running(self, attempt_id, native_session_id, witness_address,
+                        member_lease_seconds=7200):
         """t-a03 DISPATCHED→RUNNING (trigger: collector): the execution
         handle must carry the provider's native session id, witnessed by an
-        obj-11 reference."""
-        now = instant(self.clock.now())
+        obj-11 reference. Binding the session also opens the required
+        member's liveness window (t-a12's lease): a configuration default
+        (D-18), not a semantic constant."""
+        now_dt = self.clock.now()
+        now = instant(now_dt)
+        member_lease = instant(now_dt + timedelta(seconds=member_lease_seconds))
         with self.db.transaction() as cur:
             self._assert_lease(cur)
             att = self._attempt(cur, attempt_id)
@@ -1022,13 +1097,14 @@ class Sequencer:
                     % witness_address)
             self._attempt_call(cur, attempt_id)
             cur.execute(
-                "UPDATE attempt_calls SET native_session_id = ?, updated_utc = ?"
-                " WHERE attempt_id = ?",
-                (native_session_id, now, attempt_id))
+                "UPDATE attempt_calls SET native_session_id = ?, updated_utc = ?,"
+                " member_lease_expires_utc = ? WHERE attempt_id = ?",
+                (native_session_id, now, member_lease, attempt_id))
             self._cas_attempt(cur, att, "RUNNING", now)
             facts = self._quadruple(att)
             facts.update({"native_session_id": native_session_id,
-                          "witness_address": witness_address})
+                          "witness_address": witness_address,
+                          "member_lease_expires_utc": member_lease})
             journal.append(cur, journal.transition_record(
                 machine="attempt", subject_id=attempt_id, rule="t-a03",
                 from_state="DISPATCHED", to_state="RUNNING",
@@ -1138,9 +1214,12 @@ class Sequencer:
             return to_state
 
     def freeze_candidate(self, attempt_id, expected_fence, candidate_address):
-        """t-a05 FINISHED→CANDIDATE_FROZEN: fence_matches is registered here,
-        so the presented fence, the row fence and the owning Sequence's fence
-        are all conditions of the one UPDATE; obj-16 by reference."""
+        """t-a05 FINISHED→CANDIDATE_FROZEN plus t-s07 (M4): the Sequence
+        follows its attempt into CANDIDATE_FROZEN in the same transaction —
+        both registered rows share the trigger (the attempt finished per its
+        completion policy, obj-16 by reference) and fence_matches, so the
+        presented fence, each row's fence and the owning Sequence's fence
+        are conditions of the mutating SQL."""
         now = instant(self.clock.now())
         with self.db.transaction() as cur:
             self._assert_lease(cur)
@@ -1153,6 +1232,10 @@ class Sequencer:
             if att["state"] != "FINISHED":
                 raise ConflictError(
                     "freeze_candidate expects FINISHED, found %s" % att["state"])
+            if seq["state"] != "EXECUTING":
+                raise ConflictError(
+                    "t-s07 expects the sequence EXECUTING, found %s"
+                    % seq["state"])
             if not self.store.has(candidate_address):
                 raise ConflictError(
                     "candidate %s does not resolve (t-a05 requires obj-16)"
@@ -1165,6 +1248,14 @@ class Sequencer:
                 machine="attempt", subject_id=attempt_id, rule="t-a05",
                 from_state="FINISHED", to_state="CANDIDATE_FROZEN",
                 recorded_utc=now, facts=facts))
+            version = self._cas_sequence(cur, seq, now, state="CANDIDATE_FROZEN")
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=att["sequence_id"], rule="t-s07",
+                from_state="EXECUTING", to_state="CANDIDATE_FROZEN",
+                recorded_utc=now,
+                facts={"attempt_id": attempt_id, "version": version,
+                       "fence": seq["fence"],
+                       "candidate_address": candidate_address}))
 
     def complete_evidence(self, attempt_id, expected_fence,
                           execution_receipt_address):
@@ -1230,6 +1321,27 @@ class Sequencer:
                 machine="attempt", subject_id=attempt_id, rule="t-a06",
                 from_state="CANDIDATE_FROZEN", to_state="EVIDENCE_COMPLETE",
                 recorded_utc=now, facts=facts))
+            # t-s09 (M4): the Sequence enters VERIFYING with the same
+            # evidence. The join half of execution_receipt_complete is
+            # Chapter 2's authority — the t-a06 real join passed (every
+            # witness the receipt names is admitted for this attempt and
+            # resolvable), independently validated admission facts. The
+            # COMPLETENESS-CLASSIFICATION half is PARTIAL with Chapter 3
+            # (the t-a13/t-s45 seam): the receipt's declared completeness
+            # field is never read here, in either direction — acting on it
+            # would be trusting receipt self-assertion.
+            if seq["state"] != "CANDIDATE_FROZEN":
+                raise ConflictError(
+                    "t-s09 expects the sequence CANDIDATE_FROZEN, found %s"
+                    % seq["state"])
+            version = self._cas_sequence(cur, seq, now, state="VERIFYING")
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=att["sequence_id"], rule="t-s09",
+                from_state="CANDIDATE_FROZEN", to_state="VERIFYING",
+                recorded_utc=now,
+                facts={"attempt_id": attempt_id, "version": version,
+                       "fence": seq["fence"],
+                       "execution_receipt_address": execution_receipt_address}))
 
     def fail_dispatched_attempt(self, attempt_id, reason):
         """t-a10 DISPATCHED→FAILED (launch_failed_after_call_id)."""
@@ -1334,6 +1446,447 @@ class Sequencer:
                 machine="attempt", subject_id=attempt_id, rule="t-a13",
                 from_state="CANDIDATE_FROZEN", to_state="FAILED",
                 recorded_utc=now, facts=facts))
+            # t-s45 (M4): the Sequence HALTs on the same admitted
+            # classification — registered beside t-a13 and, like it,
+            # reachable only through the Chapter 3 seam above, so both
+            # remain fail-closed PARTIAL until receipt admission lands.
+            if seq["state"] == "CANDIDATE_FROZEN":
+                version = self._cas_sequence(cur, seq, now, state="HALTED")
+                journal.append(cur, journal.transition_record(
+                    machine="sequence", subject_id=att["sequence_id"],
+                    rule="t-s45", from_state="CANDIDATE_FROZEN",
+                    to_state="HALTED", recorded_utc=now,
+                    facts={"attempt_id": attempt_id, "version": version,
+                           "fence": seq["fence"],
+                           "completeness": completeness, "reason": reason}))
+
+    # -------------------------------------------------------- verification
+    #
+    # The M4 surface: authoritative verification over admitted evidence.
+    # Results enter ONLY through the typed admission seams below — the
+    # verifier_runner's obj-19/obj-20 receipts (register_verifier_result)
+    # and your obj-37 ManualAttestation.ASSERTION (attest_assertion, D-52) —
+    # and the registered transitions (t-a07/t-a08 with t-s10/t-s11/t-s12)
+    # consume those durable rows. The runner itself is Chapter 4's; this
+    # runtime executes nothing.
+
+    def _assertion(self, payload, assertion_id):
+        entries = payload.get("acceptance_assertions", {}).get(
+            "ids_and_environment_constraints", [])
+        for entry in entries:
+            if entry.get("assertion_id") == assertion_id:
+                return entry
+        raise ConflictError(
+            "assertion %r is not declared by the frozen record" % assertion_id)
+
+    def _bound_verifier_registration(self, cur, payload, verifier_id):
+        """Resolve an assertion's verifier_id to its bound registration
+        (SEM-07 at freeze). INV-53: a bound registration that no longer
+        resolves — the ledger row or its exact bytes — HALTs and is never
+        substituted. The closure's leaf artifacts are the Chapter 4
+        runner's dispatch obligation."""
+        for registration_hash in payload.get("resolved_bindings", {}).get(
+                "verifier_registrations", []):
+            row = cur.execute(
+                "SELECT content_address FROM objects WHERE object_hash = ?",
+                (registration_hash,)).fetchone()
+            if row is None:
+                raise IntegrityHalt(
+                    "bound verifier registration %s is not in the ledger"
+                    " (INV-53: never substituted)" % registration_hash)
+            if not self.store.has(row["content_address"]):
+                raise IntegrityHalt(
+                    "bound verifier registration %s has lost its bytes"
+                    " (INV-53/D-66 HALT)" % registration_hash)
+            registration = json.loads(
+                self.store.get(row["content_address"]).decode("utf-8"))
+            if (registration.get("kind") == "VerifierRegistration"
+                    and registration.get("verifier_id") == verifier_id):
+                return registration
+        raise IntegrityHalt(
+            "assertion verifier %r has no bound registration in the frozen"
+            " record (SEM-07 was enforced at freeze; the record is"
+            " self-inconsistent)" % verifier_id)
+
+    def _verification_context(self, cur, attempt_id, expected_fence=None):
+        """The shared M4 gates: the attempt holds EVIDENCE_COMPLETE, its
+        Sequence is VERIFYING, and the fences agree (presented fence too,
+        when the registered row carries fence_matches)."""
+        att = self._attempt(cur, attempt_id)
+        seq = self._sequence(cur, att["sequence_id"])
+        if expected_fence is not None and expected_fence != seq["fence"]:
+            raise StaleFenceError(
+                "fence %r is not the current fence %r (INV-13)"
+                % (expected_fence, seq["fence"]))
+        if att["fence"] != seq["fence"]:
+            raise StaleFenceError(
+                "attempt fence %r is not the sequence fence %r (fence_matches)"
+                % (att["fence"], seq["fence"]))
+        if att["state"] != "EVIDENCE_COMPLETE":
+            raise ConflictError(
+                "verification expects the attempt EVIDENCE_COMPLETE, found %s"
+                % att["state"])
+        if seq["state"] != "VERIFYING":
+            raise ConflictError(
+                "verification expects the sequence VERIFYING, found %s"
+                % seq["state"])
+        return att, seq
+
+    def _existing_verification(self, cur, attempt_id, assertion_id,
+                               outcome, receipt_address, env_address):
+        """Duplicate result admissions: an identical re-admission is
+        idempotent and journals nothing; a CONFLICTING one is refused —
+        an assertion's authoritative result is written exactly once."""
+        row = cur.execute(
+            "SELECT * FROM attempt_verifications WHERE attempt_id = ?"
+            " AND assertion_id = ?", (attempt_id, assertion_id)).fetchone()
+        if row is None:
+            return None
+        if (row["outcome"] == outcome
+                and row["receipt_sha256"] == receipt_address
+                and row["environment_sha256"] == env_address):
+            return {"verification_id": row["verification_id"],
+                    "receipt_address": receipt_address, "duplicate": True}
+        raise ConflictError(
+            "assertion %r already has a different admitted result for this"
+            " attempt (duplicate result admissions never overwrite)"
+            % assertion_id)
+
+    def register_verifier_result(self, attempt_id, assertion_id, outcome,
+                                 by, receipt, environment=None):
+        """Admit one verifier-runner result for a DETERMINISTIC assertion
+        (the typed interface's write side): outcome PASS/FAIL/INCONCLUSIVE
+        with the runner's exact receipt bytes (obj-19 on PASS, obj-20 on
+        FAIL), eligibility re-evaluated from the registered requirements
+        (SEM-16/D-57), the bound registration resolved or HALT (INV-53),
+        and — when the assertion declares an environment constraint — the
+        obj-18 capture bound to this exact attempt and matched against the
+        declaration (a mismatch is refused; t-s12's env_mismatch arm is the
+        sequence-level HALT the caller then applies)."""
+        if outcome not in VERIFIER_OUTCOMES:
+            raise ConflictError(
+                "outcome %r is not in the verifier vocabulary %r"
+                % (outcome, VERIFIER_OUTCOMES))
+        if by != RESULT_PRODUCER:
+            raise ConflictError(
+                "%r is not the registered obj-19/obj-20 minter %r"
+                % (by, RESULT_PRODUCER))
+        receipt = bytes(receipt)
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            att, seq = self._verification_context(cur, attempt_id)
+            payload = self._verified_record(cur, seq["record_hash"])
+            assertion = self._assertion(payload, assertion_id)
+            if assertion.get("mode") != "DETERMINISTIC":
+                raise ConflictError(
+                    "assertion %r is %s: it passes only by your attestation"
+                    " (D-52), never by a verifier result"
+                    % (assertion_id, assertion.get("mode")))
+            registration = self._bound_verifier_registration(
+                cur, payload, assertion.get("verifier_id"))
+            refusal = verifier_eligibility(assertion, registration)
+            if refusal is not None:
+                raise ConflictError(refusal)
+            env_address = None
+            constraint = assertion.get("environment_constraint")
+            if constraint is not None and environment is None:
+                raise ConflictError(
+                    "assertion %r declares an environment constraint:"
+                    " the obj-18 capture is required" % assertion_id)
+            if environment is not None:
+                # Supplied evidence is never silently dropped (review
+                # finding): it is scope-validated and stored whether or not
+                # a constraint binds it.
+                environment = bytes(environment)
+                env_payload = json.loads(environment.decode("utf-8"))
+                refusal = validate_environment_capture(env_payload, att)
+                if refusal is not None:
+                    raise ConflictError(refusal)
+                if constraint is not None:
+                    refusal = environment_satisfies(constraint, env_payload)
+                    if refusal is not None:
+                        raise ConflictError(
+                            "environment mismatch (t-s12 env_mismatch): %s"
+                            % refusal)
+                env_address = self.store.put(environment)
+            receipt_address = self.store.put(receipt)
+            existing = self._existing_verification(
+                cur, attempt_id, assertion_id, outcome, receipt_address,
+                env_address)
+            if existing is not None:
+                return existing
+            verification_id = mint_id("vr")
+            cur.execute(
+                "INSERT INTO attempt_verifications (verification_id,"
+                " attempt_id, assertion_id, mode, verifier_id, outcome,"
+                " by_principal, receipt_sha256, environment_sha256,"
+                " recorded_utc) VALUES (?, ?, ?, 'DETERMINISTIC', ?, ?, ?,"
+                " ?, ?, ?)",
+                (verification_id, attempt_id, assertion_id,
+                 assertion.get("verifier_id"), outcome, by, receipt_address,
+                 env_address, now))
+            facts = {"attempt_id": attempt_id,
+                     "sequence_id": att["sequence_id"],
+                     "assertion_id": assertion_id, "mode": "DETERMINISTIC",
+                     "verifier_id": assertion.get("verifier_id"),
+                     "outcome": outcome, "by": by,
+                     "receipt_sha256": receipt_address,
+                     "fence": att["fence"]}
+            if env_address is not None:  # D-37
+                facts["environment_sha256"] = env_address
+            journal.append(cur, journal.transition_record(
+                machine="attempt_verification", subject_id=verification_id,
+                rule="ch2:register-verification", to_state="RECORDED",
+                recorded_utc=now, facts=facts))
+            return {"verification_id": verification_id,
+                    "receipt_address": receipt_address, "duplicate": False}
+
+    def attest_assertion(self, attempt_id, assertion_id, attestation):
+        """D-52: your ManualAttestation.ASSERTION satisfies one
+        HUMAN_ATTESTED assertion — durable identity (minted by you),
+        provenance (the attested verdict, preserved by exact bytes and
+        journaled) and scope binding (this attempt, this assertion, this
+        contract hash). Recorded BEFORE conclude_verification can commit
+        t-s10 (attestation_before_commit_if_source_human_required)."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            att, seq = self._verification_context(cur, attempt_id)
+            payload = self._verified_record(cur, seq["record_hash"])
+            assertion = self._assertion(payload, assertion_id)
+            if assertion.get("mode") != "HUMAN_ATTESTED":
+                raise ConflictError(
+                    "assertion %r is %s: DETERMINISTIC assertions are"
+                    " verified by the runner, never attested (D-52)"
+                    % (assertion_id, assertion.get("mode")))
+            refusal = validate_assertion_attestation(
+                attestation, att, assertion_id)
+            if refusal is not None:
+                raise AdmissionError(refusal)
+            # The D-29 kind-grammar finding on t-i07 applies identically:
+            # obj-37's dotted kind has no object hash under Chapter 1 as
+            # frozen, so the attestation is preserved by exact bytes (D-31).
+            address = self.store.put(canonicalize(attestation))
+            existing = self._existing_verification(
+                cur, attempt_id, assertion_id, "ATTESTED", address, None)
+            if existing is not None:
+                return existing
+            verification_id = mint_id("vr")
+            cur.execute(
+                "INSERT INTO attempt_verifications (verification_id,"
+                " attempt_id, assertion_id, mode, verifier_id, outcome,"
+                " by_principal, receipt_sha256, environment_sha256,"
+                " recorded_utc) VALUES (?, ?, ?, 'HUMAN_ATTESTED', ?,"
+                " 'ATTESTED', ?, ?, NULL, ?)",
+                (verification_id, attempt_id, assertion_id,
+                 assertion.get("verifier_id"), ATTESTATION_PRODUCER,
+                 address, now))
+            journal.append(cur, journal.transition_record(
+                machine="attempt_verification", subject_id=verification_id,
+                rule="ch2:attest-assertion", to_state="RECORDED",
+                recorded_utc=now,
+                facts={"attempt_id": attempt_id,
+                       "sequence_id": att["sequence_id"],
+                       "assertion_id": assertion_id,
+                       "mode": "HUMAN_ATTESTED", "outcome": "ATTESTED",
+                       "by": ATTESTATION_PRODUCER,
+                       "receipt_sha256": address, "attests": "PASS",
+                       "fence": att["fence"]}))
+            return {"verification_id": verification_id,
+                    "receipt_address": address, "duplicate": False}
+
+    def conclude_verification(self, attempt_id, expected_fence):
+        """The registered verification outcomes, from admitted rows only.
+
+        t-a07 + t-s10 (all assertions PASS or ATTESTED, with the D-52
+        attestation already durable — required_assertions_pass_or_attested,
+        bound_registered_artifacts_only by the admission seams above,
+        attestation_before_commit_if_source_human_required by
+        construction); or t-a08 (any assertion FAIL, obj-20) with t-s11
+        (repair_budget_left: repairs_used < the frozen
+        repair_policy.max_repairs) or t-s12 (budget_exhausted). An
+        INCONCLUSIVE row concludes nothing: it is t-s12's "unknown" arm,
+        applied by halt_verification."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            att, seq = self._verification_context(cur, attempt_id,
+                                                  expected_fence)
+            payload = self._verified_record(cur, seq["record_hash"])
+            declared = payload.get("acceptance_assertions", {}).get(
+                "ids_and_environment_constraints", [])
+            rows = {row["assertion_id"]: row for row in cur.execute(
+                "SELECT * FROM attempt_verifications WHERE attempt_id = ?",
+                (attempt_id,)).fetchall()}
+            missing = [a["assertion_id"] for a in declared
+                       if a["assertion_id"] not in rows]
+            if missing:
+                raise ConflictError(
+                    "unresolved assertions: %s (every declared assertion"
+                    " needs an admitted result before conclusion)"
+                    % ", ".join(sorted(missing)))
+            inconclusive = sorted(
+                a_id for a_id, row in rows.items()
+                if row["outcome"] == "INCONCLUSIVE")
+            if inconclusive:
+                raise ConflictError(
+                    "assertions %s are INCONCLUSIVE: conclusion is"
+                    " impossible — t-s12's unknown arm (halt_verification)"
+                    " is the registered exit" % ", ".join(inconclusive))
+            failed = sorted(a_id for a_id, row in rows.items()
+                            if row["outcome"] == "FAIL")
+            attested = sorted(a_id for a_id, row in rows.items()
+                              if row["outcome"] == "ATTESTED")
+            record_row = cur.execute(
+                "SELECT eligibility FROM records WHERE record_hash = ?",
+                (seq["record_hash"],)).fetchone()
+            if failed:
+                failure_receipts = [rows[a_id]["receipt_sha256"]
+                                    for a_id in failed]
+                self._cas_attempt(cur, att, "REJECTED", now,
+                                  require_sequence_fence=True)
+                facts = self._quadruple(att)
+                facts.update({"failed_assertion_ids": failed,
+                              "failure_receipts": failure_receipts})
+                journal.append(cur, journal.transition_record(
+                    machine="attempt", subject_id=attempt_id, rule="t-a08",
+                    from_state="EVIDENCE_COMPLETE", to_state="REJECTED",
+                    recorded_utc=now, facts=facts))
+                max_repairs = payload.get("repair_policy", {}).get(
+                    "max_repairs", 0)
+                if seq["repairs_used"] < max_repairs:
+                    version = self._cas_sequence(
+                        cur, seq, now, state="READY",
+                        current_attempt_id=None,
+                        repairs_used=seq["repairs_used"] + 1)
+                    journal.append(cur, journal.transition_record(
+                        machine="sequence", subject_id=att["sequence_id"],
+                        rule="t-s11", from_state="VERIFYING",
+                        to_state="READY", recorded_utc=now,
+                        facts={"attempt_id": attempt_id, "version": version,
+                               "fence": seq["fence"],
+                               "failed_assertion_ids": failed,
+                               "failure_receipts": failure_receipts,
+                               "repairs_used": seq["repairs_used"] + 1,
+                               "max_repairs": max_repairs}))
+                    sequence_state = "READY"
+                else:
+                    version = self._cas_sequence(cur, seq, now,
+                                                 state="HALTED")
+                    journal.append(cur, journal.transition_record(
+                        machine="sequence", subject_id=att["sequence_id"],
+                        rule="t-s12", from_state="VERIFYING",
+                        to_state="HALTED", recorded_utc=now,
+                        facts={"attempt_id": attempt_id, "version": version,
+                               "fence": seq["fence"],
+                               "reason": "budget_exhausted",
+                               "failed_assertion_ids": failed,
+                               "repairs_used": seq["repairs_used"],
+                               "max_repairs": max_repairs}))
+                    sequence_state = "HALTED"
+                return {"attempt": "REJECTED", "sequence": sequence_state}
+            pass_receipts = [rows[a["assertion_id"]]["receipt_sha256"]
+                             for a in declared]
+            self._cas_attempt(cur, att, "VERIFIED", now,
+                              require_sequence_fence=True)
+            facts = self._quadruple(att)
+            facts.update({"assertion_ids": [a["assertion_id"]
+                                            for a in declared],
+                          "verification_receipts": pass_receipts})
+            if attested:  # D-37
+                facts["attested_assertion_ids"] = attested
+            journal.append(cur, journal.transition_record(
+                machine="attempt", subject_id=attempt_id, rule="t-a07",
+                from_state="EVIDENCE_COMPLETE", to_state="VERIFIED",
+                recorded_utc=now, facts=facts))
+            version = self._cas_sequence(cur, seq, now, state="VERIFIED")
+            seq_facts = {"attempt_id": attempt_id, "version": version,
+                         "fence": seq["fence"],
+                         "eligibility": record_row["eligibility"],
+                         "verification_receipts": pass_receipts}
+            if attested:  # attestation_before_commit_if_source_human_required
+                seq_facts["attested_assertion_ids"] = attested
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=att["sequence_id"],
+                rule="t-s10", from_state="VERIFYING", to_state="VERIFIED",
+                recorded_utc=now, facts=seq_facts))
+            return {"attempt": "VERIFIED", "sequence": "VERIFIED"}
+
+    def halt_verification(self, sequence_id, reason):
+        """t-s12 VERIFYING→HALTED on the registered reasons — the DURABLE
+        halt. The seams that detect these conditions mutate nothing
+        themselves: an environment mismatch or an INCONCLUSIVE conclusion
+        is a refusal (ConflictError; journal and Sequence unchanged), and a
+        missing bound artifact is an integrity stop (IntegrityHalt, INV-53;
+        processing stops with no transition committed). THIS transition is
+        how such an observation becomes durable Sequence state, journaled
+        with its reason; budget_exhausted also commits automatically inside
+        conclude_verification. The attempt HOLDS in EVIDENCE_COMPLETE —
+        HALTED is a human_queue state whose resume (t-s13, your budget
+        grant or attestation) is outside this milestone."""
+        reasons = ("unknown", "env_mismatch", "budget_exhausted",
+                   "bound_artifact_unavailable")
+        if reason not in reasons:
+            raise ConflictError(
+                "reason %r is not a registered t-s12 arm %r"
+                % (reason, reasons))
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            seq = self._sequence(cur, sequence_id)
+            if seq["state"] != "VERIFYING":
+                raise ConflictError(
+                    "halt_verification expects VERIFYING, found %s"
+                    % seq["state"])
+            version = self._cas_sequence(cur, seq, now, state="HALTED")
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=sequence_id, rule="t-s12",
+                from_state="VERIFYING", to_state="HALTED", recorded_utc=now,
+                facts={"version": version, "fence": seq["fence"],
+                       "reason": reason}))
+            return version
+
+    def mark_member_stale(self, attempt_id):
+        """t-a12 RUNNING→STALE (cap-16): the registered
+        lease_expired_required_member_without_result — the bound call's
+        member lease has expired, the dispatched role is a REQUIRED member
+        of the frozen completion policy, and no result exists (the attempt
+        is still RUNNING: t-a04/t-a11 never fired). The sequence's retry
+        path is the pre-existing t-s08 (retry_sequence)."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            att = self._attempt(cur, attempt_id)
+            if att["state"] != "RUNNING":
+                raise ConflictError(
+                    "mark_member_stale expects RUNNING, found %s"
+                    % att["state"])
+            call = self._attempt_call(cur, attempt_id)
+            expiry = call["member_lease_expires_utc"]
+            if expiry is None:
+                raise ConflictError(
+                    "no member lease recorded for attempt %s" % attempt_id)
+            if expiry > now:
+                raise ConflictError(
+                    "member lease runs until %s: staleness is proven by"
+                    " expiry, never asserted early" % expiry)
+            seq = self._sequence(cur, att["sequence_id"])
+            payload = self._verified_record(cur, seq["record_hash"])
+            policy = payload["completion_policies"].get(call["role"], {})
+            if not policy.get("required", False):
+                raise ConflictError(
+                    "role %r is not a required member: t-a12 is the"
+                    " required-member staleness arm" % call["role"])
+            self._cas_attempt(cur, att, "STALE", now)
+            facts = self._quadruple(att)
+            facts.update({"role": call["role"], "call_id": call["call_id"],
+                          "member_lease_expires_utc": expiry})
+            journal.append(cur, journal.transition_record(
+                machine="attempt", subject_id=attempt_id, rule="t-a12",
+                from_state="RUNNING", to_state="STALE", recorded_utc=now,
+                facts=facts))
+            return "STALE"
 
     # ------------------------------------------------------ effect intents
     #

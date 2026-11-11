@@ -109,11 +109,13 @@ bytes (D-31 content address), referenced from the journal entry.
   `journal.py` (obj-36 hash chain), `registry.py` (actor `registry`:
   object admission, SEM-19, t-c01..t-c07 over P-1/P-2), `sequencer.py`
   (actor `sequencer`: instance lease, sequence/attempt transitions,
-  permit arithmetic, witness admission, recovery), `effects.py`,
-  `principals.py` and `witnesses.py` (registry-pinned vocabularies),
-  `projection.py` (obj-10 minimal form), `project_state.py` (the read-only
-  view), `transport.py` (the transport contract + `reconcile_dispatched`),
-  `schemas/` (byte mirror of the six v1 schemas).
+  permit arithmetic, witness admission, verification, recovery),
+  `effects.py`, `principals.py` and `witnesses.py` (registry-pinned
+  vocabularies), `projection.py` (obj-10 minimal form), `project_state.py`
+  (the read-only view), `transport.py` (the transport contract +
+  `reconcile_dispatched`), `verification.py` (the typed verifier-runner
+  interface + SEM-16/D-52/obj-18 evaluation), `schemas/` (byte mirror of
+  the six v1 schemas).
 - `src/contract_library/` — byte-identical mirror of
   `docs/architecture/chapter1/contract_library/` (D-65).
 - `tests/autobot/` — the CH2-* runtime tests named by Chapter 0's
@@ -133,7 +135,8 @@ when a registered machine transition happened, or a `ch2:`-prefixed rule for
 authority primitives the full protocol later subsumes into their owning
 transitions (`ch2:admit-object`, `ch2:instance-lease`, `ch2:lease-renew`,
 `ch2:grant-permit`, `ch2:reserve-use`, `ch2:renew-reservation`,
-`ch2:mint-intent`, `ch2:admit-witness`). The journal
+`ch2:mint-intent`, `ch2:admit-witness`, `ch2:register-verification`,
+`ch2:attest-assertion`). The journal
 records exactly what happened; no entry ever claims a protocol transition
 that did not occur. The chain construction is JH-1 (`journal_entry_hash`,
 genesis omits `previous`).
@@ -241,6 +244,57 @@ Still deferred: t-a12 (member-lease staleness), t-a07/t-a08 (verification,
 M4), receipt completeness classification (the t-a13 seam, Chapter 3),
 standalone effect machines, and the bounded real-provider test (the gate
 after this one).
+
+## Milestone 4 — verification authority and state transitions (2026-11-11)
+
+The operator's M4 directive, implemented on the committed M3/G2 baseline
+(the full disposition table and finding register are the
+[RECONCILIATION.md](RECONCILIATION.md) M4 addendum):
+
+- **The sequence walks beside its attempt**: t-s07 rides t-a05 inside
+  `freeze_candidate` and t-s09 rides t-a06 inside `complete_evidence` —
+  same trigger, evidence and fence, one transaction, two TransitionRecords
+  — so evidence completion leaves the sequence VERIFYING. t-s09's join
+  half rests on independently validated admission facts; its
+  completeness-classification half is PARTIAL with Chapter 3, and the
+  receipt's declared completeness field is never read in either direction.
+  t-s45 rides t-a13 and shares the same Chapter 3 fail-closed seam.
+- **Results enter only through typed admission seams** (schema v5
+  `attempt_verifications`, one authoritative row per attempt and
+  assertion): `register_verifier_result` admits the verifier_runner's
+  obj-19/obj-20 bytes for DETERMINISTIC assertions — SEM-16 eligibility
+  re-evaluated from the registered `service:*` requirements, the bound
+  registration resolved or IntegrityHalt (INV-53), and a declared
+  environment constraint matched against an obj-18 capture scope-bound to
+  the exact attempt; `attest_assertion` admits your scope-bound obj-37
+  `ManualAttestation.ASSERTION` (D-52) for HUMAN_ATTESTED assertions.
+  Identical re-admissions are idempotent; conflicting ones never
+  overwrite.
+- **The registered outcomes**: `conclude_verification` commits t-a07 +
+  t-s10 when every declared assertion passed or was attested (the
+  attestation durable BEFORE the commit, by construction), or t-a08 with
+  t-s11 (repair budget left: `repairs_used` against the frozen
+  `repair_policy.max_repairs`) or t-s12 budget_exhausted.
+  `halt_verification` applies t-s12's other registered arms (unknown,
+  env_mismatch, bound_artifact_unavailable); the attempt holds in
+  EVIDENCE_COMPLETE, and the HALTED resume (t-s13) stays yours. Durable
+  HALTED state commits only through t-s12 itself — an admission refusal
+  (ConflictError) and an INV-53 integrity stop (IntegrityHalt) mutate
+  nothing, proven by journal-count tests.
+- **t-a12**: `mark_member_stale` — the member lease recorded at t-a03
+  expired for a REQUIRED role with no result; the sequence retries through
+  the pre-existing t-s08.
+- **Recovery** gains section 8c: verification rows pair with their
+  journal entries in both directions, bytes re-hash, VERIFIED/REJECTED
+  attempts must carry results, and `repairs_used` must equal the journaled
+  t-s11 history. The crash matrix gains the `verifying` stage, restarting
+  into a half-verified attempt and CONCLUDING it from durable state.
+
+Proof of record: autobot 124/124 on CPython 3.8.10 and 3.12.11 (107
+baseline + 17 M4 conformance tests), coordinator 41/41. Still deferred:
+t-s13 (your resume), the t-a13/t-s45 classification authority (Chapter 3),
+the verifier-runner implementation and receipt schemas (Chapter 4), and
+finalization (M5).
 
 ## Reconciliation and progression
 

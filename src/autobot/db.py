@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 from .models import SchemaTooNew
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Schema v1 (D-67): explicit state tables for Sequence, Attempt,
 # InstanceLease, permit state/reservations and EffectIntent, plus the
@@ -205,7 +205,41 @@ _DDL_V4 = (
         ON attempt_witnesses(attempt_id, witness_kind, producer, content_sha256)""",
 )
 
-_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4}
+# Schema v5 (D-70, additive): the M4 verification surface.
+# - attempt_verifications: one authoritative verification result per
+#   (attempt, assertion) — the registered mode, the outcome (PASS/FAIL/
+#   INCONCLUSIVE from the verifier_runner, or ATTESTED by you under D-52),
+#   the producing principal, the D-31 address of the exact receipt bytes
+#   (obj-19/obj-20/obj-37) and, when the assertion declares an environment
+#   constraint, the obj-18 capture's address. The unique index makes a
+#   second admission for the same assertion either idempotent (identical)
+#   or a refused conflict — never a silent overwrite.
+# - sequences.repairs_used: the t-s11 repair-budget counter, checked
+#   against the frozen record's repair_policy.max_repairs.
+# - attempt_calls.member_lease_expires_utc: the required-member liveness
+#   window t-a12 (lease_expired_required_member_without_result) reads;
+#   set when t-a03 binds the native session.
+_DDL_V5 = (
+    """CREATE TABLE IF NOT EXISTS attempt_verifications (
+        verification_id TEXT PRIMARY KEY,
+        attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+        assertion_id TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK (mode IN ('DETERMINISTIC','HUMAN_ATTESTED')),
+        verifier_id TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN
+            ('PASS','FAIL','INCONCLUSIVE','ATTESTED')),
+        by_principal TEXT NOT NULL,
+        receipt_sha256 TEXT NOT NULL,
+        environment_sha256 TEXT,
+        recorded_utc TEXT NOT NULL
+    )""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_verification_one_per_assertion
+        ON attempt_verifications(attempt_id, assertion_id)""",
+    "ALTER TABLE sequences ADD COLUMN repairs_used INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE attempt_calls ADD COLUMN member_lease_expires_utc TEXT",
+)
+
+_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4, 5: _DDL_V5}
 
 
 class Database:

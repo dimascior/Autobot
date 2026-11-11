@@ -218,3 +218,48 @@ two named reconciliation details:
 | t-a13 | UNCHANGED and fail-closed (PARTIAL): the `_admitted_classification` seam still refuses receipt-declared completeness/deadlines pending Chapter 3 receipt admission — re-proven inside the integrated scenario |
 | t-a12, t-a07/t-a08 | DEFERRED (M4, member-lease and verification semantics) |
 | Crash matrix | EXTENDED: `running` stage (restart reconstructs attempt ↔ call ↔ witness and resumes); the acceptance scenario restarts in-process at DISPATCHED and adopts via `find_session` |
+
+## M4 addendum (2026-11-11)
+
+The operator's M4 directive (verification authority and state transitions)
+against the frozen registries, every requirement classified with its
+enforcement point, proof and owning chapter:
+
+| Requirement | Disposition |
+|---|---|
+| t-a07 EVIDENCE_COMPLETE→VERIFIED (obj-19, fence_matches) | IMPLEMENTED: `conclude_verification` — every declared assertion PASS or ATTESTED from admitted rows only, obj-19 receipt addresses journaled; proof `test_all_pass_concludes_verified` |
+| t-a08 EVIDENCE_COMPLETE→REJECTED (obj-20) | IMPLEMENTED: any admitted FAIL; obj-20 references journaled; proof `test_fail_repairs_then_budget_exhausts` |
+| t-a12 RUNNING→STALE (cap-16) | IMPLEMENTED: `mark_member_stale` — the recorded member lease (set at t-a03; the 7200 s default is D-18 configuration, Chapter 6 representation) has expired, the dispatched role is a REQUIRED member, and no result exists (the attempt is still RUNNING); the successor is the pre-existing t-s08 `retry_sequence`; proof `StaleMemberTests` |
+| t-s07 EXECUTING→CANDIDATE_FROZEN | IMPLEMENTED: coupled with t-a05 inside `freeze_candidate` — same trigger, evidence (obj-16) and fence_matches, one transaction, two TransitionRecords |
+| t-s09 CANDIDATE_FROZEN→VERIFYING | SPLIT (operator acceptance check 1): the JOIN half of `execution_receipt_complete` is IMPLEMENTED on independently validated admission facts — receipt identity, attempt binding, contract hash, every named witness admitted FOR THIS ATTEMPT with resolvable bytes (the t-a06 real join); the COMPLETENESS-CLASSIFICATION half is PARTIAL with Chapter 3's receipt-admission authority, fail-closed beside t-a13/t-s45. The receipt's DECLARED completeness field is never read in either direction — proven by `test_t_s09_declared_classification_is_inert` (a declared "PARTIAL" with valid joins still transitions; a declared "COMPLETE" grants nothing) |
+| t-s45 CANDIDATE_FROZEN→HALTED | PARTIAL (fail-closed): coupled with t-a13 behind the `_admitted_classification` seam — registered, journal-ready, and unreachable until Chapter 3 receipt admission, exactly like t-a13 |
+| t-s10 VERIFYING→VERIFIED | IMPLEMENTED: required_assertions_pass_or_attested over admitted rows; bound_registered_artifacts_only because results ENTER only through the typed admission seams; attestation_before_commit_if_source_human_required holds by construction (the obj-37 row must exist before conclusion); derived eligibility journaled |
+| t-s11 VERIFYING→READY | IMPLEMENTED: assertion_failed + repair_budget_left — `sequences.repairs_used` (schema v5) against the frozen `repair_policy.max_repairs`, counter reconciled against the journaled t-s11 history in `recover()` |
+| t-s12 VERIFYING→HALTED | IMPLEMENTED, with the outcome tiers explicit (operator acceptance check 2). DURABLE t-s12 (sequence → HALTED, journaled with its reason) commits in exactly two places: automatically inside `conclude_verification` for budget_exhausted, and through `halt_verification` for all four registered reasons — proven durable for unknown, env_mismatch and bound_artifact_unavailable (the last after an INV-53 stop). NOT durable: an admission refusal (environment mismatch, INCONCLUSIVE conclusion) is a ConflictError that mutates nothing — journal count and Sequence state proven unchanged; a missing bound artifact is an IntegrityHalt that stops processing with NO transition committed — also proven unchanged. `halt_verification` is how an observed stop becomes durable HALTED state |
+| Typed verifier-runner interface | IMPLEMENTED: `verification.VerifierRunner` (capture_environment / run_assertion) + the Sequencer admission seams `register_verifier_result` / `attest_assertion`; the runner implementation and the obj-18/19/20 payload SCHEMAS stay Chapter 4's |
+| SEM-16 eligibility (D-57) | IMPLEMENTED as defense in depth: `verifier_eligibility` re-evaluates the registered `service:*` requirements at admission (the freeze already refuses the binding); the negative is proven against the frozen service-dependent fixture registration |
+| INV-53 HALT | IMPLEMENTED: a bound verifier registration missing from the ledger or the CAS raises IntegrityHalt — never substituted, never skipped; closure LEAF availability is recorded as Chapter 4's dispatch obligation |
+| D-52 attestation path | IMPLEMENTED: `attest_assertion` — obj-37 `ManualAttestation.ASSERTION` minted by you, scope-bound to the exact attempt, assertion and contract hash, PASS-only verdicts, preserved by exact bytes (the t-i07 D-29 kind-grammar finding applies identically); HUMAN_REQUIRED derivation (SEM-13) proven on a frozen fixture record |
+| Verification environment | IMPLEMENTED: obj-18 captures are scope-bound to the exact attempt identity; a declared constraint is matched on the interpreter section and ANY unsupported section fails closed; supplied captures are stored even without a constraint (review finding F-M4-2) |
+| Outcome distinctions | IMPLEMENTED: deterministic PASS/FAIL/INCONCLUSIVE (verifier_runner) vs ATTESTED (you, D-52) vs receipt-admission authority (Chapter 3 — t-a13/t-s45 stay PARTIAL and fail-closed) |
+| Verification budgets | IMPLEMENTED: the repair budget (t-s11/t-s12) from the frozen record; the retry budget was pre-existing (t-s06/t-s08); one authoritative result per (attempt, assertion) by unique index |
+| Evidence integrity | IMPLEMENTED: content-addressed receipt and environment bytes (D-66 re-hash in recover), producer attribution (`by_principal`), attempt identity (rows + obj-18 scope), contract identity (attestation hash binding), provenance journaled (`ch2:register-verification`, `ch2:attest-assertion`) |
+| Recovery | IMPLEMENTED: recover() section 8c — verification row ↔ journal pairing both directions, byte re-hash, admission-state gating, VERIFIED/REJECTED attempts require at least one result, repairs_used equals the journaled t-s11 history; crash stage `verifying` restarts and CONCLUDES from durable state alone |
+| t-s13 HALTED→READY | DEFERRED: your resume (trigger cap-47) is outside M4 by the registry's trigger ownership |
+
+Cross-chapter obligations recorded by this milestone: Chapter 3 — receipt
+completeness classification and deadline derivation (the t-a13/t-s45
+seams) and receipt-admission authority; Chapter 4 — the verifier-runner
+implementation, the obj-18/obj-19/obj-20 payload schemas, closure-leaf
+INV-53 verification at dispatch, and the remote arcs (obj-21); Chapter 6 —
+the member-lease and budget configuration representation (D-18).
+
+### M4 finding register
+
+| id | Finding | Resolution |
+|---|---|---|
+| F-M4-1 | First suite run: the conformance helper bound the obj-18 capture to the wrong sequence; the runtime's scope check refused it | Test helper fixed (tracks the active sequence); the refusal is the scope binding WORKING (gates m4-001→m4-002) |
+| F-M4-2 | Adversarial review: a supplied obj-18 capture on an assertion without a declared constraint was silently dropped | Fixed: supplied evidence is always scope-validated and stored (m4-005/m4-006 green) |
+| F-M4-3 | Adversarial review, accepted: receipt/attestation bytes written to the CAS before a conflicting-duplicate refusal remain as store orphans | Consistent with the admit_witness precedent and D-66's harmless-orphan side; recover() reports them |
+| F-M4-4 | Operator acceptance check 1: t-s09's `execution_receipt_complete` was classified IMPLEMENTED although only its join half rests on independently validated admission facts | Reclassified SPLIT — join IMPLEMENTED / completeness classification PARTIAL (Chapter 3); inertness of the declared field proven by a dedicated test |
+| F-M4-5 | Operator acceptance check 2: the report blurred durable t-s12 transitions with admission refusals and IntegrityHalt stops | Outcome tiers made explicit in the t-s12 row, the `halt_verification` docstring and three tests proving refusals/stops mutate nothing and the durable halt commits only through t-s12 itself |

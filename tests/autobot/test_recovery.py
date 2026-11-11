@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 import support
+from fake_verifier import environment_bytes, receipt_bytes
 from autobot import Database, Sequencer, Store, journal
 from autobot.models import (
     AuthorityLost,
@@ -243,6 +244,52 @@ class RestartTests(unittest.TestCase):
         self.assertEqual(
             seq.finish_attempt(snapshot["attempt_id"], "builder", "success",
                                resumed["content_address"]), "FINISHED")
+        db.close()
+
+    def test_crash_verifying_stage(self):
+        """M4 at the VERIFYING boundary: hard death after t-a06 + t-s09 and
+        one admitted verifier result restarts into the full verification
+        relationship — sequence VERIFYING, attempt EVIDENCE_COMPLETE, the
+        result row journal-paired with resolvable bytes — and the
+        lifecycle CONCLUDES from durable state alone (t-a07 + t-s10)."""
+        data_dir = self.dir / "verifying"
+        proc = subprocess.run(
+            [sys.executable, "-I", str(CHILD), str(data_dir), "verifying"],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(proc.returncode, 137, proc.stdout + proc.stderr)
+        snapshot = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(snapshot["sequence"]["state"], "VERIFYING")
+
+        db = Database(data_dir / "autobot.db")
+        store = Store(data_dir / "store")
+        seq = Sequencer(db, store, support.manual_clock(),
+                        holder="crash-child")
+        seq.recover()  # includes the verification row <-> journal pairing
+        att = db.conn.execute(
+            "SELECT state, fence FROM attempts WHERE attempt_id = ?",
+            (snapshot["attempt_id"],)).fetchone()
+        self.assertEqual(att["state"], "EVIDENCE_COMPLETE")
+        vrow = db.conn.execute(
+            "SELECT outcome, receipt_sha256 FROM attempt_verifications"
+            " WHERE verification_id = ?",
+            (snapshot["verification_id"],)).fetchone()
+        self.assertEqual(vrow["outcome"], "PASS")
+        store.get(vrow["receipt_sha256"])  # exact bytes survive the crash
+
+        seq.acquire_lease(ttl_seconds=3600)
+        identity = {"sequence_id": snapshot["sequence_id"],
+                    "attempt_id": snapshot["attempt_id"],
+                    "version": 1, "fence": att["fence"]}
+        seq.register_verifier_result(
+            snapshot["attempt_id"], "a1", "PASS", "verifier_runner",
+            receipt_bytes("a1", "registry-checker", "PASS",
+                          snapshot["attempt_id"]),
+            environment=environment_bytes(identity))
+        result = seq.conclude_verification(snapshot["attempt_id"],
+                                           att["fence"])
+        self.assertEqual(result, {"attempt": "VERIFIED",
+                                  "sequence": "VERIFIED"})
         db.close()
 
     def test_takeover_after_expiry_advances_epoch_and_fences_stale_authority(self):
