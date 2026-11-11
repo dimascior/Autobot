@@ -29,6 +29,15 @@ _IDENTITY_FIELDS = ("sequence_id", "attempt_id", "fence",
 _CARRIED_FIELDS = ("allowed_scope", "acceptance_assertions",
                    "evidence_requirements", "specification_inputs")
 
+# The Chief Engineer's APPROVED context bundle (the integration-layer
+# expansion): optional, attributed, carried only when supplied — the
+# base {author, guidance} artifact is byte-identical to the M3 form.
+# predecessor_findings are the planner-selected finding summaries (each
+# must name its finding_id so the projection stays traceable to the
+# attempt that produced it); context_refs are content addresses.
+_OPTIONAL_CONTEXT = ("context_refs", "predecessor_findings",
+                     "repository_context", "expected_outputs")
+
 
 def project_prompt(store, record_payload, role, attempt_identity,
                    engineering_context):
@@ -79,6 +88,37 @@ def project_prompt(store, record_payload, role, attempt_identity,
     transform = record_payload.get("role_transforms", {}).get(role)
     if transform is not None:
         artifact["role_transform"] = transform
+
+    # The approved engineering-context bundle (optional, validated).
+    for field in _OPTIONAL_CONTEXT:
+        if field not in engineering_context:
+            continue
+        value = engineering_context[field]
+        if field == "context_refs":
+            if not (isinstance(value, list) and all(
+                    isinstance(v, str) and v for v in value)):
+                raise ConflictError(
+                    "context_refs must be a list of content addresses")
+        elif field == "predecessor_findings":
+            if not (isinstance(value, list) and all(
+                    isinstance(v, dict) and isinstance(
+                        v.get("finding_id"), str) and v["finding_id"]
+                    for v in value)):
+                raise ConflictError(
+                    "each predecessor finding must carry its finding_id"
+                    " (attempt traceability)")
+        elif not (isinstance(value, str) and value):
+            raise ConflictError("%s must be non-empty text" % field)
+        artifact["engineering_context"][field] = value
+
+    # The completion contract the specialist returns against: derived
+    # from the FROZEN record alone (what this role must produce, and the
+    # witness kinds the contract requires joined), so it cannot drift
+    # from authority.
+    artifact["completion_contract"] = {"role_policy": policies[role]}
+    if "evidence_requirements" in record_payload:
+        artifact["completion_contract"]["evidence_requirements"] = (
+            record_payload["evidence_requirements"])
 
     data = canonicalize(artifact)
     return data, store.put(data)

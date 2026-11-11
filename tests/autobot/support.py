@@ -141,6 +141,36 @@ def local_record_payload(task_contract_id=None, predecessors=None,
     return payload
 
 
+def intelligence_environment():
+    """The compiler's bound authority context over the frozen Chapter 1
+    graph: the LOCAL declaration, delegation A, the two registered
+    verifiers and the identity transform, with the V-A engineering
+    profile as defaults. Everything here is an object the tests also
+    admit through the Registry, so compiled candidates freeze cleanly."""
+    from intelligence import RepositoryEnvironment
+    graph = load_fixture("graph.json")
+    record = load_fixture("va_record.json")
+    defaults = {
+        "acceptance_assertions": record["acceptance_assertions"],
+        "allowed_scope": record["allowed_scope"],
+        "capability_requirements": record["capability_requirements"],
+        "evidence_requirements": record["evidence_requirements"],
+        "retry_policy": {"max_retries": 2},
+        "repair_policy": {"max_repairs": 1},
+        "reuse_policy": {"mode": "NEVER"},
+        "effect_policy": {"effect_intent_ttl_seconds": 300,
+                          "effect_hard_timeout_seconds": 240},
+        "role_transform_id": "identity-projection",
+    }
+    return RepositoryEnvironment(
+        declaration=graph["declaration_local"],
+        delegation=graph["delegation_a"],
+        verifier_registrations=[graph["verifier_checker_v1"],
+                                graph["verifier_vector_v1"]],
+        transform_registrations=[graph["transform_identity_v1"]],
+        defaults=defaults)
+
+
 def drive_to_verified(rt, admitted_result, role="builder"):
     """Drive one admitted sequence through the full M2–M4 lifecycle to
     sequence VERIFIED / attempt VERIFIED (shared by the finalization tests

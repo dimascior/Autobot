@@ -308,3 +308,28 @@ Dispositions:
 | project_state | IMPLEMENTED: accepted_awaiting_release / dependencies_released / completed / blocked_work / ready_work obligations + the released_edges rows; still write-free |
 | Recovery | IMPLEMENTED (8e): forged ACCEPTED-or-beyond HALTs; released_edges↔t-s41 journal pairing both directions; predecessor durably released; acceptance/release bytes re-hash; READY-with-unsatisfied-edges HALTs; the loop pilot restarts in-process at ACCEPTED and repeated recovery converges |
 | Findings | F-M6-1 FIXED (INV-64 enforcement at t-s03); F-M6-2 FIXED (forged-ACCEPTED HALT now tested); F-M6-3 FIXED (deterministic released-edge binding); F-M6-4 accepted (journal-scan fact reads — the M5 precedent); F-M6-5 accepted (content-addressed edges satisfy by digest — the frozen obj-07 design) |
+
+## M7 addendum (2026-11-11) — the intelligence plane
+
+The Chief Engineer / Taskforce integration layer
+([INTELLIGENCE.md](INTELLIGENCE.md)). This phase adds NO authority
+surface: every row below is integration-layer behavior over the
+registered transitions, or an explicitly carried boundary.
+
+| Surface | Disposition |
+|---|---|
+| Plane boundary (D-63/D-64) | IMPLEMENTED as structure: `src/intelligence/` consumes public Registry/Sequencer APIs only; its authority reads run on a SQLite mode=ro connection (write attempts are refused operations, test-pinned); reasoning state lives in a separate `intelligence.db` |
+| Chief Engineer (principals `planner`; cap-01 R, cap-07, cap-13) | IMPLEMENTED: event-woken cycles over snapshot-bound PlanningViews; typed, validated, budget-capped proposals; the reasoning policy is a handle-free seam (deterministic policies in the suite; an LLM provider is a later implementation behind the same seam) |
+| planner→registry handoff (CORR-15; forbidden edge) | IMPLEMENTED: the planner authors (`authored_by: "planner"`, cap-07); the deterministic service submits as the `autobot_service` boundary principal (`autobot_service → registry` = "authenticated freeze requests"); the Registry alone freezes (cap-08); the split is visible in the ledger and adversarially tested |
+| cap-14 seat selection (owner agent_factory, forbidden task_force) | IMPLEMENTED: the `AgentFactory` component embodies the `agent_factory` principal; the Taskforce requests only (capability, role); assignments and seat rows record `selected_by: "agent_factory"`; the dispatcher consumption is t-a02; adversarially tested |
+| Proposal → freeze | IMPLEMENTED over t-c01..t-c07 unchanged: the compiler emits canonical candidates; QUEUED_FOR_YOU (SEM-11/t-c04) surfaces as a proposal status — the operator boundary, not an error; DUPLICATE converges and binds the live sequence (obj-32) |
+| Planning events | IMPLEMENTED: one event per registered journal transition, keyed by journal seq (exactly-once across restart); objectives (cap-01) and findings are intelligence-plane events |
+| Taskforce (cap-22/23; cap-14 seat selection) | IMPLEMENTED: allocation gated on the planner's word (first attempt = originating proposal; later attempts = REPAIR_TASK/ASSIGN_SPECIALIST authorization); provider/model never in contract identity; execution identity rides the Sequencer-minted call_id and the registered adoption protocol |
+| PromptProjection expansion | IMPLEMENTED in `autobot.projection` additively: optional planner-approved context bundle (context_refs, predecessor_findings by finding_id, repository_context, expected_outputs) + a record-derived completion_contract; the base {author, guidance} artifact is byte-identical to M3's; obj-10 full schema stays Chapter 3's |
+| Findings | IMPLEMENTED (intelligence-plane): structured, content-identified, traceable to attempt/call/evidence addresses; information only — a conformance test pins that no finding becomes work without a proposal |
+| Repair loop | IMPLEMENTED over the frozen arms: t-s11 repair_ready → REPAIR_TASK → informed attempt on the SAME requirement; t-s12/t-s13, cap-36 permits, cap-44 attestation, cap-10 supersession stay YOURS (WAIT_FOR_AUTHORITY rows make the stop visible); obj-33/34 repair objects stay deferred with their chapters |
+| Continuous driver | IMPLEMENTED: planning cycle + Taskforce sweep per step; restart-safe (durable candidates resubmit byte-for-byte, F-CE-3 test; the pilot restarts the plane at the permit boundary with zero duplicates); one reasoning driver via the plan-store lease |
+| Autonomous pilot | PROVEN: investigate → finding → decomposition FROM the finding → real git CAS → permit pause/restart → released successor READY through t-s02 → PROJECT_COMPLETE → stable no-action; plus repair, the re-execution gate, and concurrent allocation |
+| ACCEPTANCE_FRESH | UNCHANGED: still the PARTIAL fail-closed readiness arm (kept visible per the operator, 2026-11-11) |
+| t-a13 / ExecutionReceipt completeness | CARRIED: the Taskforce's receipt assembly is the integration stand-in the M3 suite already used; classification authority remains Chapter 3's (F-CE-4) |
+| Findings (F-CE) | F-CE-1 FIXED (completion only from a cycle that proposes nothing else); F-CE-2 accepted (no cross-cycle total-work budget in v1 — per-cycle cap + driver step bound; the knob is cap-47, yours); F-CE-3 FIXED (interrupted-submission recovery proven); F-CE-4 accepted/carried (above); F-CE-5 FIXED (latest VERIFIED attempt by insertion order — the F-M5-1 lesson); F-CE-6 FIXED (submission identity: the service, never the planner — the operator's review); F-CE-7 FIXED (seat selection is the Agent Factory's, cap-14 — the operator's review) |

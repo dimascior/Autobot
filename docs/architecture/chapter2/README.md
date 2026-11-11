@@ -379,6 +379,68 @@ and acceptance arcs (t-s15b/t-s17/t-s21.., t-s37/t-s39/t-s43/t-s44,
 t-s04), the obj-30/obj-35 payload schemas (Chapter 5), and the
 Chapter 3/4 boundaries unchanged.
 
+## Milestone 7 — the continuous engineering loop (Chief Engineer / Taskforce, 2026-11-11)
+
+The intelligence-and-orchestration layer over the committed runtime,
+delivered as the NEW integration-layer package `src/intelligence/`
+(D-63/D-64: it consumes Registry/Sequencer APIs, reads authority state
+through a read-only connection, and keeps its reasoning in its own
+`intelligence.db`). Full design, boundary table, proposal schema, event
+model, repair loop, pilot description and the F-CE finding register:
+[INTELLIGENCE.md](INTELLIGENCE.md).
+
+- **Chief Engineer service** (the frozen `planner` seat): wakes only on
+  planning events derived one-to-one from journal transitions, reasons
+  over a snapshot-bound `PlanningView`, and emits TYPED proposals
+  (CREATE_TASK, DECOMPOSE_TASK, REPAIR_TASK, INVESTIGATE,
+  ASSIGN_SPECIALIST, REQUEST_REVIEW, WAIT_FOR_AUTHORITY,
+  PROJECT_COMPLETE) through a policy seam that holds no handles.
+- **Proposal compiler** (cap-07): a pure function emitting canonical
+  TaskContractRecord candidates (D-25 ordering, SEM-03/SEM-05/D-54
+  shaping, the delegation triple and registered floors); the Registry
+  stays the sole validator and freezer, and proposal identity IS the
+  candidate's contract_digest, so restarts and resubmissions converge
+  (obj-32).
+- **Taskforce**: breadth-first sweeps over authority state — adoption
+  via the registered reconcile path, allocation gated on the planner's
+  word (first attempt from the originating proposal; every later
+  attempt needs a REPAIR/ASSIGN seat authorization), seat/provider/
+  model selection outside contract identity (cap-14), the expanded
+  PromptProjection carrying the planner's approved context bundle plus
+  a record-derived completion contract, witness/finding collection with
+  attempt traceability, the verifier-runner seam, and the registered
+  authority arcs — SL finalization only inside YOUR permit grant
+  (cap-36).
+- **Continuous driver**: planning cycle + sweep per step, restart-safe
+  end to end, one reasoning driver at a time (plan-store lease).
+- **The autonomous pilot**: investigate → finding → the planner
+  decomposes implementation + review FROM the finding's text → real
+  local Git CAS → the permit pause (where the whole plane restarts) →
+  release unblocks the review through t-s02 → PROJECT_COMPLETE → a
+  stable no-action state; plus the repair-proposal arc, the
+  no-authorization re-execution refusal, and concurrent allocation of
+  independent READY work.
+
+Findings: F-CE-1 (premature completion detection) FIXED, F-CE-3
+(interrupted-submission recovery unproven) FIXED, F-CE-5 (VERIFIED
+attempt picked by minted id) FIXED, and from the operator's pre-commit
+review F-CE-6 (candidates were submitted AS the planner — the forbidden
+planner→registry edge; the deterministic service now submits as the
+`autobot_service` boundary while `authored_by` stays the planner) and
+F-CE-7 (seat/provider/model selection ran under the Taskforce; it is
+now explicitly the `AgentFactory` — cap-14 — with `selected_by` on
+every assignment and seat) both FIXED with adversarial tests; F-CE-2
+(no cross-cycle total-work budget in v1) and F-CE-4 (ExecutionReceipt
+completeness stays the integration stand-in until Chapter 3) accepted
+and documented.
+
+Proof of record: autobot 167/167 on CPython 3.8.10 and 3.12.11 (147 +
+20 intelligence/pilot tests), coordinator 41/41 untouched. The open
+protocol surfaces are carried forward explicitly, ACCEPTANCE_FRESH
+included (INTELLIGENCE.md lists them); the LLM-backed Chief Engineer
+policy is a later provider behind the same seam, per the Transport→G2
+precedent.
+
 ## Reconciliation and progression
 
 [RECONCILIATION.md](RECONCILIATION.md) is the row-by-row reconciliation of
