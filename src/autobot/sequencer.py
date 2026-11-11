@@ -208,19 +208,34 @@ class Sequencer:
                     "mark_ready expects DECLARED, found %s" % row["state"]
                 )
             payload = self._verified_record(cur, row["record_hash"])
+            self._assert_finalizer_supported(payload)
+            facts = {"record_hash": row["record_hash"],
+                     "fence": row["fence"]}
             if payload.get("predecessors"):
-                # Dependency release is a later milestone: any predecessor
-                # edge is unsatisfied here (t-s01).
-                version = self._cas_sequence(cur, row, now, state="BLOCKED")
-                rule, to_state = "t-s01", "BLOCKED"
+                # M6: edges are evaluated against DURABLE released edges
+                # (all_edges_satisfied_by_declared_tier), never inferred
+                # graph state.
+                unsatisfied, satisfied = self._edges_satisfied(cur, payload)
+                if unsatisfied:
+                    version = self._cas_sequence(cur, row, now,
+                                                 state="BLOCKED")
+                    rule, to_state = "t-s01", "BLOCKED"
+                    facts["unsatisfied_edge_ids"] = unsatisfied
+                else:
+                    version = self._cas_sequence(cur, row, now,
+                                                 state="READY")
+                    rule, to_state = "t-s03", "READY"
+                    facts["satisfied_edges"] = satisfied
+                    facts["freshness_reevaluated_utc"] = now
             else:
                 version = self._cas_sequence(cur, row, now, state="READY")
                 rule, to_state = "t-s03", "READY"
+                facts["freshness_reevaluated_utc"] = now
+            facts["version"] = version
             journal.append(cur, journal.transition_record(
                 machine="sequence", subject_id=sequence_id, rule=rule,
                 from_state="DECLARED", to_state=to_state, recorded_utc=now,
-                facts={"record_hash": row["record_hash"], "version": version,
-                       "fence": row["fence"]},
+                facts=facts,
             ))
             return to_state
 
@@ -908,11 +923,83 @@ class Sequencer:
                 continue
             entry_facts = entry_payload.get("facts", {})
             for key in ("commit_receipt_address",
-                        "observation_receipt_address"):
+                        "observation_receipt_address",
+                        "acceptance_sha256", "release_sha256"):
                 address = entry_facts.get(key)
                 if address is not None:
                     self.store.get(address)  # re-hashes (D-66)
                     referenced.add(address)
+
+        # -- 8e. acceptance and dependency release (M6): an ACCEPTED-or-
+        #        beyond sequence must carry its journaled obj-30 reference;
+        #        every released_edges row pairs with a t-s41 entry (both
+        #        directions), joins a durably released predecessor and
+        #        resolves its references; and a READY sequence with frozen
+        #        predecessor edges must still satisfy them from the durable
+        #        rows — forged readiness HALTs.
+        acceptance_rules = ("t-s14", "t-s20")
+        release_ids_journaled = {}
+        acceptance_seen = set()
+        for entry_payload in payloads:
+            if entry_payload.get("machine") != "sequence":
+                continue
+            subject = entry_payload.get("subject_id")
+            if entry_payload.get("rule") in acceptance_rules:
+                acceptance_seen.add(subject)
+            if entry_payload.get("rule") == "t-s41":
+                for release_id in entry_payload.get("facts", {}).get(
+                        "release_ids", []):
+                    release_ids_journaled[release_id] = subject
+        for row in cur.execute(
+                "SELECT sequence_id, state FROM sequences WHERE state IN"
+                " ('ACCEPTED','DEPENDENCIES_RELEASED','COMPLETED')"
+        ).fetchall():
+            if row["sequence_id"] not in acceptance_seen:
+                raise IntegrityHalt(
+                    "sequence %s is %s without its journaled obj-30"
+                    " acceptance reference"
+                    % (row["sequence_id"], row["state"]))
+        for row in cur.execute(
+                "SELECT * FROM released_edges").fetchall():
+            if release_ids_journaled.get(row["release_id"]) != \
+                    row["predecessor_sequence_id"]:
+                raise IntegrityHalt(
+                    "released edge %s has no journaled t-s41 release"
+                    " (D-68 pairing)" % row["release_id"])
+            pred = cur.execute(
+                "SELECT state FROM sequences WHERE sequence_id = ?",
+                (row["predecessor_sequence_id"],)).fetchone()
+            if pred is None or pred["state"] not in (
+                    "DEPENDENCIES_RELEASED", "COMPLETED"):
+                raise IntegrityHalt(
+                    "released edge %s names predecessor %s in state %s:"
+                    " release requires a durably released predecessor"
+                    % (row["release_id"], row["predecessor_sequence_id"],
+                       pred["state"] if pred else None))
+            self.store.get(row["acceptance_sha256"])  # re-hashes (D-66)
+            referenced.add(row["acceptance_sha256"])
+            self.store.get(row["release_sha256"])
+            referenced.add(row["release_sha256"])
+        for release_id, subject in release_ids_journaled.items():
+            if cur.execute(
+                    "SELECT 1 FROM released_edges WHERE release_id = ?",
+                    (release_id,)).fetchone() is None:
+                raise IntegrityHalt(
+                    "journal names released edge %s for %s but its row is"
+                    " gone (D-68 pairing)" % (release_id, subject))
+        for row in cur.execute(
+                "SELECT s.sequence_id, r.content_address FROM sequences s"
+                " JOIN records r ON r.record_hash = s.record_hash"
+                " WHERE s.state = 'READY'").fetchall():
+            record_payload = json.loads(
+                self.store.get(row["content_address"]).decode("utf-8"))
+            if record_payload.get("predecessors"):
+                unsatisfied, _ = self._edges_satisfied(cur, record_payload)
+                if unsatisfied:
+                    raise IntegrityHalt(
+                        "sequence %s is READY with unsatisfied frozen"
+                        " dependency edges %s"
+                        % (row["sequence_id"], ", ".join(unsatisfied)))
 
         # -- resumable view + fence coherence
         current = []
@@ -2265,6 +2352,373 @@ class Sequencer:
                        "observation_receipt_address": receipt_address,
                        "version": version, "fence": seq["fence"]}))
             return version
+
+    # ------------------------------------------- acceptance and release
+    #
+    # The M6 surface: acceptance as a deterministic authority decision
+    # over durable admitted facts (t-s20 for the SL path, t-s14 for
+    # READ_ONLY — both minting obj-30, derived only from ledger state),
+    # dependency release through its own durable authority path (t-s41:
+    # the released_edges rows plus the obj-35 receipt, never a silent
+    # unlock), completion (t-s42), and readiness consumption of released
+    # edges (t-s02/t-s03, all_edges_satisfied_by_declared_tier). The
+    # remote and reuse acceptance arms (t-s37/t-s39/t-s43/t-s44) are
+    # deferred with their evidence families. obj-30/obj-35 payload
+    # SCHEMAS belong to their owning later chapter; Chapter 2 owns the
+    # transitions and the durable, content-addressed references.
+
+    def _sequence_rule_facts(self, cur, sequence_id, rules):
+        """The LAST journaled facts for this sequence under one of the
+        given rules — durable finalization facts, never caller claims."""
+        found = None
+        for payload in journal.entries(cur):
+            if (payload.get("machine") == "sequence"
+                    and payload.get("subject_id") == sequence_id
+                    and payload.get("rule") in rules):
+                found = payload.get("facts", {})
+        return found
+
+    def _assert_finalizer_supported(self, payload):
+        """finalizer_supported_in_v1 (INV-64, enforced at both t-s02 and
+        t-s03): only the frozen finalization_class vocabulary v1 can
+        drive; the mediated-publication arm (t-s04) is REMOTE-path and
+        deferred with it. No quarantine exists in this runtime, so
+        not_quarantined_or_is_repair holds vacuously."""
+        if payload.get("finalization_class") not in (
+                "READ_ONLY", "SOURCE_MODIFYING"):
+            raise ConflictError(
+                "finalizer_supported_in_v1 fails for %r"
+                % payload.get("finalization_class"))
+
+    def _edges_satisfied(self, cur, payload):
+        """all_edges_satisfied_by_declared_tier over DURABLE released
+        edges: each frozen obj-07 edge (edge_kind RECORD/CONTRACT/
+        REQUIREMENT, target digest) is satisfied by a released_edges row
+        of the same kind and value whose predecessor durably released
+        (DEPENDENCIES_RELEASED or COMPLETED). ACCEPTANCE_FRESH edges fail
+        closed: their freshness semantics belong to the reuse/dominance
+        rules and are deferred."""
+        unsatisfied, satisfied = [], []
+        for edge in payload.get("predecessors", []):
+            if edge.get("observation_requirement") != "ACCEPTANCE":
+                unsatisfied.append(edge.get("edge_id"))
+                continue
+            row = cur.execute(
+                "SELECT r.release_id, r.predecessor_sequence_id"
+                " FROM released_edges r JOIN sequences s"
+                " ON s.sequence_id = r.predecessor_sequence_id"
+                " WHERE r.edge_kind = ? AND r.edge_value = ?"
+                " AND s.state IN ('DEPENDENCIES_RELEASED','COMPLETED')"
+                " ORDER BY r.release_id LIMIT 1",
+                (edge.get("edge_kind"), edge.get("target"))).fetchone()
+            if row is None:
+                unsatisfied.append(edge.get("edge_id"))
+            else:
+                satisfied.append({
+                    "edge_id": edge.get("edge_id"),
+                    "edge_kind": edge.get("edge_kind"),
+                    "target": edge.get("target"),
+                    "release_id": row["release_id"],
+                    "predecessor_sequence_id":
+                        row["predecessor_sequence_id"]})
+        return unsatisfied, satisfied
+
+    def _acceptance_verification_facts(self, cur, att):
+        """The durable verification facts acceptance references: every
+        admitted result for the VERIFIED attempt (obj-19/obj-37 receipt
+        addresses), which must exist and be PASS or ATTESTED."""
+        rows = cur.execute(
+            "SELECT assertion_id, outcome, receipt_sha256"
+            " FROM attempt_verifications WHERE attempt_id = ?"
+            " ORDER BY assertion_id", (att["attempt_id"],)).fetchall()
+        if not rows:
+            raise IntegrityHalt(
+                "attempt %s is VERIFIED with no admitted verification"
+                " results" % att["attempt_id"])
+        for row in rows:
+            if row["outcome"] not in ("PASS", "ATTESTED"):
+                raise IntegrityHalt(
+                    "attempt %s carries a non-passing verification result"
+                    " yet is VERIFIED" % att["attempt_id"])
+        return [{"assertion_id": r["assertion_id"], "outcome": r["outcome"],
+                 "receipt_sha256": r["receipt_sha256"]} for r in rows]
+
+    def _mint_acceptance(self, cur, seq, att, path, now, extra):
+        """obj-30 AcceptanceReceipt (minter: sequencer): deterministic
+        bytes binding the exact Sequence, frozen record identity tiers,
+        Attempt, finalization path and the authoritative facts."""
+        verification = self._acceptance_verification_facts(cur, att)
+        record_row = cur.execute(
+            "SELECT eligibility FROM records WHERE record_hash = ?",
+            (seq["record_hash"],)).fetchone()
+        if record_row["eligibility"] == "HUMAN_REQUIRED":
+            attested = [v for v in verification if v["outcome"] == "ATTESTED"]
+            if not attested:
+                raise ConflictError(
+                    "HUMAN_REQUIRED acceptance needs your durable obj-37"
+                    " attestation among the verification facts")
+        receipt = {"schema_version": "v1", "kind": "AcceptanceReceipt",
+                   "sequence_id": seq["sequence_id"],
+                   "record_hash": seq["record_hash"],
+                   "requirement_digest": seq["requirement_digest"],
+                   "contract_digest": seq["contract_digest"],
+                   "attempt_id": att["attempt_id"],
+                   "attempt_contract_hash": att["attempt_contract_hash"],
+                   "finalization_path": path, "fence": seq["fence"],
+                   "eligibility": record_row["eligibility"],
+                   "verification_receipts": verification}
+        receipt.update(extra)
+        data = canonicalize(receipt)
+        return self.store.put(data), verification
+
+    def accept_commit(self, sequence_id, expected_fence):
+        """t-s20 COMMITTED→ACCEPTED (SL): a deterministic authority
+        decision over durable admitted facts — the committed finalization
+        (the journaled t-s16 facts and their resolvable obj-26 bytes, the
+        HAPPENED intent), the VERIFIED attempt's admitted verification
+        results, the derived eligibility (a HUMAN_REQUIRED record must
+        carry your attestation among them), and every registered
+        finalization requirement satisfied by this path. Mints obj-30 and
+        journals its address; a second invocation is refused at the state
+        gate with the existing receipt identity intact in the journal."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            seq = self._sequence(cur, sequence_id)
+            if expected_fence != seq["fence"]:
+                raise StaleFenceError(
+                    "fence %r is not the current fence %r (INV-13)"
+                    % (expected_fence, seq["fence"]))
+            if seq["state"] != "COMMITTED":
+                raise ConflictError(
+                    "accept_commit expects COMMITTED, found %s (a"
+                    " superseded, abandoned or already accepted sequence"
+                    " is refused here)" % seq["state"])
+            att = self._current_attempt(cur, seq)
+            if att["fence"] != seq["fence"]:
+                raise StaleFenceError(
+                    "attempt fence %r is not the sequence fence %r"
+                    " (fence_matches)" % (att["fence"], seq["fence"]))
+            payload = self._verified_record(cur, seq["record_hash"])
+            satisfied = {"LOCAL_CANONICAL_COMMIT"}
+            missing = [req for req in payload.get(
+                "finalization_requirements", []) if req not in satisfied]
+            if missing:
+                raise ConflictError(
+                    "finalization_requirements_satisfied fails: %s are not"
+                    " satisfiable on the SL path yet (their arcs are"
+                    " deferred)" % ", ".join(sorted(missing)))
+            committed = self._sequence_rule_facts(cur, sequence_id,
+                                                  ("t-s16",))
+            if committed is None or "commit_receipt_address" not in committed:
+                raise IntegrityHalt(
+                    "sequence %s is COMMITTED without journaled t-s16"
+                    " facts (obj-26)" % sequence_id)
+            self.store.get(committed["commit_receipt_address"])  # D-66
+            self._finalization_intent(cur, seq, "HAPPENED")
+            address, verification = self._mint_acceptance(
+                cur, seq, att, "SL", now,
+                {"finalization_requirements":
+                     payload.get("finalization_requirements", []),
+                 "commit_receipt_sha256":
+                     committed["commit_receipt_address"]})
+            version = self._cas_sequence(cur, seq, now, state="ACCEPTED")
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=sequence_id, rule="t-s20",
+                from_state="COMMITTED", to_state="ACCEPTED",
+                recorded_utc=now,
+                facts={"attempt_id": att["attempt_id"],
+                       "acceptance_sha256": address,
+                       "commit_receipt_sha256":
+                           committed["commit_receipt_address"],
+                       "verification_count": len(verification),
+                       "version": version, "fence": seq["fence"],
+                       "mints": ["obj-30"]}))
+            return address
+
+    def accept_verified(self, sequence_id, expected_fence):
+        """t-s14 VERIFIED→ACCEPTED (the READ_ONLY path, a registered PONR
+        row): read_only (the frozen record's finalization_class),
+        automatic_or_attested (derived eligibility; HUMAN_REQUIRED needs
+        your durable attestation among the admitted results),
+        fence_matches; requires obj-19 (the admitted verification
+        receipts), mints obj-30."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            seq = self._sequence(cur, sequence_id)
+            if expected_fence != seq["fence"]:
+                raise StaleFenceError(
+                    "fence %r is not the current fence %r (INV-13)"
+                    % (expected_fence, seq["fence"]))
+            if seq["state"] != "VERIFIED":
+                raise ConflictError(
+                    "accept_verified expects VERIFIED, found %s"
+                    % seq["state"])
+            att = self._current_attempt(cur, seq)
+            if att["fence"] != seq["fence"]:
+                raise StaleFenceError(
+                    "attempt fence %r is not the sequence fence %r"
+                    " (fence_matches)" % (att["fence"], seq["fence"]))
+            payload = self._verified_record(cur, seq["record_hash"])
+            if payload.get("finalization_class") != "READ_ONLY":
+                raise ConflictError(
+                    "t-s14 is the READ_ONLY acceptance; a SOURCE_MODIFYING"
+                    " sequence finalizes first (t-s15a..t-s16, then t-s20)")
+            address, verification = self._mint_acceptance(
+                cur, seq, att, "RO", now, {})
+            version = self._cas_sequence(cur, seq, now, state="ACCEPTED")
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=sequence_id, rule="t-s14",
+                from_state="VERIFIED", to_state="ACCEPTED",
+                recorded_utc=now,
+                facts={"attempt_id": att["attempt_id"],
+                       "acceptance_sha256": address,
+                       "verification_count": len(verification),
+                       "version": version, "fence": seq["fence"],
+                       "ponr": True, "mints": ["obj-30"]}))
+            return address
+
+    def release_dependencies(self, sequence_id):
+        """t-s41 ACCEPTED→DEPENDENCIES_RELEASED: acceptance alone unlocks
+        nothing — this transition writes the DURABLE released edges (one
+        row per identity tier the acceptance can satisfy: RECORD /
+        CONTRACT / REQUIREMENT), mints the obj-35 DependencyReleaseReceipt
+        binding the predecessor identity, the acceptance reference and the
+        successors known at release time, and journals it all in one
+        transaction (successor_edges_durably_satisfied). A second
+        invocation is refused at the state gate; the unique tier index
+        makes conflicting rows impossible."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            seq = self._sequence(cur, sequence_id)
+            if seq["state"] != "ACCEPTED":
+                raise ConflictError(
+                    "release_dependencies expects ACCEPTED, found %s"
+                    " (duplicate releases are refused; readiness is never"
+                    " duplicated)" % seq["state"])
+            accepted = self._sequence_rule_facts(cur, sequence_id,
+                                                 ("t-s14", "t-s20"))
+            if accepted is None or "acceptance_sha256" not in accepted:
+                raise IntegrityHalt(
+                    "sequence %s is ACCEPTED without a journaled obj-30"
+                    " reference" % sequence_id)
+            acceptance = accepted["acceptance_sha256"]
+            self.store.get(acceptance)  # D-66
+            tiers = (("RECORD", seq["record_hash"]),
+                     ("CONTRACT", seq["contract_digest"]),
+                     ("REQUIREMENT", seq["requirement_digest"]))
+            # Successors known now, recorded in the receipt and journal;
+            # later-admitted successors consume the same durable rows.
+            successors = []
+            for row in cur.execute(
+                    "SELECT s.sequence_id, r.content_address"
+                    " FROM sequences s JOIN records r"
+                    " ON r.record_hash = s.record_hash"
+                    " WHERE s.sequence_id != ?",
+                    (sequence_id,)).fetchall():
+                edges = json.loads(self.store.get(
+                    row["content_address"]).decode("utf-8")
+                ).get("predecessors", [])
+                if any(edge.get("edge_kind") == kind
+                       and edge.get("target") == value
+                       for (kind, value) in tiers for edge in edges):
+                    successors.append(row["sequence_id"])
+            successors = sorted(successors)
+            release_ids = [mint_id("rel") for _ in tiers]
+            receipt = canonicalize(
+                {"schema_version": "v1", "kind": "DependencyReleaseReceipt",
+                 "predecessor_sequence_id": sequence_id,
+                 "record_hash": seq["record_hash"],
+                 "contract_digest": seq["contract_digest"],
+                 "requirement_digest": seq["requirement_digest"],
+                 "acceptance_sha256": acceptance,
+                 "release_ids": release_ids,
+                 "known_successor_sequence_ids": successors})
+            release_address = self.store.put(receipt)
+            for release_id, (kind, value) in zip(release_ids, tiers):
+                cur.execute(
+                    "INSERT INTO released_edges (release_id,"
+                    " predecessor_sequence_id, edge_kind, edge_value,"
+                    " acceptance_sha256, release_sha256, released_utc)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (release_id, sequence_id, kind, value, acceptance,
+                     release_address, now))
+            version = self._cas_sequence(cur, seq, now,
+                                         state="DEPENDENCIES_RELEASED")
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=sequence_id, rule="t-s41",
+                from_state="ACCEPTED", to_state="DEPENDENCIES_RELEASED",
+                recorded_utc=now,
+                facts={"release_ids": release_ids,
+                       "release_sha256": release_address,
+                       "acceptance_sha256": acceptance,
+                       "known_successor_sequence_ids": successors,
+                       "version": version, "fence": seq["fence"],
+                       "mints": ["obj-35"]}))
+            return {"release_ids": release_ids,
+                    "release_address": release_address,
+                    "known_successors": successors}
+
+    def complete_sequence(self, sequence_id):
+        """t-s42 DEPENDENCIES_RELEASED→COMPLETED: requires obj-35 (the
+        journaled release reference must resolve); no further
+        preconditions in the frozen row."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            seq = self._sequence(cur, sequence_id)
+            if seq["state"] != "DEPENDENCIES_RELEASED":
+                raise ConflictError(
+                    "complete_sequence expects DEPENDENCIES_RELEASED,"
+                    " found %s" % seq["state"])
+            released = self._sequence_rule_facts(cur, sequence_id,
+                                                 ("t-s41",))
+            if released is None or "release_sha256" not in released:
+                raise IntegrityHalt(
+                    "sequence %s is DEPENDENCIES_RELEASED without a"
+                    " journaled obj-35 reference" % sequence_id)
+            self.store.get(released["release_sha256"])  # D-66
+            version = self._cas_sequence(cur, seq, now, state="COMPLETED")
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=sequence_id, rule="t-s42",
+                from_state="DEPENDENCIES_RELEASED", to_state="COMPLETED",
+                recorded_utc=now,
+                facts={"release_sha256": released["release_sha256"],
+                       "version": version, "fence": seq["fence"]}))
+            return version
+
+    def reevaluate_blocked(self, sequence_id):
+        """t-s02 BLOCKED→READY: all_edges_satisfied_by_declared_tier over
+        the durable released edges, freshness_reevaluated_now (the
+        evaluation instant is journaled), finalizer_supported_in_v1 (the
+        frozen finalization_class vocabulary) and
+        not_quarantined_or_is_repair (no quarantine exists in this
+        runtime). Unsatisfied edges mean NO transition and no journal
+        entry — the sequence simply stays BLOCKED and the unsatisfied
+        edge ids are reported."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            seq = self._sequence(cur, sequence_id)
+            if seq["state"] != "BLOCKED":
+                raise ConflictError(
+                    "reevaluate_blocked expects BLOCKED, found %s"
+                    % seq["state"])
+            payload = self._verified_record(cur, seq["record_hash"])
+            self._assert_finalizer_supported(payload)
+            unsatisfied, satisfied = self._edges_satisfied(cur, payload)
+            if unsatisfied:
+                return {"state": "BLOCKED", "unsatisfied": unsatisfied}
+            version = self._cas_sequence(cur, seq, now, state="READY")
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=sequence_id, rule="t-s02",
+                from_state="BLOCKED", to_state="READY", recorded_utc=now,
+                facts={"satisfied_edges": satisfied,
+                       "freshness_reevaluated_utc": now,
+                       "version": version, "fence": seq["fence"]}))
+            return {"state": "READY", "satisfied_edges": satisfied}
 
     # ------------------------------------------------------ effect intents
     #

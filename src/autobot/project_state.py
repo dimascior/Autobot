@@ -83,6 +83,11 @@ def project_state(db):
         "verified_awaiting_finalization": by_state.get("VERIFIED", []),
         "committing": by_state.get("COMMITTING", []),
         "committed_awaiting_acceptance": by_state.get("COMMITTED", []),
+        "accepted_awaiting_release": by_state.get("ACCEPTED", []),
+        "dependencies_released": by_state.get("DEPENDENCIES_RELEASED", []),
+        "completed": by_state.get("COMPLETED", []),
+        "blocked_work": by_state.get("BLOCKED", []),
+        "ready_work": by_state.get("READY", []),
         "intents_in_doubt": _rows(cur, (
             "SELECT intent_id, state, effect_id, attempt_id"
             " FROM effect_intents WHERE state IN"
@@ -114,9 +119,14 @@ def project_state(db):
     live_attempts = [a for a in attempts
                      if a["state"] not in ATTEMPT_TERMINAL]
 
+    released = _rows(cur, (
+        "SELECT release_id, predecessor_sequence_id, edge_kind, edge_value"
+        " FROM released_edges ORDER BY release_id"))
+
     return {
         "sequences": sequences,
         "sequences_by_state": by_state,
+        "released_edges": released,
         "attempts": attempts,
         "live_attempts": [a["attempt_id"] for a in live_attempts],
         "work_eligibility": work_eligibility,

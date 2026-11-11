@@ -26,15 +26,16 @@ class SchemaEvolutionTests(unittest.TestCase):
         """D-70: schema v2 added the obj-25 retry-identity columns, v3 the
         attempt_calls execution binding, v4 the attempt_witnesses D-21
         admission entries and v5 the M4 verification surface
-        (attempt_verifications, the repair counter, the member lease), all
-        additively; a database newer than the running code is refused."""
+        (attempt_verifications, the repair counter, the member lease) and
+        v6 the M6 released_edges dependency surface, all additively; a
+        database newer than the running code is refused."""
         tmp = tempfile.TemporaryDirectory()
         try:
             path = Path(tmp.name) / "autobot.db"
             db = Database(path)
             row = db.conn.execute(
                 "SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            self.assertEqual(row["value"], "5")
+            self.assertEqual(row["value"], "6")
             columns = {r["name"] for r in db.conn.execute(
                 "PRAGMA table_info(effect_intents)").fetchall()}
             self.assertLessEqual(
@@ -62,6 +63,12 @@ class SchemaEvolutionTests(unittest.TestCase):
             call_columns_v5 = {r["name"] for r in db.conn.execute(
                 "PRAGMA table_info(attempt_calls)").fetchall()}
             self.assertIn("member_lease_expires_utc", call_columns_v5)
+            edge_columns = {r["name"] for r in db.conn.execute(
+                "PRAGMA table_info(released_edges)").fetchall()}
+            self.assertLessEqual(
+                {"release_id", "predecessor_sequence_id", "edge_kind",
+                 "edge_value", "acceptance_sha256", "release_sha256",
+                 "released_utc"}, edge_columns)
             db.close()
             raw = sqlite3.connect(str(path))
             raw.execute("UPDATE meta SET value='99' WHERE key='schema_version'")

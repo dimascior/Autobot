@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 from .models import SchemaTooNew
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Schema v1 (D-67): explicit state tables for Sequence, Attempt,
 # InstanceLease, permit state/reservations and EffectIntent, plus the
@@ -239,7 +239,32 @@ _DDL_V5 = (
     "ALTER TABLE attempt_calls ADD COLUMN member_lease_expires_utc TEXT",
 )
 
-_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4, 5: _DDL_V5}
+# Schema v6 (D-70, additive): the M6 dependency-release surface. One row
+# per tier a released predecessor's acceptance can satisfy (its
+# record_hash / contract_digest / requirement_digest, the frozen obj-07
+# edge_kind vocabulary): t-s41 writes all three in its transaction with
+# the obj-30 acceptance reference and the obj-35 release receipt
+# reference, and t-s02/t-s03 readiness consumes them as durable ledger
+# facts — never inferred graph state. The unique index makes a second
+# release of the same tier impossible (duplicate releases are refused at
+# the state gate; conflicting rows cannot exist).
+_DDL_V6 = (
+    """CREATE TABLE IF NOT EXISTS released_edges (
+        release_id TEXT PRIMARY KEY,
+        predecessor_sequence_id TEXT NOT NULL REFERENCES sequences(sequence_id),
+        edge_kind TEXT NOT NULL CHECK (edge_kind IN
+            ('RECORD','CONTRACT','REQUIREMENT')),
+        edge_value TEXT NOT NULL,
+        acceptance_sha256 TEXT NOT NULL,
+        release_sha256 TEXT NOT NULL,
+        released_utc TEXT NOT NULL
+    )""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_released_edges_identity
+        ON released_edges(predecessor_sequence_id, edge_kind)""",
+)
+
+_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4, 5: _DDL_V5,
+               6: _DDL_V6}
 
 
 class Database:

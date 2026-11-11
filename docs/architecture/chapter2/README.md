@@ -337,6 +337,48 @@ M5 tests), coordinator 41/41. Still deferred: t-s20 acceptance (M6), the
 remote finalization arcs (t-s15b/t-s17/t-s21..), and the Chapter 3/4
 boundaries unchanged.
 
+## Milestone 6 — acceptance, dependency release, loop closure (2026-11-11)
+
+The Chief Engineer loop closes ([ACCEPTANCE.md](ACCEPTANCE.md) carries
+the grounding table, the fact model, the released-edge and readiness
+semantics, the crash classes and the F-M6 findings):
+
+- **Acceptance is a decision over durable facts** (`accept_commit`,
+  t-s20; `accept_verified`, t-s14 — the registered PONR row): the
+  journaled t-s16 facts with their obj-26 bytes re-hashed, the durable
+  HAPPENED intent, the admitted verification rows (all PASS/ATTESTED;
+  HUMAN_REQUIRED needs your obj-37 attestation), the frozen requirement
+  set satisfiable on the path — refusals name the state, the fence or
+  the requirement; duplicates leave the journal untouched. Mints obj-30
+  binding the identity tiers, attempt, path, fence and verification
+  references.
+- **Release is ledger rows, not graph state** (`release_dependencies`,
+  t-s41): one durable released_edges row per identity tier plus the
+  obj-35 receipt, CAS and journal in a single transaction; the unique
+  tier index makes conflicting releases unrepresentable; acceptance
+  alone unlocks nothing. t-s42 completes against the resolvable obj-35
+  reference.
+- **Readiness consumes released edges only** (t-s01/t-s02/t-s03): a
+  frozen obj-07 edge is satisfied by a durable row of its declared kind
+  and target whose predecessor is DEPENDENCIES_RELEASED or COMPLETED —
+  never by inference; ACCEPTANCE_FRESH fails closed;
+  finalizer_supported_in_v1 (INV-64) enforced at both readiness rows.
+- **The loop ran end to end**: two contracts, B edge-blocked on A
+  through A's entire objective→freeze→execute→verify→real-Git-finalize→
+  accept arc (including an in-process restart at ACCEPTED), READY only
+  through the authoritative release, `project_state` exposing the
+  released edges and the actionable successor, A COMPLETED, recovery
+  converging twice.
+- **Recovery 8e**: forged acceptance, forged or deleted release rows,
+  and forged readiness each HALT; every journaled acceptance/release
+  reference re-hashes.
+
+Proof of record: autobot 147/147 on CPython 3.8.10 and 3.12.11 (139 + 8
+M6 tests), coordinator 41/41. Still deferred: the remote finalization
+and acceptance arcs (t-s15b/t-s17/t-s21.., t-s37/t-s39/t-s43/t-s44,
+t-s04), the obj-30/obj-35 payload schemas (Chapter 5), and the
+Chapter 3/4 boundaries unchanged.
+
 ## Reconciliation and progression
 
 [RECONCILIATION.md](RECONCILIATION.md) is the row-by-row reconciliation of

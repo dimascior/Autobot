@@ -99,24 +99,45 @@ def admitted_runtime(data_dir, clock=None, holder="test-instance"):
     return rt, result
 
 
-def local_record_payload():
-    """The M5 SL-path contract: V-A re-targeted to the LOCAL authority
-    declaration (SOURCE_MODIFYING + authority_location LOCAL, finalization
-    requirement LOCAL_CANONICAL_COMMIT) — the smallest complete
-    finalization path (t-s15a → t-s16/t-s18/t-s19)."""
+def local_record_payload(task_contract_id=None, predecessors=None,
+                         finalization_class=None,
+                         finalization_requirements=None, objective=None):
+    """The M5/M6 SL-path contract family: V-A re-targeted to the LOCAL
+    authority declaration (SOURCE_MODIFYING + authority_location LOCAL,
+    finalization requirement LOCAL_CANONICAL_COMMIT by default). The
+    keyword overrides mint sibling contracts for the dependency-release
+    scenarios: a distinct ``objective`` changes the requirement tier
+    (``task_contract_id`` alone is record-tier only, so admission
+    deduplicates it on the shared contract_digest), ``predecessors`` are
+    frozen obj-07 edges, and the READ_ONLY variant reshapes the payload
+    per D-54 (no target_ref; the delegation's registered floor for
+    (autobot, READ_ONLY) is empty; SEM-05 derives requirements [])."""
     import json as _json
     from contract_library import object_hash
     payload = _json.loads(_json.dumps(load_fixture("va_record.json")))
     graph = load_fixture("graph.json")
-    payload["task_contract_id"] = "tc_" + "face" * 8
+    payload["task_contract_id"] = task_contract_id or ("tc_" + "face" * 8)
     payload["source_domain"] = {"repository_id": "autobot",
                                 "authority_location": "LOCAL",
                                 "target_ref": "refs/heads/main"}
     payload["resolved_bindings"]["repository_authority_declaration"] = (
         object_hash("RepositoryAuthorityDeclaration",
                     graph["declaration_local"]))
-    payload["finalization_requirements"] = ["LOCAL_CANONICAL_COMMIT"]
     payload.pop("remote_verification_mode", None)
+    if objective is not None:
+        payload["objective"] = objective
+    if predecessors is not None:
+        payload["predecessors"] = predecessors
+    if finalization_class is not None:
+        payload["finalization_class"] = finalization_class
+    if payload["finalization_class"] == "READ_ONLY":
+        payload["source_domain"].pop("target_ref")
+        payload["resolved_bindings"]["mandatory_floor"][
+            "mandatory_assertion_ids"] = []
+    payload["finalization_requirements"] = (
+        finalization_requirements if finalization_requirements is not None
+        else ([] if payload["finalization_class"] == "READ_ONLY"
+              else ["LOCAL_CANONICAL_COMMIT"]))
     return payload
 
 

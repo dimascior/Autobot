@@ -286,3 +286,25 @@ crash/recovery matrix, receipt ownership and the F-M5 finding register are
 | t-s20 (acceptance) | DEFERRED (M6) |
 | t-s15b/t-s17/t-s21.. | DEFERRED (remote finalization arcs) |
 | Findings | F-M5-1 FIXED (durable intent ordering by insertion, not tying created_utc); F-M5-2 accepted (reservation-lease expiry between PONR and t-s16 holds in COMMITTING — registry-faithful, bounded by INV-60 renewal); F-M5-3 accepted (committed_intent read bounded by the hard window + single-writer discipline, per D-71) |
+
+## M6 addendum (2026-11-11)
+
+Acceptance, dependency release and the ProjectState loop closure. The
+full grounding table, the acceptance fact model, the released-edge
+semantics, the readiness matrix, the crash equivalence classes, recovery
+8e and the F-M6 finding register are [ACCEPTANCE.md](ACCEPTANCE.md).
+Dispositions:
+
+| Surface | Disposition |
+|---|---|
+| t-s20 | IMPLEMENTED: `accept_commit` — a deterministic decision over durable facts only (journaled t-s16 facts with the obj-26 bytes re-hashed, the durable HAPPENED intent, the admitted verification rows, derived eligibility); finalization_requirements_satisfied refuses any requirement outside the SL set by name; duplicate/superseded/abandoned refused at the state gate with the journal untouched |
+| t-s14 (PONR) | IMPLEMENTED: `accept_verified` — the READ_ONLY acceptance straight from VERIFIED; read_only enforced from the frozen record, automatic_or_attested from the admitted rows (HUMAN_REQUIRED needs an obj-37 ATTESTED row), `ponr: true` journaled |
+| obj-30 | Minting/binding/reference handling IMPLEMENTED (identity tiers + attempt + path + fence + eligibility + verification references, canonical bytes, D-66 re-hash in recovery); payload SCHEMA deferred to Chapter 5 |
+| t-s41 | IMPLEMENTED: `release_dependencies` — three durable released_edges rows (RECORD/CONTRACT/REQUIREMENT) + obj-35 + CAS + journal in one transaction; UNIQUE(predecessor, kind) makes conflicting rows impossible; duplicates refused at the ACCEPTED gate; known_successors recorded as snapshot, never authority |
+| t-s42 | IMPLEMENTED: `complete_sequence` — the journaled obj-35 reference must resolve; no further frozen preconditions |
+| t-s01/t-s02/t-s03 | IMPLEMENTED: readiness consumes DURABLE released edges only (declared tier + durably released predecessor); unsatisfied edges transition nothing and journal nothing at t-s02; ACCEPTANCE_FRESH fails closed (reuse/dominance rules deferred); finalizer_supported_in_v1 (INV-64) enforced at both t-s02 and t-s03; not_quarantined vacuous (no quarantine exists in this runtime) |
+| t-s04 | DEFERRED with the REMOTE path (mediated-publication finalizer arm) |
+| t-s37/t-s39/t-s43/t-s44 | DEFERRED (reuse/dominance acceptance arms) |
+| project_state | IMPLEMENTED: accepted_awaiting_release / dependencies_released / completed / blocked_work / ready_work obligations + the released_edges rows; still write-free |
+| Recovery | IMPLEMENTED (8e): forged ACCEPTED-or-beyond HALTs; released_edges↔t-s41 journal pairing both directions; predecessor durably released; acceptance/release bytes re-hash; READY-with-unsatisfied-edges HALTs; the loop pilot restarts in-process at ACCEPTED and repeated recovery converges |
+| Findings | F-M6-1 FIXED (INV-64 enforcement at t-s03); F-M6-2 FIXED (forged-ACCEPTED HALT now tested); F-M6-3 FIXED (deterministic released-edge binding); F-M6-4 accepted (journal-scan fact reads — the M5 precedent); F-M6-5 accepted (content-addressed edges satisfy by digest — the frozen obj-07 design) |
