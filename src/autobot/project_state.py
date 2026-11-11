@@ -81,6 +81,8 @@ def project_state(db):
             for a in _attempts_in("EVIDENCE_COMPLETE")],
         "halted_sequences": by_state.get("HALTED", []),
         "verified_awaiting_finalization": by_state.get("VERIFIED", []),
+        "committing": by_state.get("COMMITTING", []),
+        "committed_awaiting_acceptance": by_state.get("COMMITTED", []),
         "intents_in_doubt": _rows(cur, (
             "SELECT intent_id, state, effect_id, attempt_id"
             " FROM effect_intents WHERE state IN"

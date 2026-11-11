@@ -885,6 +885,35 @@ class Sequencer:
                     % (row["sequence_id"], row["repairs_used"],
                        repair_history.get(row["sequence_id"], 0)))
 
+        # -- 8d. finalization coherence (M5): a COMMITTING sequence names a
+        #        current attempt with at least one finalization intent
+        #        (t-s15a mints obj-25 durably before any effect), and every
+        #        journaled finalization receipt reference (t-s16 obj-26,
+        #        t-s18 observation receipt) resolves to its exact bytes.
+        for row in cur.execute(
+                "SELECT sequence_id, current_attempt_id FROM sequences"
+                " WHERE state = 'COMMITTING'").fetchall():
+            if row["current_attempt_id"] is None or cur.execute(
+                    "SELECT 1 FROM effect_intents WHERE sequence_id = ?"
+                    " AND attempt_id = ?"
+                    " AND effect_id = 'eff-local-canonical-cas'",
+                    (row["sequence_id"], row["current_attempt_id"])
+            ).fetchone() is None:
+                raise IntegrityHalt(
+                    "sequence %s is COMMITTING with no finalization intent"
+                    " (t-s15a mints obj-25 before any effect)"
+                    % row["sequence_id"])
+        for entry_payload in payloads:
+            if entry_payload.get("machine") != "sequence":
+                continue
+            entry_facts = entry_payload.get("facts", {})
+            for key in ("commit_receipt_address",
+                        "observation_receipt_address"):
+                address = entry_facts.get(key)
+                if address is not None:
+                    self.store.get(address)  # re-hashes (D-66)
+                    referenced.add(address)
+
         # -- resumable view + fence coherence
         current = []
         for row in cur.execute(
@@ -1887,6 +1916,355 @@ class Sequencer:
                 from_state="RUNNING", to_state="STALE", recorded_utc=now,
                 facts=facts))
             return "STALE"
+
+    # -------------------------------------------------------- finalization
+    #
+    # The M5 surface: the SL finalization path VERIFIED → COMMITTING →
+    # COMMITTED driven by REAL EffectIntent outcomes. t-s15a mints the
+    # obj-24 reservation and the obj-25 intent in its own transaction (the
+    # registry's mints), the external effect runs only off
+    # committed_intent() (D-71, the git_executor module), the outcome is
+    # observation-driven through the registered intent machine, and the
+    # sequence advances only from durable outcomes: t-s16 (HAPPENED,
+    # consuming the reservation at the registered PONR point, t-r01),
+    # t-s19 (ABSENT with the ref unmoved: back to VERIFIED to re-mint) or
+    # t-s18 (ABSENT because the canonical ref moved: the candidate's base
+    # is stale, back to READY). Remote arcs (t-s15b, t-s17, t-s21..) are
+    # later milestones.
+
+    def _delegation_active(self, cur, payload, now, label):
+        delegation_hash = payload.get("resolved_bindings", {}).get(
+            "delegation_contract")
+        if delegation_hash is None:
+            return
+        obj = cur.execute(
+            "SELECT content_address FROM objects WHERE object_hash = ?",
+            (delegation_hash,)).fetchone()
+        if obj is None:
+            raise IntegrityHalt(
+                "bound delegation %s not in the ledger" % delegation_hash)
+        delegation = json.loads(
+            self.store.get(obj["content_address"]).decode("utf-8"))
+        if delegation.get("expires_utc", "") <= now:
+            raise ConflictError(
+                "bound delegation expired: not %s (t-d02)" % label)
+
+    def _current_attempt(self, cur, seq):
+        if seq["current_attempt_id"] is None:
+            raise ConflictError(
+                "sequence %s has no current attempt" % seq["sequence_id"])
+        return self._attempt(cur, seq["current_attempt_id"])
+
+    def _finalization_intent(self, cur, seq, state):
+        """The committing arc's intent: the LATEST eff-local-canonical-cas
+        intent bound to the sequence's current attempt, which must be in
+        ``state`` (durable outcome, never a caller claim)."""
+        # Insertion order (rowid) is the durable total order: created_utc
+        # ties when two intents mint in the same instant (F-M5-1).
+        row = cur.execute(
+            "SELECT * FROM effect_intents WHERE sequence_id = ?"
+            " AND attempt_id = ? AND effect_id = ?"
+            " ORDER BY rowid DESC LIMIT 1",
+            (seq["sequence_id"], seq["current_attempt_id"],
+             "eff-local-canonical-cas")).fetchone()
+        if row is None:
+            raise ConflictError(
+                "no finalization intent exists for sequence %s"
+                % seq["sequence_id"])
+        if row["state"] != state:
+            raise ConflictError(
+                "finalization intent %s is %s, not %s: outcomes are durable"
+                " intent state, never asserted"
+                % (row["intent_id"], row["state"], state))
+        return row
+
+    def _intent_observation(self, cur, intent_id):
+        """The observation that resolved an intent, read from its journaled
+        transition (durable fact, not a caller claim)."""
+        observation = None
+        for payload in journal.entries(cur):
+            if (payload.get("machine") == "effect_intent"
+                    and payload.get("subject_id") == intent_id):
+                observation = payload.get("facts", {}).get("observation",
+                                                           observation)
+        return observation
+
+    def begin_commit(self, sequence_id, attempt_id, target, expected_old,
+                     new_value, lease_seconds=7200, ttl_seconds=None,
+                     hard_timeout_seconds=None):
+        """t-s15a VERIFIED→COMMITTING (SL path): mints the obj-24
+        PermitUseReservation and the obj-25 EffectIntent for
+        eff-local-canonical-cas in this one transaction — the registered
+        mints — under the full attempt-scoped checks: source_modifying
+        (and authority_location LOCAL: the remote arcs are deferred),
+        permit_reserved (INV-48 counters), delegation_active_at_intent,
+        cas_state_version_attempt_fence and fence_matches (conditions of
+        the mutating SQL), effect_intent_committed (this transaction) and
+        intent_ttl_gt_hard_timeout (SEM-12). The external effect may begin
+        only from committed_intent() afterwards."""
+        if not (isinstance(target, str) and target
+                and isinstance(expected_old, str) and expected_old
+                and isinstance(new_value, str) and new_value):
+            raise ConflictError(
+                "the local CAS needs non-empty target, expected_old and"
+                " new_value")
+        now_dt = self.clock.now()
+        now = instant(now_dt)
+        lease_expires = instant(now_dt + timedelta(seconds=lease_seconds))
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            seq = self._sequence(cur, sequence_id)
+            if seq["state"] != "VERIFIED":
+                raise ConflictError(
+                    "begin_commit expects VERIFIED, found %s" % seq["state"])
+            att = self._current_attempt(cur, seq)
+            if att["attempt_id"] != attempt_id:
+                raise ConflictError(
+                    "attempt %s is not the sequence's verified attempt %s"
+                    % (attempt_id, att["attempt_id"]))
+            if att["fence"] != seq["fence"]:
+                raise StaleFenceError(
+                    "attempt fence %r is not the sequence fence %r"
+                    " (fence_matches)" % (att["fence"], seq["fence"]))
+            payload = self._verified_record(cur, seq["record_hash"])
+            if payload.get("finalization_class") != "SOURCE_MODIFYING":
+                raise ConflictError(
+                    "t-s15a requires source_modifying; the record is %r"
+                    % payload.get("finalization_class"))
+            if payload["source_domain"].get("authority_location") != "LOCAL":
+                raise ConflictError(
+                    "M5 implements the SL path only (authority_location"
+                    " LOCAL); remote finalization arcs are deferred")
+            self._delegation_active(cur, payload, now,
+                                    "delegation_active_at_intent")
+            # permit_reserved: mint the obj-24 reservation under INV-48.
+            cur.execute(
+                "UPDATE permit_state SET reserved_uses = reserved_uses + 1,"
+                " version = version + 1 WHERE sequence_id = ?"
+                " AND consumed_uses + reserved_uses < permitted_uses",
+                (sequence_id,))
+            if cur.rowcount != 1:
+                raise PermitExhaustedError(
+                    "no permit use available for %s (INV-48)" % sequence_id)
+            reservation_id = mint_id("rv")
+            cur.execute(
+                "INSERT INTO reservations (reservation_id, sequence_id,"
+                " attempt_id, state, lease_expires_utc, created_utc,"
+                " updated_utc) VALUES (?, ?, ?, 'RESERVED', ?, ?, ?)",
+                (reservation_id, sequence_id, attempt_id, lease_expires,
+                 now, now))
+            journal.append(cur, journal.transition_record(
+                machine="permit_reservation", subject_id=reservation_id,
+                rule="ch2:reserve-use", to_state="RESERVED",
+                recorded_utc=now,
+                facts={"sequence_id": sequence_id, "attempt_id": attempt_id,
+                       "lease_expires_utc": lease_expires,
+                       "minted_by": "t-s15a"}))
+            expires, hard_to = self._intent_windows(
+                payload, now_dt, ttl_seconds, hard_timeout_seconds)
+            intent_id = mint_id("in")
+            cur.execute(
+                "INSERT INTO effect_intents (intent_id, effect_id,"
+                " intent_class, state, sequence_id, attempt_id, fence,"
+                " reservation_id, created_utc, expires_utc,"
+                " hard_timeout_utc, version, target, expected_old,"
+                " new_value) VALUES (?, 'eff-local-canonical-cas',"
+                " 'attempt_scoped', 'PENDING', ?, ?, ?, ?, ?, ?, ?, 1,"
+                " ?, ?, ?)",
+                (intent_id, sequence_id, attempt_id, att["fence"],
+                 reservation_id, now, expires, hard_to, target,
+                 expected_old, new_value))
+            version = self._cas_sequence(cur, seq, now, state="COMMITTING")
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=sequence_id, rule="t-s15a",
+                from_state="VERIFIED", to_state="COMMITTING",
+                recorded_utc=now,
+                facts={"attempt_id": attempt_id, "intent_id": intent_id,
+                       "reservation_id": reservation_id,
+                       "effect_id": "eff-local-canonical-cas",
+                       "target": target, "expected_old": expected_old,
+                       "new_value": new_value, "expires_utc": expires,
+                       "hard_timeout_utc": hard_to, "version": version,
+                       "fence": seq["fence"],
+                       "mints": ["obj-24", "obj-25"]}))
+            return {"intent_id": intent_id, "reservation_id": reservation_id}
+
+    def commit_committed(self, sequence_id, expected_fence, commit_receipt):
+        """t-s16 COMMITTING→COMMITTED — the SL PONR row: effect_happened
+        (the finalization intent is durably HAPPENED), fence_matches, and
+        reservation_consumed — t-r01 (ponr_effect_happened, exactly one
+        RESERVED row moves once) commits in this same transaction, which is
+        the reservation consumption's registered durable point. Requires
+        obj-26: the git_sequencer's CommitReceipt bytes, identity-bound to
+        the intent, preserved by exact bytes; the payload SCHEMA stays with
+        obj-26's owning later chapter."""
+        commit_receipt = bytes(commit_receipt)
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            seq = self._sequence(cur, sequence_id)
+            if expected_fence != seq["fence"]:
+                raise StaleFenceError(
+                    "fence %r is not the current fence %r (INV-13)"
+                    % (expected_fence, seq["fence"]))
+            if seq["state"] != "COMMITTING":
+                raise ConflictError(
+                    "commit_committed expects COMMITTING, found %s"
+                    % seq["state"])
+            att = self._current_attempt(cur, seq)
+            if att["fence"] != seq["fence"]:
+                raise StaleFenceError(
+                    "attempt fence %r is not the sequence fence %r"
+                    " (fence_matches)" % (att["fence"], seq["fence"]))
+            intent = self._finalization_intent(cur, seq, "HAPPENED")
+            receipt = json.loads(commit_receipt.decode("utf-8"))
+            if (receipt.get("kind") != "CommitReceipt"
+                    or receipt.get("intent_id") != intent["intent_id"]
+                    or receipt.get("target") != intent["target"]
+                    or receipt.get("new_value") != intent["new_value"]):
+                raise ConflictError(
+                    "obj-26 receipt must bind the finalization intent's"
+                    " identity (kind, intent_id, target, new_value)")
+            receipt_address = self.store.put(commit_receipt)
+            # t-r01: the PONR effect happened; exactly one RESERVED row
+            # moves to CONSUMED, durably, in this transaction.
+            cur.execute(
+                "UPDATE reservations SET state = 'CONSUMED', updated_utc = ?"
+                " WHERE reservation_id = ? AND state = 'RESERVED'",
+                (now, intent["reservation_id"]))
+            if cur.rowcount != 1:
+                raise ConflictError(
+                    "reservation %s is not RESERVED (t-r01:"
+                    " row_status_reserved_rowcount_1)"
+                    % intent["reservation_id"])
+            cur.execute(
+                "UPDATE permit_state SET consumed_uses = consumed_uses + 1,"
+                " reserved_uses = reserved_uses - 1, version = version + 1"
+                " WHERE sequence_id = ?", (sequence_id,))
+            journal.append(cur, journal.transition_record(
+                machine="permit_reservation",
+                subject_id=intent["reservation_id"], rule="t-r01",
+                from_state="RESERVED", to_state="CONSUMED",
+                recorded_utc=now,
+                facts={"sequence_id": sequence_id,
+                       "cause": "ponr_effect_happened (t-s16)"}))
+            version = self._cas_sequence(cur, seq, now, state="COMMITTED")
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=sequence_id, rule="t-s16",
+                from_state="COMMITTING", to_state="COMMITTED",
+                recorded_utc=now,
+                facts={"attempt_id": att["attempt_id"],
+                       "intent_id": intent["intent_id"],
+                       "reservation_id": intent["reservation_id"],
+                       "commit_receipt_address": receipt_address,
+                       "effect": "eff-local-canonical-cas",
+                       "version": version, "fence": seq["fence"],
+                       "ponr": True}))
+            return receipt_address
+
+    def _release_finalization_reservation(self, cur, intent, now):
+        """t-r02, idempotent: the registered reservation_released
+        precondition of t-s18/t-s19."""
+        cur.execute(
+            "UPDATE reservations SET state = 'RELEASED', updated_utc = ?"
+            " WHERE reservation_id = ? AND state = 'RESERVED'",
+            (now, intent["reservation_id"]))
+        if cur.rowcount == 1:
+            cur.execute(
+                "UPDATE permit_state SET reserved_uses = reserved_uses - 1,"
+                " version = version + 1 WHERE sequence_id = ?",
+                (intent["sequence_id"],))
+            journal.append(cur, journal.transition_record(
+                machine="permit_reservation",
+                subject_id=intent["reservation_id"], rule="t-r02",
+                from_state="RESERVED", to_state="RELEASED",
+                recorded_utc=now,
+                facts={"sequence_id": intent["sequence_id"],
+                       "cause": "pre_ponr_exit"}))
+
+    def commit_absent(self, sequence_id):
+        """t-s19 COMMITTING→VERIFIED: effect_absent_per_outcome_rule with
+        the ref UNMOVED — the intent is durably ABSENT and its journaled
+        observation is the fenced expected-old form, so the same VERIFIED
+        candidate may re-mint and retry; the reservation is released
+        (t-r02) in this transaction."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            seq = self._sequence(cur, sequence_id)
+            if seq["state"] != "COMMITTING":
+                raise ConflictError(
+                    "commit_absent expects COMMITTING, found %s"
+                    % seq["state"])
+            intent = self._finalization_intent(cur, seq, "ABSENT")
+            observation = self._intent_observation(cur, intent["intent_id"])
+            if observation != ("target_equals_expected_old_and_executor_"
+                               "fenced_and_no_ref_lock"):
+                raise ConflictError(
+                    "t-s19 requires absence with the target at its expected"
+                    " old value; the journaled observation is %r (a moved"
+                    " ref is t-s18)" % observation)
+            self._release_finalization_reservation(cur, intent, now)
+            version = self._cas_sequence(cur, seq, now, state="VERIFIED")
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=sequence_id, rule="t-s19",
+                from_state="COMMITTING", to_state="VERIFIED",
+                recorded_utc=now,
+                facts={"attempt_id": seq["current_attempt_id"],
+                       "intent_id": intent["intent_id"],
+                       "observation": observation, "version": version,
+                       "fence": seq["fence"]}))
+            return version
+
+    def commit_stale(self, sequence_id, observation_receipt):
+        """t-s18 COMMITTING→READY: canonical_ref_moved_expected_old_stale —
+        the intent is durably ABSENT because the observation was
+        target_other (the canonical ref moved), so the frozen candidate's
+        base is stale and a NEW attempt is required. Requires obj-26: the
+        git_sequencer's observation receipt of the moved ref, preserved by
+        exact bytes; the reservation is released (t-r02) and fence_matches
+        holds in the mutating SQL."""
+        observation_receipt = bytes(observation_receipt)
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            seq = self._sequence(cur, sequence_id)
+            if seq["state"] != "COMMITTING":
+                raise ConflictError(
+                    "commit_stale expects COMMITTING, found %s"
+                    % seq["state"])
+            att = self._current_attempt(cur, seq)
+            if att["fence"] != seq["fence"]:
+                raise StaleFenceError(
+                    "attempt fence %r is not the sequence fence %r"
+                    " (fence_matches)" % (att["fence"], seq["fence"]))
+            intent = self._finalization_intent(cur, seq, "ABSENT")
+            observation = self._intent_observation(cur, intent["intent_id"])
+            if observation != "target_other":
+                raise ConflictError(
+                    "t-s18 requires the canonical ref observed at another"
+                    " value; the journaled observation is %r" % observation)
+            receipt = json.loads(observation_receipt.decode("utf-8"))
+            if (receipt.get("kind") != "CommitReceipt"
+                    or receipt.get("intent_id") != intent["intent_id"]
+                    or receipt.get("target") != intent["target"]):
+                raise ConflictError(
+                    "obj-26 observation receipt must bind the finalization"
+                    " intent's identity")
+            receipt_address = self.store.put(observation_receipt)
+            self._release_finalization_reservation(cur, intent, now)
+            version = self._cas_sequence(cur, seq, now, state="READY",
+                                         current_attempt_id=None)
+            journal.append(cur, journal.transition_record(
+                machine="sequence", subject_id=sequence_id, rule="t-s18",
+                from_state="COMMITTING", to_state="READY",
+                recorded_utc=now,
+                facts={"attempt_id": att["attempt_id"],
+                       "intent_id": intent["intent_id"],
+                       "observation": observation,
+                       "observation_receipt_address": receipt_address,
+                       "version": version, "fence": seq["fence"]}))
+            return version
 
     # ------------------------------------------------------ effect intents
     #

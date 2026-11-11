@@ -263,3 +263,26 @@ the member-lease and budget configuration representation (D-18).
 | F-M4-3 | Adversarial review, accepted: receipt/attestation bytes written to the CAS before a conflicting-duplicate refusal remain as store orphans | Consistent with the admit_witness precedent and D-66's harmless-orphan side; recover() reports them |
 | F-M4-4 | Operator acceptance check 1: t-s09's `execution_receipt_complete` was classified IMPLEMENTED although only its join half rests on independently validated admission facts | Reclassified SPLIT — join IMPLEMENTED / completeness classification PARTIAL (Chapter 3); inertness of the declared field proven by a dedicated test |
 | F-M4-5 | Operator acceptance check 2: the report blurred durable t-s12 transitions with admission refusals and IntegrityHalt stops | Outcome tiers made explicit in the t-s12 row, the `halt_verification` docstring and three tests proving refusals/stops mutate nothing and the durable halt commits only through t-s12 itself |
+
+## M5 addendum (2026-11-11)
+
+The finalization milestone: the SL path VERIFIED → COMMITTING → COMMITTED
+driven by real EffectIntent outcomes over a real local Git repository. The
+full grounding table (every frozen row with source, destination, actor,
+capability, requires, mints, preconditions, effect class, PONR status,
+owner and status), the executor contract, the PONR model, the
+crash/recovery matrix, receipt ownership and the F-M5 finding register are
+[FINALIZATION.md](FINALIZATION.md). Dispositions:
+
+| Surface | Disposition |
+|---|---|
+| t-s15a | IMPLEMENTED: `begin_commit` mints obj-24 + obj-25 in one transaction (the registered mints) under the full attempt-scoped checks; SL only (authority_location LOCAL) — the remote arcs are DEFERRED |
+| t-s16 (PONR) | IMPLEMENTED: `commit_committed` — durable HAPPENED required, obj-26 identity-bound and byte-preserved, t-r01 consumption in the same transaction (the registered durable point) |
+| t-s18 / t-s19 | IMPLEMENTED: the two ABSENT exits distinguished by the intent's JOURNALED observation (target_other → READY/new attempt with the obj-26 observation receipt; fenced expected-old → VERIFIED/re-mint), t-r02 released in-transaction |
+| Real executor (eff-local-canonical-cas) | IMPLEMENTED: `git_executor` — committed_intent() authority only, the one authorized `git update-ref` CAS, independent observation, the frozen `local` rule, obj-26 minting; grants no protocol authority |
+| Intent machine over the real effect | PRE-EXISTING (M2) t-i01..t-i07, exercised live: HAPPENED, fenced ABSENT, moved-ref ABSENT, window-open PENDING hold, t-i03 expiry, t-i06 retry with identity binding |
+| Crash/recovery | IMPLEMENTED: the nine directive windows mapped to durable equivalence classes; hard-death `m5_post_effect` stage over a real repository (restart infers nothing; observation resolves); recovery 8d (COMMITTING ⇒ intent exists; journaled receipt references re-hash); repeated recovery converges |
+| Receipts | obj-26 reference handling IMPLEMENTED (identity binding, exact bytes, D-66 re-hash); obj-26 payload SCHEMA deferred to its owning chapter; obj-27/28/30/41 belong to the deferred remote/M6 rows |
+| t-s20 (acceptance) | DEFERRED (M6) |
+| t-s15b/t-s17/t-s21.. | DEFERRED (remote finalization arcs) |
+| Findings | F-M5-1 FIXED (durable intent ordering by insertion, not tying created_utc); F-M5-2 accepted (reservation-lease expiry between PONR and t-s16 holds in COMMITTING — registry-faithful, bounded by INV-60 renewal); F-M5-3 accepted (committed_intent read bounded by the hard window + single-writer discipline, per D-71) |

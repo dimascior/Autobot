@@ -31,6 +31,7 @@ from .models import (
 )
 from .project_state import project_state
 from .projection import project_prompt
+from .git_executor import execute_local_cas, observe_and_resolve
 from .registry import Registry
 from .sequencer import Sequencer
 from .store import Store

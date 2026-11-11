@@ -296,6 +296,47 @@ t-s13 (your resume), the t-a13/t-s45 classification authority (Chapter 3),
 the verifier-runner implementation and receipt schemas (Chapter 4), and
 finalization (M5).
 
+## Milestone 5 — finalization and real effect execution (2026-11-11)
+
+The SL path, VERIFIED → COMMITTING → COMMITTED, driven by real
+EffectIntent outcomes over a real local Git repository
+([FINALIZATION.md](FINALIZATION.md) carries the frozen-row grounding
+table, the executor contract, the PONR model, the crash matrix and the
+F-M5 findings):
+
+- **t-s15a** (`begin_commit`) mints the obj-24 reservation and the obj-25
+  intent in one transaction — the registered mints — under the full
+  attempt-scoped checks; the external effect may begin only from
+  `committed_intent()` afterwards (D-71).
+- **The first real executor** (`git_executor.py`, principal
+  git_sequencer/cap-38) performs exactly the authorized
+  `git update-ref <target> <new> <old>` — Git's own atomic CAS — observes
+  the ref independently, classifies under the frozen `local` outcome rule,
+  feeds `resolve_intent`, and mints obj-26 on HAPPENED. It grants no
+  protocol authority.
+- **The registered exits**: `commit_committed` (t-s16, the PONR row:
+  durable HAPPENED, obj-26 identity-bound, t-r01 reservation consumption
+  in the same transaction); `commit_absent` (t-s19: fenced expected-old
+  absence, back to VERIFIED to re-mint); `commit_stale` (t-s18: the
+  canonical ref moved, obj-26 observation receipt, back to READY for a
+  new attempt). The two ABSENT exits are distinguished by the intent's
+  JOURNALED observation, never a caller claim.
+- **Uncertainty stays durable**: an unfenced expected-old observation
+  decides nothing while the window is open; expiry is t-i03, retry is
+  t-i06 with full identity binding, and the retried intent completes the
+  arc — exercised against the real repository.
+- **Crash discipline**: the nine directive windows map to durable
+  equivalence classes; the hard-death `m5_post_effect` stage moves the
+  real ref and dies before observation — the restart finds the intent
+  PENDING, infers nothing, and observation alone resolves and completes.
+  Recovery gains 8d (a COMMITTING sequence must hold its minted intent;
+  journaled receipt references re-hash), and repeated recovery converges.
+
+Proof of record: autobot 139/139 on CPython 3.8.10 and 3.12.11 (125 + 14
+M5 tests), coordinator 41/41. Still deferred: t-s20 acceptance (M6), the
+remote finalization arcs (t-s15b/t-s17/t-s21..), and the Chapter 3/4
+boundaries unchanged.
+
 ## Reconciliation and progression
 
 [RECONCILIATION.md](RECONCILIATION.md) is the row-by-row reconciliation of

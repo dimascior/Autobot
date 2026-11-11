@@ -14,6 +14,7 @@ from pathlib import Path
 import support
 from fake_verifier import environment_bytes, receipt_bytes
 from autobot import Database, Sequencer, Store, journal
+from autobot.git_executor import observe_and_resolve
 from autobot.models import (
     AuthorityLost,
     ConflictError,
@@ -290,6 +291,52 @@ class RestartTests(unittest.TestCase):
                                            att["fence"])
         self.assertEqual(result, {"attempt": "VERIFIED",
                                   "sequence": "VERIFIED"})
+        db.close()
+
+    def test_crash_m5_post_effect(self):
+        """M5's post-PONR window: the authorized real Git CAS happened and
+        the process died hard before any observation. The restart finds the
+        intent durably PENDING (nothing inferred), recovery passes the
+        finalization coherence checks, and OBSERVATION alone resolves
+        HAPPENED — then t-r01 consumes the reservation at the registered
+        point inside t-s16 and the sequence lands COMMITTED; repeated
+        recovery converges on the same state."""
+        data_dir = self.dir / "m5"
+        proc = subprocess.run(
+            [sys.executable, "-I", str(CHILD), str(data_dir),
+             "m5_post_effect"],
+            capture_output=True, text=True, timeout=180,
+        )
+        self.assertEqual(proc.returncode, 137, proc.stdout + proc.stderr)
+        snapshot = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(snapshot["update_ref_exit"], 0)
+
+        db = Database(data_dir / "autobot.db")
+        store = Store(data_dir / "store")
+        seq = Sequencer(db, store, support.manual_clock(),
+                        holder="crash-child")
+        seq.recover()  # includes the COMMITTING-has-intent coherence check
+        irow = db.conn.execute(
+            "SELECT state FROM effect_intents WHERE intent_id = ?",
+            (snapshot["intent_id"],)).fetchone()
+        self.assertEqual(irow["state"], "PENDING")  # restart inferred nothing
+        seq.acquire_lease(ttl_seconds=3600)
+        report = observe_and_resolve(seq, snapshot["intent_id"],
+                                     snapshot["repo"], executor_fenced=True)
+        self.assertEqual((report["observation"], report["outcome"]),
+                         ("target_equals_new", "HAPPENED"))
+        seq.commit_committed(snapshot["m5_sequence_id"],
+                             snapshot["m5_fence"], report["receipt"])
+        row = db.conn.execute(
+            "SELECT state FROM sequences WHERE sequence_id = ?",
+            (snapshot["m5_sequence_id"],)).fetchone()
+        self.assertEqual(row["state"], "COMMITTED")
+        rrow = db.conn.execute(
+            "SELECT state FROM reservations WHERE reservation_id = ?",
+            (snapshot["reservation_id"],)).fetchone()
+        self.assertEqual(rrow["state"], "CONSUMED")
+        self.assertEqual(seq.recover()["intents_in_doubt"], [])
+        self.assertEqual(seq.recover()["intents_in_doubt"], [])
         db.close()
 
     def test_takeover_after_expiry_advances_epoch_and_fences_stale_authority(self):

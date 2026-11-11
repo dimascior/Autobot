@@ -7,6 +7,7 @@ restart must erase. Not a test module; test_recovery.py drives it.
 
 Stages: admitted | ready | executing | reserved | mid_transaction
       | intent | mid_intent_tx | dispatched | running | verifying
+      | m5_post_effect
 """
 
 import json
@@ -92,6 +93,31 @@ def main():
         snapshot["intent_id"] = rt.sequencer.mint_intent(
             sequence_id, snapshot["attempt_id"], "eff-canonical-push",
             target="refs/heads/main", expected_old="sha256:" + "ab" * 32)
+    if stage == "m5_post_effect":
+        # The post-PONR crash window: the authorized real Git CAS has
+        # happened; the process dies before any observation or resolution.
+        from autobot.git_executor import _git
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        local = rt.registry.admit_payload(
+            support.local_record_payload(), submitted_by="planner")
+        info = support.drive_to_verified(rt, local)
+        rt.sequencer.grant_permit(local["sequence_id"], permitted_uses=1)
+        repo = data_dir / "repo"
+        sha_old, sha_new = support.init_git_repo(repo)
+        minted = rt.sequencer.begin_commit(
+            local["sequence_id"], info["attempt_id"], "refs/heads/main",
+            sha_old, sha_new)
+        proc = _git(repo, "update-ref", "refs/heads/main", sha_new, sha_old)
+        snapshot.update({
+            "m5_sequence_id": local["sequence_id"],
+            "m5_attempt_id": info["attempt_id"],
+            "m5_fence": info["fence"],
+            "intent_id": minted["intent_id"],
+            "reservation_id": minted["reservation_id"],
+            "repo": str(repo), "sha_old": sha_old, "sha_new": sha_new,
+            "update_ref_exit": proc.returncode})
 
     cur = rt.db.conn.cursor()
     row = cur.execute(
