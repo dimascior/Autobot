@@ -1,5 +1,14 @@
 # Chapter 3, milestone 2 — evidence provenance and causal joins
 
+> **C3-M3 amendment (2026-11-12, in-chapter):** the chapter's closure
+> milestone added the obj-15 `input_rehash` binding (INV-37, D-C3-9),
+> completed the D-12/INV-68 integrity classes
+> (`execution_without_decision`, D-C3-8, plus the F-C3-9 one-record
+> deny_then_ran fix), built cap-30's index-state diagnostic (INV-30,
+> D-C3-7; U-05 resolved), and corrected §12's proof-of-record counts to
+> the operator's pre-commit correction run. The chapter completion
+> matrix is [CLOSURE.md](CLOSURE.md).
+
 C3-M1 made the ExecutionReceipt's completeness classification
 authoritative. C3-M2 makes the evidence UNDER that classification
 causally attributable: the Collector no longer receives "some files
@@ -219,8 +228,10 @@ waits for the multi-member milestone rather than inventing attribution).
 Nothing in this milestone reads any index: every join operates on
 admitted witness bytes and ledger/content-store facts. INDEX_LAG can
 never block COMPLETE unless a frozen assertion explicitly declares an
-HDB-derived query (none do in v1); the watermark interface stays a
-deferred diagnostic (U-05, untouched).
+HDB-derived query (none do in v1); the watermark interface stayed a
+deferred diagnostic at M2 and was resolved and built as the Collector's
+injected diagnostic in C3-M3 (U-05 resolved, D-C3-7,
+CH3-index-lag-diagnostic).
 
 ## 10. Recovery
 
@@ -262,14 +273,19 @@ repeated recovery converges (pure functions over durable rows).
 
 ## 12. Proof of record
 
-- venv CPython 3.12.11: **193/193 OK** (gate 20261112-ce-055; the first
-  run, ce-053, flushed four defects — the crash-witness byte pin, the
-  missing sequence_id in a new test helper ×2, and the D-25 ordering of
-  a fixture's success_outcomes — diagnosed under ce-054).
-- PATH CPython 3.8.10: **193/193 OK** (gate 20261112-ce-056).
-- Coordinator regression: **41/41 OK** (gate 20261112-ce-057).
-- 193 = C3-M1's 179 + 14 new conformance tests in
-  `tests/autobot/test_provenance.py`: the three registered invariant
+- First green: **193/193** on venv CPython 3.12.11 (gate 20261112-ce-055;
+  the first run, ce-053, flushed four defects — the crash-witness byte
+  pin, the missing sequence_id in a new test helper ×2, and the D-25
+  ordering of a fixture's success_outcomes — diagnosed under ce-054),
+  **193/193** on PATH CPython 3.8.10 (ce-056), coordinator **41/41**
+  (ce-057).
+- The milestone's committed proof, after the operator's pre-commit
+  correction (the missing-result semantics and its adversarial proof
+  `test_missing_result_manufactures_no_state`): **194/194** on venv
+  CPython 3.12.11 (ce-064), **194/194** on PATH CPython 3.8.10 (ce-065),
+  coordinator **41/41** (ce-066).
+- 194 = C3-M1's 179 + 15 new conformance tests: 14 in
+  `tests/autobot/test_provenance.py` — the three registered invariant
   proofs (INV-03 `CH3-artifact-provenance-single-attempt`, INV-04
   `CH3-mtime-never-selects-artifact` behavioral + source-scan, INV-22
   `CH3-provenance-from-witnesses`), raw-byte preservation with unknown
@@ -278,7 +294,9 @@ repeated recovery converges (pure functions over durable rows).
   negative arms, frozen-membership and outcome-mapping proofs
   (cancelled builder fails t-a11, cancelled poller finishes t-a04),
   obj-10 closure determinism, artifact-forgery recovery HALTs, and the
-  restart reconstruction of the whole causal graph. INV-30 is satisfied
-  structurally in v1: no module of the plane reads any index, no frozen
-  assertion declares an HDB-derived query, and the U-05 watermark
-  surface stays deferred as diagnostic-only.
+  restart reconstruction of the whole causal graph — plus the
+  missing-result proof in `test_autonomous_pilot.py`. INV-30 was
+  satisfied structurally at M2 (no module of the plane reads any index,
+  no frozen assertion declares an HDB-derived query) and its registered
+  runtime proof landed with the C3-M3 diagnostic surface
+  ([CLOSURE.md](CLOSURE.md)).

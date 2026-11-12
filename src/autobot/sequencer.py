@@ -1351,6 +1351,20 @@ class Sequencer:
                 raise ConflictError(
                     "role %r is not named by the frozen record's"
                     " completion_policies" % role)
+            # INV-37's dispatch-side re-hash (D-C3-9): every declared
+            # specification input must resolve to its exact declared
+            # bytes BEFORE any external launch — the collection-side
+            # probe and the receipt's input_rehash binding are the
+            # other half.
+            declared_inputs = payload.get("specification_inputs", {}).get(
+                "name_to_exact_byte_sha256", {})
+            for input_name in sorted(declared_inputs):
+                if self.store.verify([declared_inputs[input_name]]):
+                    raise ConflictError(
+                        "specification input %r does not resolve to its"
+                        " declared bytes at dispatch (INV-37: inputs are"
+                        " re-hashed at dispatch and at collection)"
+                        % input_name)
             cur.execute(
                 "INSERT INTO attempt_calls (attempt_id, role, provider, call_id,"
                 " projection_address, created_utc, updated_utc)"
@@ -1554,7 +1568,12 @@ class Sequencer:
         immutable from the freeze onward (admit_witness refuses frozen
         attempts), and the attempt row's updated_utc IS the t-a05 instant
         while the state holds — the only transition into CANDIDATE_FROZEN,
-        with no later mutation of the row until the state changes."""
+        with no later mutation of the row until the state changes.
+
+        The rows carry admitted_utc for the collector's index-state
+        DIAGNOSTIC only (INV-30, D-C3-7); the receipt derivation projects
+        each entry to its identity triple, so the instant never enters
+        the obj-15 bytes."""
         cur = self.db.conn.cursor()
         att = self._attempt(cur, attempt_id)
         if att["state"] != "CANDIDATE_FROZEN":
@@ -1565,11 +1584,11 @@ class Sequencer:
         seq = self._sequence(cur, att["sequence_id"])
         payload = self._verified_record(cur, seq["record_hash"])
         rows = cur.execute(
-            "SELECT witness_kind, producer, content_sha256"
+            "SELECT witness_kind, producer, content_sha256, admitted_utc"
             " FROM attempt_witnesses WHERE attempt_id = ? ORDER BY rowid",
             (attempt_id,)).fetchall()
         artifact_rows = cur.execute(
-            "SELECT logical_path, content_sha256, role"
+            "SELECT logical_path, content_sha256, role, admitted_utc"
             " FROM attempt_artifacts WHERE attempt_id = ? ORDER BY rowid",
             (attempt_id,)).fetchall()
         return {"attempt_id": att["attempt_id"],

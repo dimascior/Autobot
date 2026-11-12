@@ -17,6 +17,17 @@ contradictions (cross-execution identities, deny_then_ran) classify
 INTEGRITY_FAILED, per-role member completeness evaluates the frozen
 required membership, and artifact provenance rides the receipt. Tests pin
 every table here to the registry files (the witnesses.py discipline).
+
+C3-M3 closes the remaining registered chapter-3 obligations: the receipt
+binds ``input_rehash`` — every specification input the frozen record
+declares, re-probed against the content store at collection, a change
+classifying INTEGRITY_FAILED (INV-37, the chapter-1 obj-15 always
+binding, D-C3-9) — and the contradiction rules complete the D-12/INV-68
+integrity classes with execution_without_decision (D-C3-8). The index
+stays OUT of this module by construction: the payload is a pure function
+of durable ledger facts, so a live catalog probe cannot enter it without
+breaking the D-C3-2 byte-equality (INV-30; the diagnostic surface lives
+on the Collector).
 """
 
 import json
@@ -110,6 +121,25 @@ def probe_integrity(store, entries):
     return bad
 
 
+def probe_inputs(store, record_payload):
+    """INV-37's collection-side re-hash (D-C3-9): every specification
+    input the frozen record declares, probed non-raising against the
+    content store. The receipt binds the result (the chapter-1
+    ``input_rehash`` obj-15 binding), and a missing or altered input
+    classifies INTEGRITY_FAILED — deterministic over store state, like
+    the D-66 witness probe. Recovery halts earlier on the same
+    corruption (the records loop re-resolves every declared input), the
+    same deliberate interplay D-C3-3 records for witnesses."""
+    declared = record_payload.get("specification_inputs", {}).get(
+        "name_to_exact_byte_sha256", {})
+    rehash = {}
+    for name in sorted(declared):
+        address = declared[name]
+        rehash[name] = {"content_sha256": address,
+                        "intact": not store.verify([address])}
+    return rehash
+
+
 def extract_all_facts(store, entries, failures):
     """Recognized facts per admitted entry (D-C3-5), keyed by content
     address; entries whose bytes failed the probe contribute none."""
@@ -131,7 +161,7 @@ def extract_all_facts(store, entries, failures):
 
 
 def build_receipt(state, integrity_failures, window_seconds,
-                  witness_facts=None):
+                  witness_facts=None, input_rehash=None):
     """The pure obj-15 derivation (D-C3-2): a function of durable ledger
     facts plus the configured window — no clock, no caller claims, so
     unchanged facts re-derive byte-identical bytes.
@@ -140,8 +170,11 @@ def build_receipt(state, integrity_failures, window_seconds,
     attempt_id, attempt_contract_hash, call_id, native_session_id (or
     None), witnesses (D-21 entry rows, insertion order) and artifacts
     (provenance rows). ``witness_facts`` maps content addresses to the
-    recognized facts extracted from the exact producer bytes."""
+    recognized facts extracted from the exact producer bytes;
+    ``input_rehash`` is probe_inputs' result over the frozen record's
+    declared specification inputs (INV-37)."""
     witness_facts = witness_facts or {}
+    input_rehash = input_rehash or {}
     record_payload = state["record_payload"]
     role = state["role"]
     call_id = state["call_id"]
@@ -186,10 +219,13 @@ def build_receipt(state, integrity_failures, window_seconds,
                  "witness_kind": entry["witness_kind"],
                  "content_sha256": entry["content_sha256"]})
     contradictions.extend(witness_semantics.deny_then_ran(fact_triples))
+    contradictions.extend(
+        witness_semantics.execution_without_decision(fact_triples))
     contradictions.sort(key=lambda c: (c["rule"],
                                        c.get("content_sha256", ""),
                                        c.get("command_sha256", ""),
-                                       c.get("session_id", "")))
+                                       c.get("session_id", ""),
+                                       c.get("tool_use_id", "")))
 
     # --- member completeness (C8/CORR-08/CORR-20): the frozen record's
     # completion_policies is the ONLY membership authority. Evidence
@@ -221,7 +257,8 @@ def build_receipt(state, integrity_failures, window_seconds,
          for a in state.get("artifacts", [])),
         key=lambda a: (a["logical_path"], a["content_sha256"]))
 
-    if failures or contradictions:
+    inputs_intact = all(entry["intact"] for entry in input_rehash.values())
+    if failures or contradictions or not inputs_intact:
         completeness = "INTEGRITY_FAILED"
     elif missing or not members_complete:
         completeness = "INCOMPLETE"
@@ -246,6 +283,7 @@ def build_receipt(state, integrity_failures, window_seconds,
         "causal_joins": joins,
         "contradictions": contradictions,
         "artifact_provenance": artifacts,
+        "input_rehash": input_rehash,
         "derivation": {"rule": DERIVATION_RULE,
                        "anchor_utc": anchor_utc,
                        "window_seconds": window_seconds},
@@ -259,13 +297,15 @@ def build_receipt(state, integrity_failures, window_seconds,
 
 def derive_evidence(store, state, window_seconds):
     """The one derivation entry point the Collector, the admission seam
-    and recovery share: probe integrity (non-raising, D-C3-3), extract
+    and recovery share: probe integrity (non-raising, D-C3-3), re-probe
+    the frozen record's specification inputs (INV-37, D-C3-9), extract
     recognized facts from the exact producer bytes (D-C3-5), and build
     the canonical obj-15 payload (D-C3-2)."""
     failures = probe_integrity(store, state["witnesses"])
     facts = extract_all_facts(store, state["witnesses"], failures)
+    inputs = probe_inputs(store, state["record_payload"])
     return build_receipt(state, failures, window_seconds,
-                         witness_facts=facts)
+                         witness_facts=facts, input_rehash=inputs)
 
 
 def receipt_bytes(payload):

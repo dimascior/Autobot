@@ -9,6 +9,15 @@
 > [PROVENANCE.md](PROVENANCE.md) documents the extension. The chapter is
 > unpublished, so the v1 schema amends in place.
 
+> **C3-M3 amendment (2026-11-12, in-chapter):** the v1 payload gained
+> the required `input_rehash` member (INV-37, D-C3-9: inputs re-hash at
+> dispatch and at collection, bound in the receipt, a change is
+> INTEGRITY_FAILED) and the contradiction rule
+> `execution_without_decision` (D-12/INV-68, D-C3-8); §8's "index
+> state" facet landed as the Collector's injected diagnostic (INV-30,
+> D-C3-7) — never in the payload. Every pin re-proven: 206/206 on both
+> interpreters + 41/41 ([CLOSURE.md](CLOSURE.md)).
+
 C3-M1 closes the last deliberate stand-in inside the continuous loop's
 evidence boundary: ExecutionReceipt (obj-15) completeness classification.
 Since M3 the receipt-consuming transitions have been registered,

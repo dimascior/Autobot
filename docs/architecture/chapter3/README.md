@@ -48,11 +48,28 @@ and 3.8.10, coordinator 41/41). The chapter-0 unknowns register was
 updated factually: U-06 and U-07 RESOLVED, U-01/U-02/U-04 NARROWED,
 U-05 untouched (diagnostic, deferred).
 
-Still open after M2: witness payload schemas beyond byte integrity and
-recognized facts, cap-30's index-state facet (U-05), multi-version
-receipt dominance, multi-member attempt execution (member completeness
-classifies today; concurrent member dispatch is a later milestone), the
-policy-resolved evidence window, the live Codex DevTools write-probe
-(U-02's operational half), and everything Chapters 4-6 own (production
+## Milestone 3 — Chapter 3 closure (C3-M3)
+
+[CLOSURE.md](CLOSURE.md): the completion matrix against every frozen
+chapter-3 obligation. The milestone's three functional closures are the
+registered proofs that were still unclaimed after M2 — INV-37
+`CH3-input-rehash` (the t-a02 dispatch gate, the collection probe and
+the obj-15 `input_rehash` always-binding, D-C3-9), INV-68
+`CH3-integrity-classes` (the `execution_without_decision` orphan rule,
+D-C3-8, with the F-C3-9 one-record deny_then_ran fix), and INV-30
+`CH3-index-lag-diagnostic` (cap-30's index-state facet as the
+Collector's injected catalog diagnostic, D-C3-7, with U-05 resolved
+from the real catalog implementation) — plus the unknowns register
+dispositions, the chapter-wide adversarial review and the stand-in
+scan. Proof of record: 206/206 on CPython 3.12.11 and 3.8.10,
+coordinator 41/41, all three legs green on the first run.
+
+Deferred OUT of Chapter 3 (dispositions in the matrix): witness payload
+schemas beyond byte integrity and recognized facts, multi-version
+receipt dominance (F-C3-2), multi-member attempt execution (member
+completeness classifies today; concurrent member dispatch is a later
+milestone), the policy-resolved evidence window, the live Codex
+DevTools write-probe (U-02's operational half) and the Codex coverage
+quantification (U-04), and everything Chapters 4-6 own (production
 verifier runners, acceptance/release payload schemas with
 ACCEPTANCE_FRESH, the remote arcs and standalone effect machines).

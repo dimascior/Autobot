@@ -11,6 +11,14 @@ nothing; unknown fields grant nothing (INV-22). Recognized facts inform
 the admission-time identity gate, the receipt's causal joins and the
 contradiction rules (D-C3-6) — never mtime, never ordering, never agent
 prose.
+
+C3-M3 completes the D-12/INV-68 integrity classes (D-C3-8): beside
+deny_then_ran, an ORPHAN execution — a governance record proving a
+command executed with no recorded decision for it anywhere in the
+attempt's admitted set — is a contradiction, because the governance
+record family guarantees a decision precedes execution (a positive
+observation of a fail-open, never an inference from absence alone).
+Enforced DENYs classify nothing: DENY counts stay diagnostic.
 """
 
 import json
@@ -134,6 +142,8 @@ def deny_then_ran(entries):
     IDENTITY — never wall-clock proximity — to evidence that the same
     command executed in the same session. ``entries`` are
     (entry_key_tuple, witness_kind, facts) for one attempt's admitted set.
+    A single record proving BOTH the DENY and the execution joins itself
+    (F-C3-9: an elif here originally dropped the one-record case).
     Returns sorted contradiction dicts."""
     denies = []
     executions = []
@@ -146,7 +156,7 @@ def deny_then_ran(entries):
         decision = facts.get("decision")
         if isinstance(decision, str) and decision.upper() == "DENY":
             denies.append((sha, facts.get("session_id")))
-        elif facts.get("hook_event") == "PostToolUse" \
+        if facts.get("hook_event") == "PostToolUse" \
                 or facts.get("success") is True:
             executions.append((sha, facts.get("session_id")))
     found = set()
@@ -164,3 +174,68 @@ def deny_then_ran(entries):
     return [{"rule": "deny_then_ran", "command_sha256": sha,
              "session_id": session}
             for sha, session in sorted(found)]
+
+
+def execution_without_decision(entries):
+    """The remaining D-12/INV-68 integrity classes (D-C3-8): an ORPHAN
+    execution — a governance record proving a command EXECUTED with no
+    recorded decision for it anywhere in the attempt's admitted set.
+    The governance record family guarantees a decision precedes
+    execution, so the execution record itself is the POSITIVE
+    observation of a broken governance chain (a fail-open) — this is
+    never an inference from mere absence of evidence. Joined by
+    tool_use_id when the execution record carries one, else by command
+    content hash and session identity exactly like deny_then_ran (equal
+    or either absent) — never wall-clock. A record carrying both its
+    decision and its execution facts is decided by itself; a decision
+    with no execution classifies nothing (DENY counts stay diagnostic,
+    D-12). Returns sorted contradiction dicts."""
+    decided_tool_uses = set()
+    decided_commands = []
+    executions = []
+    for _key, kind, facts in entries:
+        if kind != "obj-12":
+            continue
+        decision = facts.get("decision")
+        decided = isinstance(decision, str) and decision != ""
+        tool_use = facts.get("tool_use_id")
+        sha = facts.get("command_sha256")
+        session = facts.get("session_id")
+        if decided:
+            if isinstance(tool_use, str) and tool_use:
+                decided_tool_uses.add(tool_use)
+            if isinstance(sha, str) and sha:
+                decided_commands.append(
+                    (sha, session if isinstance(session, str) else None))
+        if (facts.get("hook_event") == "PostToolUse"
+                or facts.get("success") is True) and not decided:
+            executions.append((tool_use, sha, session))
+    found = set()
+    for tool_use, sha, session in executions:
+        has_tool_use = isinstance(tool_use, str) and bool(tool_use)
+        has_sha = isinstance(sha, str) and bool(sha)
+        if not has_tool_use and not has_sha:
+            continue  # no deterministic join key: contributes nothing
+        if has_tool_use and tool_use in decided_tool_uses:
+            continue
+        if has_sha and any(
+                decided_sha == sha
+                and (not isinstance(decided_session, str)
+                     or not isinstance(session, str)
+                     or decided_session == session)
+                for decided_sha, decided_session in decided_commands):
+            continue
+        found.add((tool_use if has_tool_use else "",
+                   sha if has_sha else "",
+                   session if isinstance(session, str) else ""))
+    results = []
+    for tool_use, sha, session in sorted(found):
+        item = {"rule": "execution_without_decision"}
+        if tool_use:
+            item["tool_use_id"] = tool_use
+        if sha:
+            item["command_sha256"] = sha
+        if session:
+            item["session_id"] = session
+        results.append(item)
+    return results

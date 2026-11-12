@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "autobot/object/ExecutionReceipt/v1",
-  "title": "ExecutionReceipt (obj-15): the collector's authoritative completeness classification over admitted evidence, with the C3-M2 causal evidence graph",
+  "title": "ExecutionReceipt (obj-15): the collector's authoritative completeness classification over admitted evidence, with the C3-M2 causal evidence graph and the C3-M3 input re-hash binding",
   "type": "object",
   "required": [
     "schema_version", "kind", "minter",
@@ -9,7 +9,7 @@
     "completeness", "completeness_by_role", "member_completeness",
     "admitted_witnesses", "integrity_failures",
     "causal_joins", "contradictions", "artifact_provenance",
-    "derivation", "evidence_complete_by_utc"
+    "input_rehash", "derivation", "evidence_complete_by_utc"
   ],
   "additionalProperties": false,
   "properties": {
@@ -74,6 +74,19 @@
       "type": "array",
       "items": {"$ref": "#/$defs/artifact_event"}
     },
+    "input_rehash": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/name_id"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["content_sha256", "intact"],
+        "additionalProperties": false,
+        "properties": {
+          "content_sha256": {"$ref": "#/$defs/digest"},
+          "intact": {"type": "boolean"}
+        }
+      }
+    },
     "derivation": {
       "type": "object",
       "required": ["rule", "anchor_utc", "window_seconds"],
@@ -129,11 +142,12 @@
       "required": ["rule"],
       "additionalProperties": false,
       "properties": {
-        "rule": {"enum": ["cross_execution_identity", "deny_then_ran"]},
+        "rule": {"enum": ["cross_execution_identity", "deny_then_ran", "execution_without_decision"]},
         "witness_kind": {"$ref": "#/$defs/witness_kind"},
         "content_sha256": {"$ref": "#/$defs/digest"},
         "command_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "session_id": {"type": "string", "pattern": "^$|^\\S(?:[^\\n]*\\S)?$"}
+        "session_id": {"type": "string", "pattern": "^$|^\\S(?:[^\\n]*\\S)?$"},
+        "tool_use_id": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"}
       }
     },
     "artifact_event": {
