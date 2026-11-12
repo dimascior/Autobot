@@ -43,10 +43,12 @@ class ReceiptTestCase(unittest.TestCase):
         self.attempt_contract_hash = info["attempt_contract_hash"]
         self.seq.reserve_attempt(self.attempt_id, expected_fence=self.fence)
         projection = self.rt.store.put(b"projection bytes\n")
-        self.seq.dispatch_attempt(self.attempt_id, "builder", "fake",
-                                  projection)
-        start = self.seq.admit_witness(self.attempt_id, "obj-11",
-                                       "autoswarm", b"session started\n")
+        dispatched = self.seq.dispatch_attempt(self.attempt_id, "builder",
+                                               "fake", projection)
+        self.call_id = dispatched["call_id"]
+        start = self.seq.admit_witness(
+            self.attempt_id, "obj-11", "autoswarm",
+            support.session_record_bytes(self.call_id))
         self.seq.attempt_running(self.attempt_id, "native-sess-9",
                                  start["content_address"])
         if governance:
@@ -94,11 +96,14 @@ class PinningTests(ReceiptTestCase):
         """The D-65 discipline extended to the chapter-3 schema: the
         runtime copy equals the chapter-3 provenance copy byte for byte,
         and its witness-kind enum equals the registered kinds."""
-        frozen = (support.REPO / "docs" / "architecture" / "chapter3"
-                  / "schemas" / "execution_receipt.schema.json")
-        mirror = (support.REPO / "src" / "autobot" / "schemas_chapter3"
-                  / "execution_receipt.schema.json")
-        self.assertEqual(frozen.read_bytes(), mirror.read_bytes())
+        chapter3 = support.REPO / "docs" / "architecture" / "chapter3"
+        mirror_dir = support.REPO / "src" / "autobot" / "schemas_chapter3"
+        for name in ("execution_receipt.schema.json",
+                     "prompt_projection.schema.json"):
+            self.assertEqual(
+                (chapter3 / "schemas" / name).read_bytes(),
+                (mirror_dir / name).read_bytes(),
+                "chapter-3 schema mirror drift in %s" % name)
         schema = receipts.receipt_schema()
         self.assertEqual(sorted(schema["$defs"]["witness_kind"]["enum"]),
                          sorted(WITNESS_KINDS))
@@ -201,12 +206,7 @@ class CollectorTests(ReceiptTestCase):
 class AdmissionSeamTests(ReceiptTestCase):
     def _derived(self, window=3600):
         state = self.seq.evidence_state(self.attempt_id)
-        failures = receipts.probe_integrity(self.rt.store,
-                                            state["witnesses"])
-        return receipts.build_receipt(
-            state["record_payload"], state["role"], state["attempt_id"],
-            state["attempt_contract_hash"], state["call_id"],
-            state["witnesses"], failures, state["anchor_utc"], window)
+        return receipts.derive_evidence(self.rt.store, state, window)
 
     def test_forged_classification_is_refused(self):
         """D-C3-2: tampering any derived field (the classification, the

@@ -16,8 +16,7 @@ registered Sequencer transition, driven elsewhere.
 
 from .receipts import (
     DEFAULT_EVIDENCE_WINDOW_SECONDS,
-    build_receipt,
-    probe_integrity,
+    derive_evidence,
     receipt_bytes,
 )
 
@@ -49,14 +48,13 @@ class Collector:
         Deterministic end to end: unchanged facts re-mint byte-identical
         bytes and the admission is idempotent on content identity, so
         re-collection sweeps and restarts converge; changed facts mint a
-        NEW version (obj-15's registered append-only mutability)."""
+        NEW version (obj-15's registered append-only mutability). Since
+        C3-M2 the derivation carries the causal evidence graph: joins
+        from recognized witness facts, contradictions (including
+        deny_then_ran), per-role member completeness and artifact
+        provenance (D-C3-5/6)."""
         state = self.sequencer.evidence_state(attempt_id)
-        failures = probe_integrity(self.store, state["witnesses"])
-        payload = build_receipt(
-            state["record_payload"], state["role"], state["attempt_id"],
-            state["attempt_contract_hash"], state["call_id"],
-            state["witnesses"], failures, state["anchor_utc"],
-            self.window_seconds)
+        payload = derive_evidence(self.store, state, self.window_seconds)
         admitted = dict(self.sequencer.admit_execution_receipt(
             attempt_id, receipt_bytes(payload)))
         admitted["receipt_address"] = admitted["content_address"]

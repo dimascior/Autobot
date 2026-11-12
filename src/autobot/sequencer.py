@@ -20,6 +20,7 @@ from contract_library import canonicalize, compute_tiers, object_hash
 
 from . import journal
 from . import receipts
+from . import witness_semantics
 from .effects import EFFECTS, OUTCOME_RULES, RETRYABLE
 from .verification import (
     ATTESTATION_PRODUCER,
@@ -714,6 +715,7 @@ class Sequencer:
             "attempt_verification": ("attempt_verifications",
                                      "verification_id"),
             "attempt_receipt": ("attempt_receipts", "admission_id"),
+            "attempt_artifact": ("attempt_artifacts", "admission_id"),
         }
         for (machine, subject) in last:
             mapped = reverse_tables.get(machine)
@@ -1064,8 +1066,10 @@ class Sequencer:
                 "SELECT witness_kind, producer, content_sha256"
                 " FROM attempt_witnesses WHERE attempt_id = ?"
                 " ORDER BY rowid", (row["attempt_id"],)).fetchall()]
-            probe_failures = receipts.probe_integrity(
-                self.store, witness_rows)
+            artifact_rows = [dict(r) for r in cur.execute(
+                "SELECT logical_path, content_sha256, role"
+                " FROM attempt_artifacts WHERE attempt_id = ?"
+                " ORDER BY rowid", (row["attempt_id"],)).fetchall()]
             seq_row = cur.execute(
                 "SELECT record_hash FROM sequences WHERE sequence_id = ?",
                 (att["sequence_id"],)).fetchone()
@@ -1074,12 +1078,19 @@ class Sequencer:
                 (seq_row["record_hash"],)).fetchone()["content_address"]
             ).decode("utf-8"))
             call = cur.execute(
-                "SELECT role FROM attempt_calls WHERE attempt_id = ?",
+                "SELECT role, native_session_id FROM attempt_calls"
+                " WHERE attempt_id = ?",
                 (row["attempt_id"],)).fetchone()
-            expected = receipts.build_receipt(
-                record_payload, call["role"], row["attempt_id"],
-                att["attempt_contract_hash"], row["call_id"], witness_rows,
-                probe_failures, anchor,
+            receipt_state = {
+                "record_payload": record_payload, "role": call["role"],
+                "attempt_id": row["attempt_id"],
+                "attempt_contract_hash": att["attempt_contract_hash"],
+                "call_id": row["call_id"],
+                "native_session_id": call["native_session_id"],
+                "witnesses": witness_rows, "artifacts": artifact_rows,
+                "anchor_utc": anchor}
+            expected = receipts.derive_evidence(
+                self.store, receipt_state,
                 receipt_payload["derivation"]["window_seconds"])
             if receipts.receipt_bytes(expected) != data:
                 raise IntegrityHalt(
@@ -1113,6 +1124,63 @@ class Sequencer:
                     raise IntegrityHalt(
                         "journaled t-a13 for %s names no matching admitted"
                         " receipt" % entry_payload["subject_id"])
+
+        # -- 8g. artifact provenance and witness-correlation coherence
+        #        (C3-M2): every attempt_artifacts row joins a bound
+        #        execution, its ledger correlation matches the row, its
+        #        bytes resolve and re-hash (D-66), and its admission is
+        #        journaled (both directions, via reverse_tables above);
+        #        and for every bound execution, the admitted witnesses'
+        #        RECOGNIZED facts must not contradict the ledger identity
+        #        (cross-execution injection surfaced at restart HALTs —
+        #        D-C3-5/6). Absent facts stay absent: recovery never
+        #        invents certainty.
+        for row in cur.execute(
+                "SELECT * FROM attempt_artifacts").fetchall():
+            call = cur.execute(
+                "SELECT call_id, role FROM attempt_calls"
+                " WHERE attempt_id = ?", (row["attempt_id"],)).fetchone()
+            if call is None:
+                raise IntegrityHalt(
+                    "artifact %s joins no bound execution (INV-03)"
+                    % row["admission_id"])
+            if (call["call_id"] != row["call_id"]
+                    or call["role"] != row["role"]):
+                raise IntegrityHalt(
+                    "artifact %s correlation disagrees with the ledger"
+                    " (INV-03 causal provenance)" % row["admission_id"])
+            self.store.get(row["content_sha256"])  # re-hashes (D-66)
+            referenced.add(row["content_sha256"])
+            entry = last.get(("attempt_artifact", row["admission_id"]))
+            if entry is None or entry.get("to_state") != "ADMITTED":
+                raise IntegrityHalt(
+                    "artifact %s has no journaled admission (D-68"
+                    " pairing)" % row["admission_id"])
+        for call_row in cur.execute(
+                "SELECT c.attempt_id, c.call_id, c.native_session_id"
+                " FROM attempt_calls c JOIN attempts a"
+                " ON a.attempt_id = c.attempt_id"
+                " WHERE a.state NOT IN ('DECLARED','RESERVED',"
+                "'DISPATCHED')").fetchall():
+            for wrow in cur.execute(
+                    "SELECT witness_kind, content_sha256"
+                    " FROM attempt_witnesses WHERE attempt_id = ?",
+                    (call_row["attempt_id"],)).fetchall():
+                try:
+                    wdata = self.store.get(wrow["content_sha256"])
+                except IntegrityHalt:
+                    raise
+                wfacts = witness_semantics.extract_facts(
+                    wrow["witness_kind"], wdata)
+                conflicts = witness_semantics.identity_conflicts(
+                    wrow["witness_kind"], wfacts, call_row["call_id"],
+                    call_row["native_session_id"])
+                if conflicts:
+                    raise IntegrityHalt(
+                        "witness %s contradicts the bound execution of"
+                        " attempt %s (D-C3-5): %s"
+                        % (wrow["content_sha256"], call_row["attempt_id"],
+                           "; ".join(conflicts)))
 
         # -- resumable view + fence coherence
         current = []
@@ -1351,8 +1419,11 @@ class Sequencer:
         the same transaction. Admission requires a bound, not-yet-frozen
         execution (DISPATCHED/RUNNING/FINISHED): everything a frozen
         candidate's receipt references must already be admitted (t-a05
-        precedes t-a06's join). Witness payload SEMANTICS are Chapter 3's;
-        this seam makes the admission lifecycle durable now.
+        precedes t-a06's join). Recognized payload facts gate identity
+        (C3-M2, D-C3-5): a witness whose facts NAME another execution is
+        refused here, cross-attempt injection dying at the seam, while
+        absent or unrecognized facts stay tolerated and the admitted
+        bytes remain exactly the producer's either way.
 
         Idempotent on identity: re-admitting the same (attempt, kind,
         producer, content) returns the existing entry and journals nothing —
@@ -1376,6 +1447,14 @@ class Sequencer:
                     "witness admission requires a bound, unfrozen execution"
                     " (DISPATCHED/RUNNING/FINISHED), found %s" % att["state"])
             call = self._attempt_call(cur, attempt_id)
+            facts = witness_semantics.extract_facts(witness_kind, data)
+            conflicts = witness_semantics.identity_conflicts(
+                witness_kind, facts, call["call_id"],
+                call["native_session_id"])
+            if conflicts:
+                raise ConflictError(
+                    "witness admission refused (cross-execution identity,"
+                    " D-C3-5): %s" % "; ".join(conflicts))
             address = self.store.put(data)
             existing = cur.execute(
                 "SELECT admission_id FROM attempt_witnesses WHERE attempt_id = ?"
@@ -1405,10 +1484,71 @@ class Sequencer:
             return {"admission_id": admission_id,
                     "content_address": address, "duplicate": False}
 
+    def admit_artifact(self, attempt_id, logical_path, data):
+        """The C3-M2 artifact-provenance seam (INV-03/INV-04/INV-22): one
+        PROVENANCE EVENT binding an admitted engineering artifact to
+        exactly ONE attempt by causal admission — the exact bytes go to
+        the CAS, and the row carries the LEDGER-derived execution
+        correlation (sequence, call, dispatched role), the
+        producer-declared logical path and the D-27 instant, journaled in
+        the same transaction. Ownership never derives from the
+        filesystem: no path is read here, no mtime exists in this plane,
+        and byte-identical artifacts from two attempts are two events.
+        Idempotent on (attempt, logical_path, content): re-admission
+        returns the existing event and journals nothing."""
+        if not (isinstance(logical_path, str) and logical_path
+                and logical_path == logical_path.strip()
+                and "\n" not in logical_path):
+            raise ConflictError(
+                "logical_path must be non-empty single-line text with no"
+                " surrounding whitespace")
+        data = bytes(data)
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            att = self._attempt(cur, attempt_id)
+            if att["state"] not in ("DISPATCHED", "RUNNING", "FINISHED"):
+                raise ConflictError(
+                    "artifact admission requires a bound, unfrozen"
+                    " execution (DISPATCHED/RUNNING/FINISHED), found %s"
+                    % att["state"])
+            call = self._attempt_call(cur, attempt_id)
+            address = self.store.put(data)
+            existing = cur.execute(
+                "SELECT admission_id FROM attempt_artifacts"
+                " WHERE attempt_id = ? AND logical_path = ?"
+                " AND content_sha256 = ?",
+                (attempt_id, logical_path, address)).fetchone()
+            if existing is not None:
+                return {"admission_id": existing["admission_id"],
+                        "content_address": address, "duplicate": True}
+            admission_id = mint_id("art")
+            cur.execute(
+                "INSERT INTO attempt_artifacts (admission_id, attempt_id,"
+                " sequence_id, call_id, role, logical_path,"
+                " content_sha256, admitted_utc)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (admission_id, attempt_id, att["sequence_id"],
+                 call["call_id"], call["role"], logical_path, address,
+                 now))
+            journal.append(cur, journal.transition_record(
+                machine="attempt_artifact", subject_id=admission_id,
+                rule="ch3:admit-artifact", to_state="ADMITTED",
+                recorded_utc=now,
+                facts={"attempt_id": attempt_id,
+                       "sequence_id": att["sequence_id"],
+                       "call_id": call["call_id"], "role": call["role"],
+                       "logical_path": logical_path,
+                       "content_sha256": address}))
+            return {"admission_id": admission_id,
+                    "content_address": address, "duplicate": False}
+
     def evidence_state(self, attempt_id):
         """The collector's public read surface (D-63, cap-30): one frozen
         attempt's identity, dispatched role, frozen record payload,
-        admitted witness entries (insertion order) and the D-C3-1 anchor.
+        admitted witness entries (insertion order), admitted artifact
+        provenance events, the bound native session and the D-C3-1
+        anchor.
 
         Collection is defined at CANDIDATE_FROZEN only: the witness set is
         immutable from the freeze onward (admit_witness refuses frozen
@@ -1428,14 +1568,20 @@ class Sequencer:
             "SELECT witness_kind, producer, content_sha256"
             " FROM attempt_witnesses WHERE attempt_id = ? ORDER BY rowid",
             (attempt_id,)).fetchall()
+        artifact_rows = cur.execute(
+            "SELECT logical_path, content_sha256, role"
+            " FROM attempt_artifacts WHERE attempt_id = ? ORDER BY rowid",
+            (attempt_id,)).fetchall()
         return {"attempt_id": att["attempt_id"],
                 "sequence_id": att["sequence_id"],
                 "fence": att["fence"],
                 "attempt_contract_hash": att["attempt_contract_hash"],
                 "role": call["role"],
                 "call_id": call["call_id"],
+                "native_session_id": call["native_session_id"],
                 "record_payload": payload,
                 "witnesses": [dict(row) for row in rows],
+                "artifacts": [dict(row) for row in artifact_rows],
                 "anchor_utc": att["updated_utc"]}
 
     def admit_execution_receipt(self, attempt_id, data):
@@ -1502,18 +1648,26 @@ class Sequencer:
                 "SELECT witness_kind, producer, content_sha256"
                 " FROM attempt_witnesses WHERE attempt_id = ?"
                 " ORDER BY rowid", (attempt_id,)).fetchall()
-            entries = [dict(row) for row in rows]
-            failures = receipts.probe_integrity(self.store, entries)
-            expected = receipts.build_receipt(
-                record, call["role"], att["attempt_id"],
-                att["attempt_contract_hash"], call["call_id"], entries,
-                failures, att["updated_utc"], window)
+            artifact_rows = cur.execute(
+                "SELECT logical_path, content_sha256, role"
+                " FROM attempt_artifacts WHERE attempt_id = ?"
+                " ORDER BY rowid", (attempt_id,)).fetchall()
+            state = {"record_payload": record, "role": call["role"],
+                     "attempt_id": att["attempt_id"],
+                     "attempt_contract_hash":
+                         att["attempt_contract_hash"],
+                     "call_id": call["call_id"],
+                     "native_session_id": call["native_session_id"],
+                     "witnesses": [dict(row) for row in rows],
+                     "artifacts": [dict(row) for row in artifact_rows],
+                     "anchor_utc": att["updated_utc"]}
+            expected = receipts.derive_evidence(self.store, state, window)
             if receipts.receipt_bytes(expected) != data:
                 raise ConflictError(
                     "receipt diverges from the ledger derivation (D-C3-2:"
                     " authority is derived, never declared) — the ledger"
                     " derives %s over %d admitted entries, anchor %s"
-                    % (expected["completeness"], len(entries),
+                    % (expected["completeness"], len(state["witnesses"]),
                        att["updated_utc"]))
             address = self.store.put(data)
             existing = cur.execute(

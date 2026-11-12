@@ -95,10 +95,11 @@ class VerificationTestCase(unittest.TestCase):
 
     def _to_evidence_complete(self, sequence_id=None, role="builder"):
         self._start(sequence_id)
-        self.seq.dispatch_attempt(self.attempt_id, role, "fake",
-                                  self.projection)
-        start = self.seq.admit_witness(self.attempt_id, "obj-11", "autoswarm",
-                                       WITNESS_START)
+        dispatched = self.seq.dispatch_attempt(self.attempt_id, role,
+                                               "fake", self.projection)
+        start = self.seq.admit_witness(
+            self.attempt_id, "obj-11", "autoswarm",
+            support.session_record_bytes(dispatched["call_id"]))
         self.seq.attempt_running(self.attempt_id, "native-sess-9",
                                  start["content_address"])
         self.seq.admit_witness(self.attempt_id, "obj-12", "helios",
@@ -166,10 +167,11 @@ class SequenceArcTests(VerificationTestCase):
         classification (the classification half of
         execution_receipt_complete, closed)."""
         self._start()
-        self.seq.dispatch_attempt(self.attempt_id, "builder", "fake",
-                                  self.projection)
-        start = self.seq.admit_witness(self.attempt_id, "obj-11",
-                                       "autoswarm", WITNESS_START)
+        dispatched = self.seq.dispatch_attempt(self.attempt_id, "builder",
+                                               "fake", self.projection)
+        start = self.seq.admit_witness(
+            self.attempt_id, "obj-11", "autoswarm",
+            support.session_record_bytes(dispatched["call_id"]))
         self.seq.attempt_running(self.attempt_id, "native-sess-9",
                                  start["content_address"])
         self.seq.admit_witness(self.attempt_id, "obj-12", "helios",
@@ -285,12 +287,13 @@ class ResultAdmissionTests(VerificationTestCase):
         """State, producer, vocabulary and declaration gates on the typed
         admission seam."""
         self._start()
-        self.seq.dispatch_attempt(self.attempt_id, "builder", "fake",
-                                  self.projection)
+        dispatched = self.seq.dispatch_attempt(self.attempt_id, "builder",
+                                               "fake", self.projection)
         with self.assertRaises(ConflictError):
             self._register("a2", "PASS")  # DISPATCHED: not EVIDENCE_COMPLETE
-        start = self.seq.admit_witness(self.attempt_id, "obj-11", "autoswarm",
-                                       WITNESS_START)
+        start = self.seq.admit_witness(
+            self.attempt_id, "obj-11", "autoswarm",
+            support.session_record_bytes(dispatched["call_id"]))
         self.seq.attempt_running(self.attempt_id, "native-sess-9",
                                  start["content_address"])
         self.seq.admit_witness(self.attempt_id, "obj-12", "helios",

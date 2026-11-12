@@ -1,13 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "autobot/object/ExecutionReceipt/v1",
-  "title": "ExecutionReceipt (obj-15): the collector's authoritative completeness classification over admitted evidence",
+  "title": "ExecutionReceipt (obj-15): the collector's authoritative completeness classification over admitted evidence, with the C3-M2 causal evidence graph",
   "type": "object",
   "required": [
     "schema_version", "kind", "minter",
     "attempt_id", "attempt_contract_hash", "call_id",
-    "completeness", "completeness_by_role",
+    "completeness", "completeness_by_role", "member_completeness",
     "admitted_witnesses", "integrity_failures",
+    "causal_joins", "contradictions", "artifact_provenance",
     "derivation", "evidence_complete_by_utc"
   ],
   "additionalProperties": false,
@@ -18,6 +19,7 @@
     "attempt_id": {"type": "string", "pattern": "^at_[0-9a-f]{32}$"},
     "attempt_contract_hash": {"$ref": "#/$defs/digest"},
     "call_id": {"type": "string", "pattern": "^call_[0-9a-f]{32}$"},
+    "native_session_id": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"},
     "completeness": {"enum": ["COMPLETE", "INCOMPLETE", "INTEGRITY_FAILED"]},
     "completeness_by_role": {
       "type": "object",
@@ -34,6 +36,24 @@
         }
       }
     },
+    "member_completeness": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/name_id"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["required", "attributed"],
+        "additionalProperties": false,
+        "properties": {
+          "required": {"type": "boolean"},
+          "attributed": {"type": "boolean"},
+          "reported_outcomes": {
+            "type": "array", "minItems": 1,
+            "items": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"}
+          }
+        }
+      }
+    },
     "admitted_witnesses": {
       "type": "array",
       "items": {"$ref": "#/$defs/admission_entry"}
@@ -41,6 +61,18 @@
     "integrity_failures": {
       "type": "array",
       "items": {"$ref": "#/$defs/admission_entry"}
+    },
+    "causal_joins": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/causal_join"}
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/contradiction"}
+    },
+    "artifact_provenance": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/artifact_event"}
     },
     "derivation": {
       "type": "object",
@@ -72,6 +104,46 @@
         "witness_kind": {"$ref": "#/$defs/witness_kind"},
         "producer": {"$ref": "#/$defs/principal"},
         "content_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "causal_join": {
+      "type": "object",
+      "required": ["witness_kind", "producer", "content_sha256", "join"],
+      "additionalProperties": false,
+      "properties": {
+        "witness_kind": {"$ref": "#/$defs/witness_kind"},
+        "producer": {"$ref": "#/$defs/principal"},
+        "content_sha256": {"$ref": "#/$defs/digest"},
+        "join": {"enum": ["JOINED", "UNJOINED", "CONTRADICTED"]},
+        "controller_well_formed": {"type": "boolean"},
+        "facts": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+          "additionalProperties": {}
+        }
+      }
+    },
+    "contradiction": {
+      "type": "object",
+      "required": ["rule"],
+      "additionalProperties": false,
+      "properties": {
+        "rule": {"enum": ["cross_execution_identity", "deny_then_ran"]},
+        "witness_kind": {"$ref": "#/$defs/witness_kind"},
+        "content_sha256": {"$ref": "#/$defs/digest"},
+        "command_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "session_id": {"type": "string", "pattern": "^$|^\\S(?:[^\\n]*\\S)?$"}
+      }
+    },
+    "artifact_event": {
+      "type": "object",
+      "required": ["logical_path", "content_sha256", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "logical_path": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"},
+        "content_sha256": {"$ref": "#/$defs/digest"},
+        "role": {"$ref": "#/$defs/name_id"}
       }
     }
   }

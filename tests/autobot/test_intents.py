@@ -27,8 +27,9 @@ class SchemaEvolutionTests(unittest.TestCase):
         attempt_calls execution binding, v4 the attempt_witnesses D-21
         admission entries, v5 the M4 verification surface
         (attempt_verifications, the repair counter, the member lease),
-        v6 the M6 released_edges dependency surface and v7 the C3-M1
-        attempt_receipts admission surface, all additively; a database
+        v6 the M6 released_edges dependency surface, v7 the C3-M1
+        attempt_receipts admission surface and v8 the C3-M2
+        attempt_artifacts provenance index, all additively; a database
         newer than the running code is refused."""
         tmp = tempfile.TemporaryDirectory()
         try:
@@ -36,7 +37,13 @@ class SchemaEvolutionTests(unittest.TestCase):
             db = Database(path)
             row = db.conn.execute(
                 "SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            self.assertEqual(row["value"], "7")
+            self.assertEqual(row["value"], "8")
+            artifact_columns = {r["name"] for r in db.conn.execute(
+                "PRAGMA table_info(attempt_artifacts)").fetchall()}
+            self.assertLessEqual(
+                {"admission_id", "attempt_id", "sequence_id", "call_id",
+                 "role", "logical_path", "content_sha256",
+                 "admitted_utc"}, artifact_columns)
             receipt_columns = {r["name"] for r in db.conn.execute(
                 "PRAGMA table_info(attempt_receipts)").fetchall()}
             self.assertLessEqual(

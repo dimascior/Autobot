@@ -9,7 +9,13 @@ ONE ExecutionReceipt. This module holds the frozen vocabulary and the PURE
 derivation both sides of the authority boundary share: the Collector
 derives and mints, and the admission seam re-derives and refuses
 divergence (D-C3-2), so a receipt can never declare a classification,
-bound, role fact or witness set the ledger does not support. Tests pin
+bound, join, member fact or witness set the ledger does not support.
+
+C3-M2 extends the derivation with the causal evidence graph (D-C3-5/6):
+recognized witness facts join each admitted entry to the bound execution,
+contradictions (cross-execution identities, deny_then_ran) classify
+INTEGRITY_FAILED, per-role member completeness evaluates the frozen
+required membership, and artifact provenance rides the receipt. Tests pin
 every table here to the registry files (the witnesses.py discipline).
 """
 
@@ -22,6 +28,7 @@ from contract_library.schema_profile import check_profile
 from contract_library.schema_profile import validate as schema_validate
 
 from .models import instant
+from . import witness_semantics
 
 RECEIPT_KIND = "ExecutionReceipt"
 
@@ -103,13 +110,44 @@ def probe_integrity(store, entries):
     return bad
 
 
-def build_receipt(record_payload, role, attempt_id, attempt_contract_hash,
-                  call_id, witness_entries, integrity_failures, anchor_utc,
-                  window_seconds):
+def extract_all_facts(store, entries, failures):
+    """Recognized facts per admitted entry (D-C3-5), keyed by content
+    address; entries whose bytes failed the probe contribute none."""
+    failed = set(entry["content_sha256"] for entry in failures)
+    facts = {}
+    for entry in entries:
+        address = entry["content_sha256"]
+        if address in failed:
+            continue
+        try:
+            data = store.get(address)
+        except Exception:
+            continue
+        extracted = witness_semantics.extract_facts(
+            entry["witness_kind"], data)
+        if extracted:
+            facts[address] = extracted
+    return facts
+
+
+def build_receipt(state, integrity_failures, window_seconds,
+                  witness_facts=None):
     """The pure obj-15 derivation (D-C3-2): a function of durable ledger
     facts plus the configured window — no clock, no caller claims, so
-    unchanged facts re-derive byte-identical bytes."""
-    entries = sorted((_entry(e) for e in witness_entries), key=_entry_key)
+    unchanged facts re-derive byte-identical bytes.
+
+    ``state`` is the evidence_state shape: record_payload, role,
+    attempt_id, attempt_contract_hash, call_id, native_session_id (or
+    None), witnesses (D-21 entry rows, insertion order) and artifacts
+    (provenance rows). ``witness_facts`` maps content addresses to the
+    recognized facts extracted from the exact producer bytes."""
+    witness_facts = witness_facts or {}
+    record_payload = state["record_payload"]
+    role = state["role"]
+    call_id = state["call_id"]
+    native = state.get("native_session_id")
+    entries = sorted((_entry(e) for e in state["witnesses"]),
+                     key=_entry_key)
     failures = sorted((_entry(e) for e in integrity_failures),
                       key=_entry_key)
     required = sorted(set(
@@ -117,32 +155,117 @@ def build_receipt(record_payload, role, attempt_id, attempt_contract_hash,
         for requirement in record_payload.get("evidence_requirements", [])))
     present = sorted(set(e["witness_kind"] for e in entries))
     missing = sorted(set(required) - set(present))
-    if failures:
+
+    # --- causal joins (D-C3-5/6): recognized facts tie each admitted
+    # entry to the bound execution; absence is UNJOINED (missing), a
+    # conflicting identity is CONTRADICTED (integrity).
+    joins = []
+    fact_triples = []
+    joined_any = False
+    contradictions = []
+    for entry in entries:
+        facts = witness_facts.get(entry["content_sha256"], {})
+        verdict = witness_semantics.join_verdict(
+            entry["witness_kind"], facts, call_id, native)
+        join = dict(entry)
+        if facts:
+            join["facts"] = {k: facts[k] for k in sorted(facts)}
+        join["join"] = verdict
+        controller = facts.get("controller_id")
+        if entry["witness_kind"] == "obj-11" and controller is not None:
+            join["controller_well_formed"] = \
+                witness_semantics.controller_well_formed(controller)
+        joins.append(join)
+        fact_triples.append((_entry_key(entry), entry["witness_kind"],
+                             facts))
+        if verdict == "JOINED":
+            joined_any = True
+        elif verdict == "CONTRADICTED":
+            contradictions.append(
+                {"rule": "cross_execution_identity",
+                 "witness_kind": entry["witness_kind"],
+                 "content_sha256": entry["content_sha256"]})
+    contradictions.extend(witness_semantics.deny_then_ran(fact_triples))
+    contradictions.sort(key=lambda c: (c["rule"],
+                                       c.get("content_sha256", ""),
+                                       c.get("command_sha256", ""),
+                                       c.get("session_id", "")))
+
+    # --- member completeness (C8/CORR-08/CORR-20): the frozen record's
+    # completion_policies is the ONLY membership authority. Evidence
+    # attributes to a role through the causal chain — in v1's
+    # single-member attempts, the dispatched role owns the joined
+    # evidence; other required roles cannot be attributed by construction.
+    policies = record_payload.get("completion_policies", {})
+    members = {}
+    members_complete = True
+    for member_role in sorted(policies):
+        policy = policies[member_role]
+        required_member = bool(policy.get("required", False))
+        attributed = bool(member_role == role and joined_any)
+        entry = {"required": required_member, "attributed": attributed}
+        if member_role == role:
+            outcomes = sorted(set(
+                facts["outcome"] for _k, kind, facts in fact_triples
+                if kind == "obj-11" and isinstance(facts.get("outcome"),
+                                                   str)))
+            if outcomes:
+                entry["reported_outcomes"] = outcomes
+        members[member_role] = entry
+        if required_member and not attributed:
+            members_complete = False
+
+    artifacts = sorted(
+        ({"logical_path": a["logical_path"],
+          "content_sha256": a["content_sha256"], "role": a["role"]}
+         for a in state.get("artifacts", [])),
+        key=lambda a: (a["logical_path"], a["content_sha256"]))
+
+    if failures or contradictions:
         completeness = "INTEGRITY_FAILED"
-    elif missing:
+    elif missing or not members_complete:
         completeness = "INCOMPLETE"
     else:
         completeness = "COMPLETE"
-    return {
+    anchor_utc = state["anchor_utc"]
+    payload = {
         "schema_version": "v1",
         "kind": RECEIPT_KIND,
         "minter": RECEIPT_MINTER,
-        "attempt_id": attempt_id,
-        "attempt_contract_hash": attempt_contract_hash,
+        "attempt_id": state["attempt_id"],
+        "attempt_contract_hash": state["attempt_contract_hash"],
         "call_id": call_id,
         "completeness": completeness,
         "completeness_by_role": {
             role: {"required_kinds": required,
                    "present_kinds": present,
                    "missing_kinds": missing}},
+        "member_completeness": members,
         "admitted_witnesses": entries,
         "integrity_failures": failures,
+        "causal_joins": joins,
+        "contradictions": contradictions,
+        "artifact_provenance": artifacts,
         "derivation": {"rule": DERIVATION_RULE,
                        "anchor_utc": anchor_utc,
                        "window_seconds": window_seconds},
         "evidence_complete_by_utc": completion_bound(anchor_utc,
                                                      window_seconds),
     }
+    if native:
+        payload["native_session_id"] = native
+    return payload
+
+
+def derive_evidence(store, state, window_seconds):
+    """The one derivation entry point the Collector, the admission seam
+    and recovery share: probe integrity (non-raising, D-C3-3), extract
+    recognized facts from the exact producer bytes (D-C3-5), and build
+    the canonical obj-15 payload (D-C3-2)."""
+    failures = probe_integrity(store, state["witnesses"])
+    facts = extract_all_facts(store, state["witnesses"], failures)
+    return build_receipt(state, failures, window_seconds,
+                         witness_facts=facts)
 
 
 def receipt_bytes(payload):

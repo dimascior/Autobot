@@ -1,5 +1,14 @@
 # Chapter 3, milestone 1 — the authoritative ExecutionReceipt
 
+> **C3-M2 amendment (2026-11-12, in-chapter):** the obj-15 payload was
+> extended with the causal evidence graph — `causal_joins`,
+> `contradictions`, `member_completeness`, `artifact_provenance` and the
+> optional `native_session_id` — and the derivation entry point became
+> `receipts.derive_evidence` (integrity probe + recognized-fact
+> extraction + build). Every M1 pin was re-proven on the amended shape;
+> [PROVENANCE.md](PROVENANCE.md) documents the extension. The chapter is
+> unpublished, so the v1 schema amends in place.
+
 C3-M1 closes the last deliberate stand-in inside the continuous loop's
 evidence boundary: ExecutionReceipt (obj-15) completeness classification.
 Since M3 the receipt-consuming transitions have been registered,

@@ -549,3 +549,63 @@ class AutonomousPilotTests(PilotTestCase):
         launched = [l["call_id"] for l in self.transport.launch_log]
         self.assertEqual(sorted(launched),
                          sorted(a["call_id"] for a in allocated))
+
+
+class MissingResultTests(PilotTestCase):
+    def test_missing_result_manufactures_no_state(self):
+        """The operator's pre-commit correction (D-C3-4): the absence of a
+        terminal provider result is NOT an observation. The attempt is
+        RUNNING because of the POSITIVE t-a03 lifecycle witness (the
+        adopted session record), and a collect sweep that observes no
+        terminal result changes NOTHING — no transition, no journal
+        entry, no receipt. When the terminal observation later arrives,
+        the arc proceeds because of THAT observation — absence of an
+        authoritative observation is never an observation of the
+        opposite state."""
+        from autobot.transport import reconcile_dispatched
+        from intelligence import Taskforce, readonly_view
+        admitted = self.rt.registry.admit_payload(
+            support.local_record_payload(objective="Missing result arm"),
+            submitted_by="autobot_service")
+        seq = self.rt.sequencer
+        seq.mark_ready(admitted["sequence_id"])
+        info = seq.start_execution(admitted["sequence_id"])
+        seq.reserve_attempt(info["attempt_id"],
+                            expected_fence=info["fence"])
+        projection = self.rt.store.put(b"projection for the missing arm\n")
+        call_id = seq.dispatch_attempt(
+            info["attempt_id"], "builder", "fake", projection)["call_id"]
+        self.transport.launch(projection, "fake", "builder", call_id)
+        report = reconcile_dispatched(seq, self.transport)
+        self.assertEqual(report[0]["action"], "adopted")
+        # RUNNING rests on the positive adopted-session witness (t-a03):
+        rules = self._rules_for(info["attempt_id"])
+        self.assertIn("t-a03", rules)
+        ro = readonly_view(str(self.dir / "autobot.db"))
+        try:
+            taskforce = Taskforce(
+                self.plan, seq, self.rt.store, self.transport,
+                FakeVerifierRunner(), self.factory, self.clock, ro)
+            self.transport.scripts = {"builder": []}  # no terminal result
+            before = self.rt.db.conn.execute(
+                "SELECT COUNT(*) AS n FROM transition_journal"
+            ).fetchone()["n"]
+            swept = taskforce.collect_running(instant(self.clock.now()))
+            self.assertEqual(swept, [])
+            state = self.rt.db.conn.execute(
+                "SELECT state FROM attempts WHERE attempt_id = ?",
+                (info["attempt_id"],)).fetchone()["state"]
+            self.assertEqual(state, "RUNNING")  # unchanged, not inferred
+            self.assertEqual(
+                self.rt.db.conn.execute(
+                    "SELECT COUNT(*) AS n FROM transition_journal"
+                ).fetchone()["n"], before)
+            # the terminal observation arrives: the arc proceeds on IT
+            self.transport.scripts = {"builder": [result()]}
+            taskforce.collect_running(instant(self.clock.now()))
+            state = self.rt.db.conn.execute(
+                "SELECT state FROM attempts WHERE attempt_id = ?",
+                (info["attempt_id"],)).fetchone()["state"]
+            self.assertEqual(state, "EVIDENCE_COMPLETE")
+        finally:
+            ro.close()

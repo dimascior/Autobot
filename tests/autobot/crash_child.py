@@ -51,7 +51,8 @@ def main():
     if stage in ("running", "verifying"):
         admitted = rt.sequencer.admit_witness(
             snapshot["attempt_id"], "obj-11", "autoswarm",
-            b"provider session record for the crash test\n")
+            support.session_record_bytes(snapshot["call_id"],
+                                         native_session_id="native-crash-1"))
         snapshot["witness_admission_id"] = admitted["admission_id"]
         rt.sequencer.attempt_running(
             snapshot["attempt_id"], "native-crash-1",

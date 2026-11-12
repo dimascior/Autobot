@@ -30,7 +30,7 @@ import json
 from autobot.collector import Collector
 from autobot.git_executor import execute_local_cas
 from autobot.projection import project_prompt
-from autobot.transport import reconcile_dispatched
+from autobot.transport import normalize_outcome, reconcile_dispatched
 
 from .findings import admit_finding
 from .proposals_util import canonical_json_digest
@@ -237,7 +237,11 @@ class Taskforce:
         for att in self._attempts_in(["RUNNING"]):
             result = self.transport.collect(att["call_id"])
             if result is None:
-                continue  # still working
+                # No terminal provider outcome observed. The attempt's
+                # RUNNING state rests on the POSITIVE t-a03 lifecycle
+                # witness, never on this absence; nothing transitions,
+                # and staleness remains t-a12's (D-C3-4).
+                continue
             admitted = {}
             for kind, producer, data in result.get("witness_files", []):
                 entry = self.sequencer.admit_witness(
@@ -251,7 +255,9 @@ class Taskforce:
                 merged.setdefault("role", att["role"])
                 admit_finding(self.plan, merged, now)
             finish_witness = self._witness_address_for_finish(admitted)
-            outcome = result.get("outcome", "success")
+            # D-C3-4: the provider reports; the frozen mapping normalizes
+            # (completed -> success); the frozen role policy decides.
+            outcome = normalize_outcome(result.get("outcome", "success"))
             state = self.sequencer.finish_attempt(
                 att["attempt_id"], att["role"], outcome, finish_witness)
             entry = {"attempt_id": att["attempt_id"],
@@ -260,7 +266,15 @@ class Taskforce:
             if state == "FINISHED":
                 artifact = result.get("artifact_bytes",
                                       b"no artifact collected\n")
-                candidate = self.store.put(artifact)
+                # C3-M2 (INV-03): the artifact enters through the
+                # provenance seam — one causal event binding these exact
+                # bytes to THIS attempt — and the frozen candidate
+                # references the admitted address.
+                admitted_artifact = self.sequencer.admit_artifact(
+                    att["attempt_id"],
+                    result.get("artifact_path", "artifact/engineering-notes"),
+                    artifact)
+                candidate = admitted_artifact["content_address"]
                 seq = self.ro.execute(
                     "SELECT fence FROM sequences WHERE sequence_id = ?",
                     (att["sequence_id"],)).fetchone()

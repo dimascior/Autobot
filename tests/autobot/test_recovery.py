@@ -235,8 +235,10 @@ class RestartTests(unittest.TestCase):
             "SELECT content_sha256 FROM attempt_witnesses"
             " WHERE admission_id = ?",
             (snapshot["witness_admission_id"],)).fetchone()
-        self.assertEqual(store.get(wrow["content_sha256"]),
-                         b"provider session record for the crash test\n")
+        self.assertEqual(
+            store.get(wrow["content_sha256"]),
+            support.session_record_bytes(
+                crow["call_id"], native_session_id="native-crash-1"))
 
         seq.acquire_lease(ttl_seconds=3600)
         resumed = seq.admit_witness(

@@ -108,7 +108,9 @@ def admitted_runtime(data_dir, clock=None, holder="test-instance"):
 
 def local_record_payload(task_contract_id=None, predecessors=None,
                          finalization_class=None,
-                         finalization_requirements=None, objective=None):
+                         finalization_requirements=None, objective=None,
+                         completion_policies=None,
+                         evidence_requirements=None):
     """The M5/M6 SL-path contract family: V-A re-targeted to the LOCAL
     authority declaration (SOURCE_MODIFYING + authority_location LOCAL,
     finalization requirement LOCAL_CANONICAL_COMMIT by default). The
@@ -135,6 +137,10 @@ def local_record_payload(task_contract_id=None, predecessors=None,
         payload["objective"] = objective
     if predecessors is not None:
         payload["predecessors"] = predecessors
+    if completion_policies is not None:
+        payload["completion_policies"] = completion_policies
+    if evidence_requirements is not None:
+        payload["evidence_requirements"] = evidence_requirements
     if finalization_class is not None:
         payload["finalization_class"] = finalization_class
     if payload["finalization_class"] == "READ_ONLY":
@@ -178,6 +184,18 @@ def intelligence_environment():
         defaults=defaults)
 
 
+def session_record_bytes(call_id, native_session_id="native-sess-9",
+                         controller_id=None, **extra):
+    """Producer-shaped obj-11 bytes (the provider task/handle record
+    family): recognized facts join the witness to the bound call."""
+    import json as _json
+    payload = {"call_id": call_id,
+               "native_session_id": native_session_id,
+               "controller_id": controller_id or ("main_" + "0" * 32)}
+    payload.update(extra)
+    return _json.dumps(payload, sort_keys=True).encode("utf-8")
+
+
 def collect_receipt(rt, attempt_id, window_seconds=None):
     """Derive-and-admit the frozen attempt's obj-15 through the registered
     Collector seat (cap-30); returns the admitted receipt's address."""
@@ -204,9 +222,11 @@ def drive_to_verified(rt, admitted_result, role="builder"):
     attempt_id, fence = info["attempt_id"], info["fence"]
     seq.reserve_attempt(attempt_id, expected_fence=fence)
     projection = rt.store.put(b"projection bytes for finalization\n")
-    seq.dispatch_attempt(attempt_id, role, "fake", projection)
+    dispatched = seq.dispatch_attempt(attempt_id, role, "fake", projection)
+    # The provider's own session record (C3-M2): recognized facts join it
+    # to the Sequencer-minted call — the causal chain's first link.
     start = seq.admit_witness(attempt_id, "obj-11", "autoswarm",
-                              b"provider session record\n")
+                              session_record_bytes(dispatched["call_id"]))
     seq.attempt_running(attempt_id, "native-sess-9",
                         start["content_address"])
     seq.admit_witness(attempt_id, "obj-12", "helios",

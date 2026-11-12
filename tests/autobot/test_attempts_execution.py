@@ -78,7 +78,8 @@ class ExecutionTestCase(unittest.TestCase):
         policy. ``governance=False`` leaves the record-required obj-12
         unadmitted — the INCOMPLETE arm's setup."""
         self._dispatch()
-        start = self._admit("obj-11", "autoswarm", WITNESS_START)
+        start = self._admit("obj-11", "autoswarm",
+                            support.session_record_bytes(self.call_id))
         self.entry_start = self._entry(start, "obj-11", "autoswarm")
         self.seq.attempt_running(self.attempt_id, "native-sess-9",
                                  start["content_address"])
@@ -134,7 +135,8 @@ class DispatchTests(ExecutionTestCase):
         self.assertEqual(call["call_id"], self.call_id)
         self.assertRegex(call["call_id"], r"^call_[0-9a-f]{32}$")  # D-22
         self.assertIsNone(call["native_session_id"])
-        start = self._admit("obj-11", "autoswarm", WITNESS_START)
+        start = self._admit("obj-11", "autoswarm",
+                            support.session_record_bytes(self.call_id))
         self.entry_start = self._entry(start, "obj-11", "autoswarm")
         self.seq.attempt_running(self.attempt_id, "native-sess-9",
                                  start["content_address"])

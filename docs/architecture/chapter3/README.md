@@ -31,8 +31,28 @@ replacing the F-CE-4 stand-in, recovery section 8f, findings F-C3-1..5,
 and the proof of record (179/179 on CPython 3.12.11 and 3.8.10,
 coordinator 41/41).
 
-Still open after M1: witness payload schemas beyond byte integrity,
-cap-30's index-state facet, multi-version receipt dominance, the
-policy-resolved evidence window, and everything Chapters 4-6 own
-(production verifier runners, acceptance/release payload schemas with
+## Milestone 2 — evidence provenance and causal joins (C3-M2)
+
+[PROVENANCE.md](PROVENANCE.md): the raw-witness trust model
+(`src/autobot/witness_semantics.py` — exact producer bytes, tolerant
+recognized facts, the admission identity gate), the causal chain joins
+(call/session/controller, U-07 resolved), the frozen AutoSwarm outcome
+mapping (U-06 resolved, D-C3-4), the artifact-provenance index (schema
+v8 `attempt_artifacts`, `admit_artifact`, INV-03/04/22's registered
+proofs), obj-10's Chapter 3 closure (`prompt_projection.schema.json`,
+minter `dispatcher`), the extended obj-15 evidence graph (causal joins,
+contradictions with `deny_then_ran` — U-01's detection rule — member
+completeness per the frozen policies, artifact provenance), recovery 8g,
+findings F-C3-6..8, and the proof of record (193/193 on CPython 3.12.11
+and 3.8.10, coordinator 41/41). The chapter-0 unknowns register was
+updated factually: U-06 and U-07 RESOLVED, U-01/U-02/U-04 NARROWED,
+U-05 untouched (diagnostic, deferred).
+
+Still open after M2: witness payload schemas beyond byte integrity and
+recognized facts, cap-30's index-state facet (U-05), multi-version
+receipt dominance, multi-member attempt execution (member completeness
+classifies today; concurrent member dispatch is a later milestone), the
+policy-resolved evidence window, the live Codex DevTools write-probe
+(U-02's operational half), and everything Chapters 4-6 own (production
+verifier runners, acceptance/release payload schemas with
 ACCEPTANCE_FRESH, the remote arcs and standalone effect machines).

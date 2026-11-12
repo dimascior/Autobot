@@ -44,6 +44,36 @@ from .witnesses import WITNESS_KINDS
 # impersonates never — producer_id must be that registered minter.
 _ADOPTION_KIND = "obj-11"
 
+# D-C3-4 (U-06 resolved from the provider source): AutoSwarm's TERMINAL
+# outcome vocabulary is exactly completed / failed / cancelled. A result
+# record with a recognized terminal outcome proves that provider-reported
+# terminal outcome; an ABSENT result record proves only that NO terminal
+# provider outcome has been observed — never that the call is running.
+# Running, stale or interrupted status comes only from separate durable
+# lifecycle/session evidence (the handle/session witnesses behind t-a03;
+# staleness is the caller's t-a12 member lease): absence of an
+# authoritative observation is not an observation of the opposite state
+# (the same G3 rule that keeps find_session(None) from proving failure).
+# The frozen mapping normalizes the provider's success spelling onto the
+# completion vocabulary the frozen contracts use; failed and cancelled
+# pass through, and ANY unrecognized provider string also passes through
+# VERBATIM — it can satisfy a role only if the frozen
+# completion_policies' success_outcomes lists it. The provider reports;
+# the contract decides.
+AUTOSWARM_OUTCOME_TO_COMPLETION = {
+    "completed": "success",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
+
+
+def normalize_outcome(provider_outcome):
+    """Map one provider-reported outcome into the completion vocabulary
+    (D-C3-4): known spellings map, everything else passes verbatim and is
+    judged by the frozen role policy alone — never promoted to success."""
+    return AUTOSWARM_OUTCOME_TO_COMPLETION.get(provider_outcome,
+                                               provider_outcome)
+
 
 class Transport:
     """The transport contract. Implementations override all four methods.
