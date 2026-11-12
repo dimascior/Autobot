@@ -13,6 +13,7 @@ from pathlib import Path
 import support
 from fake_transport import FakeTransport
 from autobot import (
+    Collector,
     Database,
     Sequencer,
     Store,
@@ -173,7 +174,9 @@ class AcceptanceScenario(AcceptanceBase):
         # 8. execution lifecycle evidence is preserved byte-identically
         #    through the admission seam, with ledger-derived correlation.
         transport.scripted_collect[call_id] = {
-            "witness_files": [("obj-13", "agent_clis", TRANSCRIPT)],
+            "witness_files": [("obj-12", "helios",
+                               b"command governance log\n"),
+                              ("obj-13", "agent_clis", TRANSCRIPT)],
             "outcome": "success"}
         collected = transport.collect(call_id)
         receipt_entries = []
@@ -191,13 +194,14 @@ class AcceptanceScenario(AcceptanceBase):
             "SELECT witness_kind, producer, content_sha256, call_id,"
             " native_session_id FROM attempt_witnesses WHERE attempt_id = ?"
             " ORDER BY rowid", (self.attempt_id,)).fetchall()]
-        self.assertEqual(len(wrows), 2)  # adoption evidence + transcript
+        self.assertEqual(len(wrows), 3)  # adoption + governance + transcript
         by_kind = {row["witness_kind"]: row for row in wrows}
         for row in wrows:
             self.assertEqual(row["call_id"], call_id)
         # the adoption witness was admitted at DISPATCHED (no native id yet,
-        # D-37); the transcript after t-a03 carries the adopted session.
+        # D-37); the collected kinds after t-a03 carry the adopted session.
         self.assertIsNone(by_kind["obj-11"]["native_session_id"])
+        self.assertEqual(by_kind["obj-12"]["native_session_id"], native)
         self.assertEqual(by_kind["obj-13"]["native_session_id"], native)
 
         # per-role completion, then freeze and the real evidence join.
@@ -207,19 +211,14 @@ class AcceptanceScenario(AcceptanceBase):
             "FINISHED")
         candidate = store.put(b"candidate: tree stand-in\n")
         seq.freeze_candidate(self.attempt_id, self.fence, candidate)
-        adoption = by_kind["obj-11"]
-        receipt_payload = {
-            "schema_version": "v1", "kind": "ExecutionReceipt",
-            "attempt_id": self.attempt_id,
-            "attempt_contract_hash": self.attempt_contract_hash,
-            "completeness": "COMPLETE",
-            "admitted_witnesses": [
-                {"witness_kind": adoption["witness_kind"],
-                 "producer": adoption["producer"],
-                 "content_sha256": adoption["content_sha256"]},
-            ] + receipt_entries}
-        receipt = store.put(
-            json.dumps(receipt_payload, sort_keys=True).encode("utf-8"))
+        # C3-M1: the registered Collector derives the obj-15 classification
+        # from the frozen record's evidence_requirements over the admitted
+        # rows (COMPLETE here: obj-11 + obj-12 present), mints the
+        # canonical receipt and admits it; completion consumes the
+        # ADMITTED classification.
+        outcome = Collector(seq, store).collect_and_admit(self.attempt_id)
+        self.assertEqual(outcome["completeness"], "COMPLETE")
+        receipt = outcome["receipt_address"]
         seq.complete_evidence(self.attempt_id, self.fence, receipt)
         self.assertEqual(self._attempt_state(db), "EVIDENCE_COMPLETE")
 
@@ -247,7 +246,7 @@ class AcceptanceScenario(AcceptanceBase):
         entry = [a for a in view["attempts"]
                  if a["attempt_id"] == self.attempt_id][0]
         self.assertEqual(entry["state"], "EVIDENCE_COMPLETE")
-        self.assertEqual(entry["witnesses"], 2)
+        self.assertEqual(entry["witnesses"], 3)
         self.assertEqual(entry["call"]["call_id"], call_id)
         self.assertEqual(entry["call"]["native_session_id"], native)
         self.assertEqual(view["obligations"]["awaiting_verification"],
@@ -324,11 +323,14 @@ class AcceptanceFailureArms(AcceptanceBase):
             "SELECT 1 FROM attempt_calls WHERE attempt_id = ?",
             (self.attempt_id,)).fetchone())
 
-    def test_missing_evidence_blocks_completion_and_t_a13_fails_closed(self):
-        """Missing-evidence arm: a receipt naming evidence the admission
-        seam never saw cannot complete t-a06; and the integrity-failed
-        receipt path (t-a13) stays fail-closed (PARTIAL) in the integrated
-        scenario."""
+    def test_missing_evidence_blocks_completion_and_fails_beyond_bound(self):
+        """Missing-evidence arm, live since C3-M1: a receipt naming
+        evidence the admission seam never saw cannot complete t-a06; a
+        hand-built classification carries no authority (not admitted); the
+        collector's INCOMPLETE classification refuses completion (the
+        t-s09 classification half) and refuses t-a13 inside its window —
+        and once the derived bound elapses, t-a13 fails the candidate with
+        t-s45 halting the sequence beside it."""
         self._to_reserved()
         _, address = self._projection()
         self.seq.dispatch_attempt(
@@ -337,6 +339,8 @@ class AcceptanceFailureArms(AcceptanceBase):
             self.attempt_id, "obj-11", "autoswarm", b"session started\n")
         self.seq.attempt_running(self.attempt_id, "native-sess-1",
                                  started["content_address"])
+        # COMMAND_GOVERNANCE (obj-12) is required by the frozen record but
+        # never admitted here — the missing-evidence arm.
         finished = self.seq.admit_witness(
             self.attempt_id, "obj-13", "agent_clis", TRANSCRIPT)
         self.seq.finish_attempt(self.attempt_id, "builder", "success",
@@ -366,11 +370,28 @@ class AcceptanceFailureArms(AcceptanceBase):
                 self.attempt_id, self.fence,
                 receipt([good_entry], completeness="INTEGRITY_FAILED"),
                 reason="forged classification in the integrated flow")
-        self.assertIn("PARTIAL", str(ctx.exception))
+        self.assertIn("not admitted", str(ctx.exception))
         self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
-        self.seq.complete_evidence(self.attempt_id, self.fence,
-                                   receipt([good_entry]))
-        self.assertEqual(self._attempt_state(), "EVIDENCE_COMPLETE")
+        outcome = Collector(self.seq, self.rt.store).collect_and_admit(
+            self.attempt_id)
+        self.assertEqual(outcome["completeness"], "INCOMPLETE")
+        with self.assertRaises(ConflictError):
+            self.seq.complete_evidence(self.attempt_id, self.fence,
+                                       outcome["receipt_address"])
+        with self.assertRaises(ConflictError):
+            self.seq.fail_candidate(
+                self.attempt_id, self.fence, outcome["receipt_address"],
+                reason="premature")  # the bound has not elapsed
+        self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
+        self.clock.advance(3601)  # past the derived D-C3-1 bound
+        self.seq.fail_candidate(
+            self.attempt_id, self.fence, outcome["receipt_address"],
+            reason="evidence never completed")
+        self.assertEqual(self._attempt_state(), "FAILED")
+        seq_state = self.rt.db.conn.execute(
+            "SELECT state FROM sequences WHERE sequence_id = ?",
+            (self.sequence_id,)).fetchone()["state"]
+        self.assertEqual(seq_state, "HALTED")
 
 
 if __name__ == "__main__":

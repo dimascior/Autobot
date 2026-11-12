@@ -27,9 +27,10 @@ registered executor and the ref-CAS semantics decide what happened.
 
 import json
 
+from autobot.collector import Collector
 from autobot.git_executor import execute_local_cas
 from autobot.projection import project_prompt
-from autobot.transport import reconcile_dispatched
+from autobot.transport import normalize_outcome, reconcile_dispatched
 
 from .findings import admit_finding
 from .proposals_util import canonical_json_digest
@@ -47,7 +48,7 @@ def _loads(text, default):
 class Taskforce:
     def __init__(self, plan, sequencer, store, transport, runner,
                  agent_factory, clock, ro_conn, repo_path=None,
-                 repository_context=None):
+                 repository_context=None, collector=None):
         self.plan = plan
         self.sequencer = sequencer
         self.store = store
@@ -58,6 +59,10 @@ class Taskforce:
         self.ro = ro_conn
         self.repo_path = repo_path
         self.repository_context = repository_context
+        # The registered collector seat (cap-30): the Taskforce ASKS it to
+        # collect; it never classifies, mints or submits a receipt itself
+        # (task_force is on cap-30's forbidden list).
+        self.collector = collector or Collector(sequencer, store)
 
     # ------------------------------------------------------------- reads
 
@@ -232,7 +237,11 @@ class Taskforce:
         for att in self._attempts_in(["RUNNING"]):
             result = self.transport.collect(att["call_id"])
             if result is None:
-                continue  # still working
+                # No terminal provider outcome observed. The attempt's
+                # RUNNING state rests on the POSITIVE t-a03 lifecycle
+                # witness, never on this absence; nothing transitions,
+                # and staleness remains t-a12's (D-C3-4).
+                continue
             admitted = {}
             for kind, producer, data in result.get("witness_files", []):
                 entry = self.sequencer.admit_witness(
@@ -246,7 +255,9 @@ class Taskforce:
                 merged.setdefault("role", att["role"])
                 admit_finding(self.plan, merged, now)
             finish_witness = self._witness_address_for_finish(admitted)
-            outcome = result.get("outcome", "success")
+            # D-C3-4: the provider reports; the frozen mapping normalizes
+            # (completed -> success); the frozen role policy decides.
+            outcome = normalize_outcome(result.get("outcome", "success"))
             state = self.sequencer.finish_attempt(
                 att["attempt_id"], att["role"], outcome, finish_witness)
             entry = {"attempt_id": att["attempt_id"],
@@ -255,27 +266,20 @@ class Taskforce:
             if state == "FINISHED":
                 artifact = result.get("artifact_bytes",
                                       b"no artifact collected\n")
-                candidate = self.store.put(artifact)
+                # C3-M2 (INV-03): the artifact enters through the
+                # provenance seam — one causal event binding these exact
+                # bytes to THIS attempt — and the frozen candidate
+                # references the admitted address.
+                admitted_artifact = self.sequencer.admit_artifact(
+                    att["attempt_id"],
+                    result.get("artifact_path", "artifact/engineering-notes"),
+                    artifact)
+                candidate = admitted_artifact["content_address"]
                 seq = self.ro.execute(
                     "SELECT fence FROM sequences WHERE sequence_id = ?",
                     (att["sequence_id"],)).fetchone()
                 self.sequencer.freeze_candidate(
                     att["attempt_id"], seq["fence"], candidate)
-                receipt = self.store.put(json.dumps(
-                    {"schema_version": "v1", "kind": "ExecutionReceipt",
-                     "attempt_id": att["attempt_id"],
-                     "attempt_contract_hash": att["attempt_contract_hash"],
-                     "completeness": "COMPLETE",
-                     "admitted_witnesses": [
-                         {"witness_kind": kind,
-                          "producer": result_producer,
-                          "content_sha256": admitted[kind]}
-                         for kind, result_producer, _data in
-                         result.get("witness_files", [])
-                         if kind in admitted]},
-                    sort_keys=True).encode("utf-8"))
-                self.sequencer.complete_evidence(
-                    att["attempt_id"], seq["fence"], receipt)
                 with self.plan.transaction() as cur:
                     cur.execute(
                         "UPDATE seats SET artifact_address = ?, status ="
@@ -283,7 +287,48 @@ class Taskforce:
                         (candidate, now, att["call_id"]))
                 entry["candidate_address"] = candidate
             collected.append(entry)
+        collected += self.settle_frozen_evidence(now)
         return collected
+
+    def settle_frozen_evidence(self, now):
+        """The C3-M1 evidence pass, for EVERY attempt in CANDIDATE_FROZEN —
+        frozen this sweep or inherited across a restart: ask the registered
+        Collector (cap-30) to derive-and-admit the obj-15 classification,
+        then act on the ADMITTED facts alone. COMPLETE completes the
+        evidence (t-a06/t-s09); INTEGRITY_FAILED, or INCOMPLETE whose
+        derived bound has elapsed, fails the candidate (t-a13/t-s45);
+        INCOMPLETE inside its window stays frozen for a later sweep —
+        unchanged facts re-admit idempotently and report nothing, so a
+        waiting attempt is quiet, not busy. The Taskforce never sets,
+        forwards or interprets a classification of its own (F-CE-4
+        closed)."""
+        settled = []
+        for att in self._attempts_in(["CANDIDATE_FROZEN"]):
+            seq = self.ro.execute(
+                "SELECT state, fence FROM sequences WHERE sequence_id = ?",
+                (att["sequence_id"],)).fetchone()
+            if seq["state"] != "CANDIDATE_FROZEN":
+                continue  # the sequence arc has already moved (e.g. HALTED)
+            outcome = self.collector.collect_and_admit(att["attempt_id"])
+            entry = {"attempt_id": att["attempt_id"],
+                     "sequence_id": att["sequence_id"],
+                     "evidence": outcome["completeness"]}
+            if outcome["completeness"] == "COMPLETE":
+                self.sequencer.complete_evidence(
+                    att["attempt_id"], seq["fence"],
+                    outcome["receipt_address"])
+                settled.append(entry)
+            elif (outcome["completeness"] == "INTEGRITY_FAILED"
+                    or outcome["evidence_complete_by_utc"] <= now):
+                self.sequencer.fail_candidate(
+                    att["attempt_id"], seq["fence"],
+                    outcome["receipt_address"],
+                    reason="collector classification %s"
+                           % outcome["completeness"])
+                settled.append(entry)
+            elif not outcome["duplicate"]:
+                settled.append(entry)  # a NEW classification is news
+        return settled
 
     # ------------------------------------------------------ verification
 

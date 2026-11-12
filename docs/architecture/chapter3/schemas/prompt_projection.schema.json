@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "autobot/object/PromptProjection/v1",
+  "title": "PromptProjection (obj-10): the dispatcher-minted, reproducible dispatch artifact — authority effect none",
+  "type": "object",
+  "required": [
+    "schema_version", "kind", "minter", "authority_effect",
+    "record", "role", "attempt", "objective",
+    "engineering_context", "completion_contract"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "kind": {"const": "PromptProjection"},
+    "minter": {"const": "dispatcher"},
+    "authority_effect": {"const": "none"},
+    "record": {
+      "type": "object",
+      "required": ["record_hash", "requirement_digest", "contract_digest", "task_contract_id"],
+      "additionalProperties": false,
+      "properties": {
+        "record_hash": {"$ref": "#/$defs/digest"},
+        "requirement_digest": {"$ref": "#/$defs/digest"},
+        "contract_digest": {"$ref": "#/$defs/digest"},
+        "task_contract_id": {"type": "string", "pattern": "^tc_[0-9a-f]{32}$"}
+      }
+    },
+    "role": {"$ref": "#/$defs/name_id"},
+    "role_transform": {"$ref": "#/$defs/name_id"},
+    "attempt": {
+      "type": "object",
+      "required": ["sequence_id", "attempt_id", "fence", "attempt_contract_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "sequence_id": {"type": "string", "pattern": "^sq_[0-9a-f]{32}$"},
+        "attempt_id": {"type": "string", "pattern": "^at_[0-9a-f]{32}$"},
+        "fence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "attempt_contract_hash": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "objective": {"type": "string", "pattern": "^\\S(?:[\\s\\S]*\\S)?$"},
+    "allowed_scope": {
+      "type": "object",
+      "required": ["paths", "artifact_paths"],
+      "additionalProperties": false,
+      "properties": {
+        "paths": {"type": "array", "items": {"$ref": "#/$defs/scope_path"}},
+        "artifact_paths": {"type": "array", "items": {"$ref": "#/$defs/scope_path"}}
+      }
+    },
+    "acceptance_assertions": {
+      "type": "object",
+      "required": ["ids_and_environment_constraints"],
+      "additionalProperties": false,
+      "properties": {
+        "ids_and_environment_constraints": {
+          "type": "array", "minItems": 1,
+          "items": {"$ref": "#/$defs/assertion"}
+        }
+      }
+    },
+    "evidence_requirements": {
+      "type": "array",
+      "items": {"enum": ["EXECUTION_LIFECYCLE", "COMMAND_GOVERNANCE", "SESSION_TRANSCRIPT", "REMOTE_CHECK"]}
+    },
+    "specification_inputs": {
+      "type": "object",
+      "required": ["name_to_exact_byte_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "name_to_exact_byte_sha256": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/name_id"},
+          "additionalProperties": {"$ref": "#/$defs/digest"}
+        }
+      }
+    },
+    "engineering_context": {
+      "type": "object",
+      "required": ["provenance", "author", "guidance"],
+      "additionalProperties": false,
+      "properties": {
+        "provenance": {"const": "chief-engineer-guidance"},
+        "author": {"$ref": "#/$defs/principal"},
+        "guidance": {"type": "string", "pattern": "^\\S(?:[\\s\\S]*\\S)?$"},
+        "context_refs": {"type": "array", "items": {"$ref": "#/$defs/digest"}},
+        "predecessor_findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["finding_id"],
+            "propertyNames": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+            "additionalProperties": {},
+            "properties": {
+              "finding_id": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"}
+            }
+          }
+        },
+        "repository_context": {"type": "string", "pattern": "^\\S(?:[\\s\\S]*\\S)?$"},
+        "expected_outputs": {"type": "string", "pattern": "^\\S(?:[\\s\\S]*\\S)?$"}
+      }
+    },
+    "completion_contract": {
+      "type": "object",
+      "required": ["role_policy"],
+      "additionalProperties": false,
+      "properties": {
+        "role_policy": {
+          "type": "object",
+          "required": ["required", "success_outcomes"],
+          "additionalProperties": false,
+          "properties": {
+            "required": {"type": "boolean"},
+            "success_outcomes": {
+              "type": "array", "minItems": 1,
+              "items": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"}
+            }
+          }
+        },
+        "evidence_requirements": {
+          "type": "array",
+          "items": {"enum": ["EXECUTION_LIFECYCLE", "COMMAND_GOVERNANCE", "SESSION_TRANSCRIPT", "REMOTE_CHECK"]}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "name_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "principal": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "scope_path": {"type": "string", "pattern": "^(\\.|[^\\\\/\\s][^\\\\]*)$"},
+    "token": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$"},
+    "assertion": {
+      "type": "object",
+      "required": ["assertion_id", "verifier_id", "mode"],
+      "additionalProperties": false,
+      "properties": {
+        "assertion_id": {"$ref": "#/$defs/name_id"},
+        "verifier_id": {"$ref": "#/$defs/name_id"},
+        "mode": {"enum": ["DETERMINISTIC", "HUMAN_ATTESTED"]},
+        "environment_constraint": {"$ref": "#/$defs/environment_constraint"}
+      }
+    },
+    "environment_constraint": {
+      "type": "object", "minProperties": 1, "additionalProperties": false,
+      "properties": {
+        "interpreter": {
+          "type": "object", "minProperties": 1, "additionalProperties": false,
+          "properties": {
+            "implementations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/token"}},
+            "versions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/token"}}
+          }
+        },
+        "platform": {
+          "type": "object", "minProperties": 1, "additionalProperties": false,
+          "properties": {
+            "os": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/token"}},
+            "architectures": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/token"}}
+          }
+        },
+        "tools": {
+          "type": "object", "minProperties": 1,
+          "propertyNames": {"$ref": "#/$defs/name_id"},
+          "additionalProperties": {
+            "type": "object", "required": ["versions"], "additionalProperties": false,
+            "properties": {"versions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/token"}}}
+          }
+        },
+        "env": {
+          "type": "object", "minProperties": 1,
+          "propertyNames": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"},
+          "additionalProperties": {"type": "string", "pattern": "^$|^\\S(?:[^\\n]*\\S)?$"}
+        }
+      }
+    }
+  }
+}

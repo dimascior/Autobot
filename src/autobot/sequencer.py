@@ -19,6 +19,8 @@ from datetime import timedelta
 from contract_library import canonicalize, compute_tiers, object_hash
 
 from . import journal
+from . import receipts
+from . import witness_semantics
 from .effects import EFFECTS, OUTCOME_RULES, RETRYABLE
 from .verification import (
     ATTESTATION_PRODUCER,
@@ -712,6 +714,8 @@ class Sequencer:
             "attempt_witness": ("attempt_witnesses", "admission_id"),
             "attempt_verification": ("attempt_verifications",
                                      "verification_id"),
+            "attempt_receipt": ("attempt_receipts", "admission_id"),
+            "attempt_artifact": ("attempt_artifacts", "admission_id"),
         }
         for (machine, subject) in last:
             mapped = reverse_tables.get(machine)
@@ -1001,6 +1005,183 @@ class Sequencer:
                         " dependency edges %s"
                         % (row["sequence_id"], ", ".join(unsatisfied)))
 
+        # -- 8f. execution receipts (C3-M1 seam): every attempt_receipts
+        #        row joins an attempt at or past CANDIDATE_FROZEN, its
+        #        bytes resolve and re-hash (D-66), the payload re-validates
+        #        against the mirrored obj-15 schema, the row columns agree
+        #        with the payload, its admission is journaled (both
+        #        directions, via reverse_tables above), and the payload
+        #        RE-DERIVES byte-identically from durable facts — the
+        #        t-a05 journal instant as anchor, the frozen record, the
+        #        attempt's witness rows and the declared window (D-C3-2:
+        #        a forged or divergent row HALTs). A genuinely
+        #        INTEGRITY_FAILED ledger halts earlier, at 8b's witness
+        #        re-hash — D-C3-3 records that interplay as deliberate.
+        _RECEIPT_ATTEMPT_STATES = frozenset((
+            "CANDIDATE_FROZEN", "EVIDENCE_COMPLETE", "VERIFIED",
+            "REJECTED", "FAILED", "FENCED", "RECONCILED"))
+        freeze_instants = {}
+        for entry_payload in payloads:
+            if (entry_payload.get("machine") == "attempt"
+                    and entry_payload.get("rule") == "t-a05"):
+                freeze_instants[entry_payload["subject_id"]] = \
+                    entry_payload["recorded_utc"]
+        for row in cur.execute("SELECT * FROM attempt_receipts").fetchall():
+            att = cur.execute(
+                "SELECT state, attempt_contract_hash, sequence_id"
+                " FROM attempts WHERE attempt_id = ?",
+                (row["attempt_id"],)).fetchone()
+            if att is None or att["state"] not in _RECEIPT_ATTEMPT_STATES:
+                raise IntegrityHalt(
+                    "receipt admission %s joins attempt state %r: receipts"
+                    " are admitted at CANDIDATE_FROZEN only"
+                    % (row["admission_id"], att["state"] if att else None))
+            data = self.store.get(row["content_sha256"])  # re-hashes (D-66)
+            referenced.add(row["content_sha256"])
+            receipt_payload = json.loads(data.decode("utf-8"))
+            if receipts.validate_receipt(receipt_payload):
+                raise IntegrityHalt(
+                    "receipt %s no longer validates against the obj-15"
+                    " schema" % row["admission_id"])
+            if (receipt_payload["attempt_id"] != row["attempt_id"]
+                    or receipt_payload["completeness"] != row["completeness"]
+                    or receipt_payload["evidence_complete_by_utc"]
+                    != row["evidence_complete_by_utc"]
+                    or receipt_payload["minter"] != row["minter"]
+                    or receipt_payload["call_id"] != row["call_id"]):
+                raise IntegrityHalt(
+                    "receipt row %s disagrees with its admitted payload"
+                    % row["admission_id"])
+            entry = last.get(("attempt_receipt", row["admission_id"]))
+            if entry is None or entry.get("to_state") != "ADMITTED":
+                raise IntegrityHalt(
+                    "receipt admission %s has no journaled admission"
+                    " (D-68 pairing)" % row["admission_id"])
+            anchor = freeze_instants.get(row["attempt_id"])
+            if anchor is None:
+                raise IntegrityHalt(
+                    "receipt %s exists for an attempt with no journaled"
+                    " t-a05 freeze" % row["admission_id"])
+            witness_rows = [dict(r) for r in cur.execute(
+                "SELECT witness_kind, producer, content_sha256"
+                " FROM attempt_witnesses WHERE attempt_id = ?"
+                " ORDER BY rowid", (row["attempt_id"],)).fetchall()]
+            artifact_rows = [dict(r) for r in cur.execute(
+                "SELECT logical_path, content_sha256, role"
+                " FROM attempt_artifacts WHERE attempt_id = ?"
+                " ORDER BY rowid", (row["attempt_id"],)).fetchall()]
+            seq_row = cur.execute(
+                "SELECT record_hash FROM sequences WHERE sequence_id = ?",
+                (att["sequence_id"],)).fetchone()
+            record_payload = json.loads(self.store.get(cur.execute(
+                "SELECT content_address FROM records WHERE record_hash = ?",
+                (seq_row["record_hash"],)).fetchone()["content_address"]
+            ).decode("utf-8"))
+            call = cur.execute(
+                "SELECT role, native_session_id FROM attempt_calls"
+                " WHERE attempt_id = ?",
+                (row["attempt_id"],)).fetchone()
+            receipt_state = {
+                "record_payload": record_payload, "role": call["role"],
+                "attempt_id": row["attempt_id"],
+                "attempt_contract_hash": att["attempt_contract_hash"],
+                "call_id": row["call_id"],
+                "native_session_id": call["native_session_id"],
+                "witnesses": witness_rows, "artifacts": artifact_rows,
+                "anchor_utc": anchor}
+            expected = receipts.derive_evidence(
+                self.store, receipt_state,
+                receipt_payload["derivation"]["window_seconds"])
+            if receipts.receipt_bytes(expected) != data:
+                raise IntegrityHalt(
+                    "receipt %s does not re-derive from durable facts"
+                    " (D-C3-2: forged or divergent admission)"
+                    % row["admission_id"])
+        for row in cur.execute(
+                "SELECT attempt_id, state FROM attempts WHERE state IN"
+                " ('EVIDENCE_COMPLETE','VERIFIED','REJECTED')").fetchall():
+            n = cur.execute(
+                "SELECT COUNT(*) AS n FROM attempt_receipts"
+                " WHERE attempt_id = ? AND completeness = 'COMPLETE'",
+                (row["attempt_id"],)).fetchone()["n"]
+            if n == 0:
+                raise IntegrityHalt(
+                    "attempt %s is %s with no admitted COMPLETE receipt"
+                    " (execution_receipt_complete's classification half)"
+                    % (row["attempt_id"], row["state"]))
+        for entry_payload in payloads:
+            if (entry_payload.get("machine") == "attempt"
+                    and entry_payload.get("rule") == "t-a13"):
+                t13_facts = entry_payload.get("facts", {})
+                n = cur.execute(
+                    "SELECT COUNT(*) AS n FROM attempt_receipts"
+                    " WHERE attempt_id = ? AND content_sha256 = ?"
+                    " AND completeness = ?",
+                    (entry_payload["subject_id"],
+                     t13_facts.get("execution_receipt_address"),
+                     t13_facts.get("completeness"))).fetchone()["n"]
+                if n == 0:
+                    raise IntegrityHalt(
+                        "journaled t-a13 for %s names no matching admitted"
+                        " receipt" % entry_payload["subject_id"])
+
+        # -- 8g. artifact provenance and witness-correlation coherence
+        #        (C3-M2): every attempt_artifacts row joins a bound
+        #        execution, its ledger correlation matches the row, its
+        #        bytes resolve and re-hash (D-66), and its admission is
+        #        journaled (both directions, via reverse_tables above);
+        #        and for every bound execution, the admitted witnesses'
+        #        RECOGNIZED facts must not contradict the ledger identity
+        #        (cross-execution injection surfaced at restart HALTs —
+        #        D-C3-5/6). Absent facts stay absent: recovery never
+        #        invents certainty.
+        for row in cur.execute(
+                "SELECT * FROM attempt_artifacts").fetchall():
+            call = cur.execute(
+                "SELECT call_id, role FROM attempt_calls"
+                " WHERE attempt_id = ?", (row["attempt_id"],)).fetchone()
+            if call is None:
+                raise IntegrityHalt(
+                    "artifact %s joins no bound execution (INV-03)"
+                    % row["admission_id"])
+            if (call["call_id"] != row["call_id"]
+                    or call["role"] != row["role"]):
+                raise IntegrityHalt(
+                    "artifact %s correlation disagrees with the ledger"
+                    " (INV-03 causal provenance)" % row["admission_id"])
+            self.store.get(row["content_sha256"])  # re-hashes (D-66)
+            referenced.add(row["content_sha256"])
+            entry = last.get(("attempt_artifact", row["admission_id"]))
+            if entry is None or entry.get("to_state") != "ADMITTED":
+                raise IntegrityHalt(
+                    "artifact %s has no journaled admission (D-68"
+                    " pairing)" % row["admission_id"])
+        for call_row in cur.execute(
+                "SELECT c.attempt_id, c.call_id, c.native_session_id"
+                " FROM attempt_calls c JOIN attempts a"
+                " ON a.attempt_id = c.attempt_id"
+                " WHERE a.state NOT IN ('DECLARED','RESERVED',"
+                "'DISPATCHED')").fetchall():
+            for wrow in cur.execute(
+                    "SELECT witness_kind, content_sha256"
+                    " FROM attempt_witnesses WHERE attempt_id = ?",
+                    (call_row["attempt_id"],)).fetchall():
+                try:
+                    wdata = self.store.get(wrow["content_sha256"])
+                except IntegrityHalt:
+                    raise
+                wfacts = witness_semantics.extract_facts(
+                    wrow["witness_kind"], wdata)
+                conflicts = witness_semantics.identity_conflicts(
+                    wrow["witness_kind"], wfacts, call_row["call_id"],
+                    call_row["native_session_id"])
+                if conflicts:
+                    raise IntegrityHalt(
+                        "witness %s contradicts the bound execution of"
+                        " attempt %s (D-C3-5): %s"
+                        % (wrow["content_sha256"], call_row["attempt_id"],
+                           "; ".join(conflicts)))
+
         # -- resumable view + fence coherence
         current = []
         for row in cur.execute(
@@ -1170,6 +1351,20 @@ class Sequencer:
                 raise ConflictError(
                     "role %r is not named by the frozen record's"
                     " completion_policies" % role)
+            # INV-37's dispatch-side re-hash (D-C3-9): every declared
+            # specification input must resolve to its exact declared
+            # bytes BEFORE any external launch — the collection-side
+            # probe and the receipt's input_rehash binding are the
+            # other half.
+            declared_inputs = payload.get("specification_inputs", {}).get(
+                "name_to_exact_byte_sha256", {})
+            for input_name in sorted(declared_inputs):
+                if self.store.verify([declared_inputs[input_name]]):
+                    raise ConflictError(
+                        "specification input %r does not resolve to its"
+                        " declared bytes at dispatch (INV-37: inputs are"
+                        " re-hashed at dispatch and at collection)"
+                        % input_name)
             cur.execute(
                 "INSERT INTO attempt_calls (attempt_id, role, provider, call_id,"
                 " projection_address, created_utc, updated_utc)"
@@ -1238,8 +1433,11 @@ class Sequencer:
         the same transaction. Admission requires a bound, not-yet-frozen
         execution (DISPATCHED/RUNNING/FINISHED): everything a frozen
         candidate's receipt references must already be admitted (t-a05
-        precedes t-a06's join). Witness payload SEMANTICS are Chapter 3's;
-        this seam makes the admission lifecycle durable now.
+        precedes t-a06's join). Recognized payload facts gate identity
+        (C3-M2, D-C3-5): a witness whose facts NAME another execution is
+        refused here, cross-attempt injection dying at the seam, while
+        absent or unrecognized facts stay tolerated and the admitted
+        bytes remain exactly the producer's either way.
 
         Idempotent on identity: re-admitting the same (attempt, kind,
         producer, content) returns the existing entry and journals nothing —
@@ -1263,6 +1461,14 @@ class Sequencer:
                     "witness admission requires a bound, unfrozen execution"
                     " (DISPATCHED/RUNNING/FINISHED), found %s" % att["state"])
             call = self._attempt_call(cur, attempt_id)
+            facts = witness_semantics.extract_facts(witness_kind, data)
+            conflicts = witness_semantics.identity_conflicts(
+                witness_kind, facts, call["call_id"],
+                call["native_session_id"])
+            if conflicts:
+                raise ConflictError(
+                    "witness admission refused (cross-execution identity,"
+                    " D-C3-5): %s" % "; ".join(conflicts))
             address = self.store.put(data)
             existing = cur.execute(
                 "SELECT admission_id FROM attempt_witnesses WHERE attempt_id = ?"
@@ -1291,6 +1497,238 @@ class Sequencer:
                 recorded_utc=now, facts=facts))
             return {"admission_id": admission_id,
                     "content_address": address, "duplicate": False}
+
+    def admit_artifact(self, attempt_id, logical_path, data):
+        """The C3-M2 artifact-provenance seam (INV-03/INV-04/INV-22): one
+        PROVENANCE EVENT binding an admitted engineering artifact to
+        exactly ONE attempt by causal admission — the exact bytes go to
+        the CAS, and the row carries the LEDGER-derived execution
+        correlation (sequence, call, dispatched role), the
+        producer-declared logical path and the D-27 instant, journaled in
+        the same transaction. Ownership never derives from the
+        filesystem: no path is read here, no mtime exists in this plane,
+        and byte-identical artifacts from two attempts are two events.
+        Idempotent on (attempt, logical_path, content): re-admission
+        returns the existing event and journals nothing."""
+        if not (isinstance(logical_path, str) and logical_path
+                and logical_path == logical_path.strip()
+                and "\n" not in logical_path):
+            raise ConflictError(
+                "logical_path must be non-empty single-line text with no"
+                " surrounding whitespace")
+        data = bytes(data)
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            att = self._attempt(cur, attempt_id)
+            if att["state"] not in ("DISPATCHED", "RUNNING", "FINISHED"):
+                raise ConflictError(
+                    "artifact admission requires a bound, unfrozen"
+                    " execution (DISPATCHED/RUNNING/FINISHED), found %s"
+                    % att["state"])
+            call = self._attempt_call(cur, attempt_id)
+            address = self.store.put(data)
+            existing = cur.execute(
+                "SELECT admission_id FROM attempt_artifacts"
+                " WHERE attempt_id = ? AND logical_path = ?"
+                " AND content_sha256 = ?",
+                (attempt_id, logical_path, address)).fetchone()
+            if existing is not None:
+                return {"admission_id": existing["admission_id"],
+                        "content_address": address, "duplicate": True}
+            admission_id = mint_id("art")
+            cur.execute(
+                "INSERT INTO attempt_artifacts (admission_id, attempt_id,"
+                " sequence_id, call_id, role, logical_path,"
+                " content_sha256, admitted_utc)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (admission_id, attempt_id, att["sequence_id"],
+                 call["call_id"], call["role"], logical_path, address,
+                 now))
+            journal.append(cur, journal.transition_record(
+                machine="attempt_artifact", subject_id=admission_id,
+                rule="ch3:admit-artifact", to_state="ADMITTED",
+                recorded_utc=now,
+                facts={"attempt_id": attempt_id,
+                       "sequence_id": att["sequence_id"],
+                       "call_id": call["call_id"], "role": call["role"],
+                       "logical_path": logical_path,
+                       "content_sha256": address}))
+            return {"admission_id": admission_id,
+                    "content_address": address, "duplicate": False}
+
+    def evidence_state(self, attempt_id):
+        """The collector's public read surface (D-63, cap-30): one frozen
+        attempt's identity, dispatched role, frozen record payload,
+        admitted witness entries (insertion order), admitted artifact
+        provenance events, the bound native session and the D-C3-1
+        anchor.
+
+        Collection is defined at CANDIDATE_FROZEN only: the witness set is
+        immutable from the freeze onward (admit_witness refuses frozen
+        attempts), and the attempt row's updated_utc IS the t-a05 instant
+        while the state holds — the only transition into CANDIDATE_FROZEN,
+        with no later mutation of the row until the state changes.
+
+        The rows carry admitted_utc for the collector's index-state
+        DIAGNOSTIC only (INV-30, D-C3-7); the receipt derivation projects
+        each entry to its identity triple, so the instant never enters
+        the obj-15 bytes."""
+        cur = self.db.conn.cursor()
+        att = self._attempt(cur, attempt_id)
+        if att["state"] != "CANDIDATE_FROZEN":
+            raise ConflictError(
+                "evidence collection is defined at CANDIDATE_FROZEN only,"
+                " found %s" % att["state"])
+        call = self._attempt_call(cur, attempt_id)
+        seq = self._sequence(cur, att["sequence_id"])
+        payload = self._verified_record(cur, seq["record_hash"])
+        rows = cur.execute(
+            "SELECT witness_kind, producer, content_sha256, admitted_utc"
+            " FROM attempt_witnesses WHERE attempt_id = ? ORDER BY rowid",
+            (attempt_id,)).fetchall()
+        artifact_rows = cur.execute(
+            "SELECT logical_path, content_sha256, role, admitted_utc"
+            " FROM attempt_artifacts WHERE attempt_id = ? ORDER BY rowid",
+            (attempt_id,)).fetchall()
+        return {"attempt_id": att["attempt_id"],
+                "sequence_id": att["sequence_id"],
+                "fence": att["fence"],
+                "attempt_contract_hash": att["attempt_contract_hash"],
+                "role": call["role"],
+                "call_id": call["call_id"],
+                "native_session_id": call["native_session_id"],
+                "record_payload": payload,
+                "witnesses": [dict(row) for row in rows],
+                "artifacts": [dict(row) for row in artifact_rows],
+                "anchor_utc": att["updated_utc"]}
+
+    def admit_execution_receipt(self, attempt_id, data):
+        """The C3-M1 receipt-admission seam (cap-30; D-C3-2).
+
+        Admits the collector-minted obj-15 bytes for a CANDIDATE_FROZEN
+        attempt: the bytes must BE their own canonical form, validate
+        against the mirrored obj-15 schema (which pins kind, minter and
+        shape), bind this exact attempt (INV-68/INV-69) and its ledger
+        call correlation — and the ENTIRE payload must re-derive
+        byte-identically from durable ledger facts (the frozen record's
+        evidence_requirements, the dispatched role, the attempt_witnesses
+        rows, the non-raising D-66 probe, the D-C3-1 anchor) given the
+        receipt's one collector parameter, the declared window. Authority
+        is derived, never declared: forging any field changes the bytes
+        and the admission refuses.
+
+        Idempotent on content identity — re-admitting the same bytes
+        returns the existing row and journals nothing; changed facts mint
+        a NEW row (obj-15's append-only mutability), latest by rowid."""
+        data = bytes(data)
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            att = self._attempt(cur, attempt_id)
+            if att["state"] != "CANDIDATE_FROZEN":
+                raise ConflictError(
+                    "receipt admission requires CANDIDATE_FROZEN, found %s"
+                    % att["state"])
+            try:
+                payload = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                raise ConflictError(
+                    "receipt bytes are not UTF-8 JSON (obj-15)")
+            if not isinstance(payload, dict) \
+                    or receipts.receipt_bytes(payload) != data:
+                raise ConflictError(
+                    "receipt bytes are not their own canonical form: the"
+                    " admitted address must be the payload's identity")
+            issues = receipts.validate_receipt(payload)
+            if issues:
+                raise ConflictError(
+                    "receipt failed obj-15 schema validation: %s"
+                    % "; ".join(repr(issue) for issue in issues))
+            if payload["attempt_id"] != att["attempt_id"]:
+                raise ConflictError(
+                    "receipt attempt_id %r does not bind to attempt %s"
+                    " (INV-69)" % (payload["attempt_id"], att["attempt_id"]))
+            if payload["attempt_contract_hash"] != \
+                    att["attempt_contract_hash"]:
+                raise ConflictError(
+                    "receipt attempt_contract_hash must match the durable"
+                    " contract (INV-68)")
+            call = self._attempt_call(cur, attempt_id)
+            if payload["call_id"] != call["call_id"]:
+                raise ConflictError(
+                    "receipt call_id %r is not the ledger's bound call %s"
+                    " (D-21 correlation)"
+                    % (payload["call_id"], call["call_id"]))
+            window = payload["derivation"]["window_seconds"]
+            seq = self._sequence(cur, att["sequence_id"])
+            record = self._verified_record(cur, seq["record_hash"])
+            rows = cur.execute(
+                "SELECT witness_kind, producer, content_sha256"
+                " FROM attempt_witnesses WHERE attempt_id = ?"
+                " ORDER BY rowid", (attempt_id,)).fetchall()
+            artifact_rows = cur.execute(
+                "SELECT logical_path, content_sha256, role"
+                " FROM attempt_artifacts WHERE attempt_id = ?"
+                " ORDER BY rowid", (attempt_id,)).fetchall()
+            state = {"record_payload": record, "role": call["role"],
+                     "attempt_id": att["attempt_id"],
+                     "attempt_contract_hash":
+                         att["attempt_contract_hash"],
+                     "call_id": call["call_id"],
+                     "native_session_id": call["native_session_id"],
+                     "witnesses": [dict(row) for row in rows],
+                     "artifacts": [dict(row) for row in artifact_rows],
+                     "anchor_utc": att["updated_utc"]}
+            expected = receipts.derive_evidence(self.store, state, window)
+            if receipts.receipt_bytes(expected) != data:
+                raise ConflictError(
+                    "receipt diverges from the ledger derivation (D-C3-2:"
+                    " authority is derived, never declared) — the ledger"
+                    " derives %s over %d admitted entries, anchor %s"
+                    % (expected["completeness"], len(state["witnesses"]),
+                       att["updated_utc"]))
+            address = self.store.put(data)
+            existing = cur.execute(
+                "SELECT admission_id, completeness, evidence_complete_by_utc"
+                " FROM attempt_receipts WHERE attempt_id = ?"
+                " AND content_sha256 = ?",
+                (attempt_id, address)).fetchone()
+            if existing is not None:
+                return {"admission_id": existing["admission_id"],
+                        "content_address": address,
+                        "completeness": existing["completeness"],
+                        "evidence_complete_by_utc":
+                            existing["evidence_complete_by_utc"],
+                        "duplicate": True}
+            admission_id = mint_id("rcp")
+            cur.execute(
+                "INSERT INTO attempt_receipts (admission_id, attempt_id,"
+                " content_sha256, completeness, evidence_complete_by_utc,"
+                " minter, call_id, admitted_utc)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (admission_id, attempt_id, address,
+                 expected["completeness"],
+                 expected["evidence_complete_by_utc"],
+                 receipts.RECEIPT_MINTER, call["call_id"], now))
+            journal.append(cur, journal.transition_record(
+                machine="attempt_receipt", subject_id=admission_id,
+                rule="ch3:admit-execution-receipt", to_state="ADMITTED",
+                recorded_utc=now,
+                facts={"attempt_id": attempt_id,
+                       "sequence_id": att["sequence_id"],
+                       "content_sha256": address,
+                       "completeness": expected["completeness"],
+                       "evidence_complete_by_utc":
+                           expected["evidence_complete_by_utc"],
+                       "minter": receipts.RECEIPT_MINTER,
+                       "call_id": call["call_id"]}))
+            return {"admission_id": admission_id,
+                    "content_address": address,
+                    "completeness": expected["completeness"],
+                    "evidence_complete_by_utc":
+                        expected["evidence_complete_by_utc"],
+                    "duplicate": False}
 
     def finish_attempt(self, attempt_id, role, outcome, witness_address):
         """RUNNING→FINISHED (t-a04, completion_policy_satisfied_per_role) or
@@ -1382,8 +1820,9 @@ class Sequencer:
         ``attempt_witnesses`` row admitted FOR THIS ATTEMPT (by
         witness_kind + producer + content_sha256). Receipt entries are a
         subset of the admitted rows — a receipt cannot introduce evidence
-        the admission seam never saw. Completeness CLASSIFICATION stays
-        Chapter 3's (the t-a13 seam)."""
+        the admission seam never saw. Since C3-M1 the completeness
+        CLASSIFICATION half is enforced too: the presented receipt must be
+        ADMITTED (cap-30) with the derived classification COMPLETE."""
         now = instant(self.clock.now())
         with self.db.transaction() as cur:
             self._assert_lease(cur)
@@ -1399,6 +1838,20 @@ class Sequencer:
                     % att["state"])
             receipt = self._resolve_receipt(
                 cur, execution_receipt_address, att)
+            # The classification half of execution_receipt_complete
+            # (t-a06/t-s09; C3-M1), checked FIRST: the presented receipt
+            # must be ADMITTED and its DERIVED classification COMPLETE —
+            # an INTEGRITY_FAILED receipt refuses here by its registered
+            # classification, before any byte probing could only
+            # backstop-HALT. The join below stays — defense in depth over
+            # the same admitted rows.
+            admitted = self._admitted_classification(
+                cur, att, execution_receipt_address)
+            if admitted["completeness"] != "COMPLETE":
+                raise ConflictError(
+                    "execution_receipt_complete requires the admitted"
+                    " COMPLETE classification; the admitted receipt is %s"
+                    % admitted["completeness"])
             witnesses = receipt.get("admitted_witnesses")
             if not (isinstance(witnesses, list) and witnesses):
                 raise ConflictError(
@@ -1437,15 +1890,12 @@ class Sequencer:
                 machine="attempt", subject_id=attempt_id, rule="t-a06",
                 from_state="CANDIDATE_FROZEN", to_state="EVIDENCE_COMPLETE",
                 recorded_utc=now, facts=facts))
-            # t-s09 (M4): the Sequence enters VERIFYING with the same
-            # evidence. The join half of execution_receipt_complete is
-            # Chapter 2's authority — the t-a06 real join passed (every
-            # witness the receipt names is admitted for this attempt and
-            # resolvable), independently validated admission facts. The
-            # COMPLETENESS-CLASSIFICATION half is PARTIAL with Chapter 3
-            # (the t-a13/t-s45 seam): the receipt's declared completeness
-            # field is never read here, in either direction — acting on it
-            # would be trusting receipt self-assertion.
+            # t-s09 (M4, completed by C3-M1): the Sequence enters VERIFYING
+            # with the same evidence, and execution_receipt_complete is now
+            # WHOLE — the join half (the t-a06 real join above, Chapter 2)
+            # plus the classification half (the admitted COMPLETE
+            # classification checked above). The receipt's DECLARED fields
+            # are still never read here: only the admitted row speaks.
             if seq["state"] != "CANDIDATE_FROZEN":
                 raise ConflictError(
                     "t-s09 expects the sequence CANDIDATE_FROZEN, found %s"
@@ -1477,45 +1927,47 @@ class Sequencer:
                 from_state="DISPATCHED", to_state="FAILED",
                 recorded_utc=now, facts=facts))
 
-    def _admitted_classification(self, cur, att, receipt):
-        """The t-a13 authority seam (operator correction, 2026-11-10).
+    def _admitted_classification(self, cur, att, execution_receipt_address):
+        """The receipt authority seam — LIVE since C3-M1 (it failed closed
+        from the 2026-11-10 operator correction until the admission
+        mechanism landed).
 
-        The registered condition —
-        ``execution_receipt_integrity_failed_or_incomplete_beyond_bound`` —
-        needs facts no receipt can self-assert: an INTEGRITY_FAILED
-        classification established by the authorized receipt-admission
-        mechanism, and an INCOMPLETE completion bound derived from an
-        authoritative policy/window or validated admission record (D-28
-        over D-21 admission facts). Both are Chapter 3 inputs that do not
-        exist yet, so this seam FAILS CLOSED: an identity-bound receipt
-        (INV-68/INV-69, enforced by ``_resolve_receipt``) still carries no
-        classification authority, and t-a13 stays explicitly PARTIAL.
-        When the M3 admission seam lands, this method instead returns the
-        admitted facts ``{"completeness": ..., "evidence_complete_by_utc":
-        ...}`` and the arms in ``fail_candidate`` become live."""
-        raise ConflictError(
-            "t-a13 receipt-classification authority is PARTIAL:"
-            " Chapter 3's receipt-admission mechanism must"
-            " establish the completeness and deadline fields as"
-            " authoritative before this transition can proceed"
-            " (failing closed)")
+        Receipt-DECLARED fields still carry no authority: the facts
+        returned here come from the ``attempt_receipts`` row the admission
+        seam created after re-deriving the payload byte-identically from
+        the ledger (D-C3-2), keyed by the presented receipt's exact
+        content address. Presenting bytes that were never admitted grants
+        nothing (cap-30)."""
+        row = cur.execute(
+            "SELECT completeness, evidence_complete_by_utc"
+            " FROM attempt_receipts WHERE attempt_id = ?"
+            " AND content_sha256 = ?",
+            (att["attempt_id"], execution_receipt_address)).fetchone()
+        if row is None:
+            raise ConflictError(
+                "the presented receipt is not admitted for this attempt:"
+                " only the collector's admitted classification carries"
+                " authority (cap-30, D-C3-2)")
+        return {"completeness": row["completeness"],
+                "evidence_complete_by_utc":
+                    row["evidence_complete_by_utc"]}
 
     def fail_candidate(self, attempt_id, expected_fence,
                        execution_receipt_address, reason):
-        """t-a13 CANDIDATE_FROZEN→FAILED — currently FAIL-CLOSED (PARTIAL).
+        """t-a13 CANDIDATE_FROZEN→FAILED, with t-s45 beside it — LIVE
+        (C3-M1 closed the fail-closed seam).
 
-        Live and enforced, in order: the caller's lease, the registered
+        Enforced, in order: the caller's lease, the registered
         ``fence_matches`` (presented fence plus attempt↔sequence agreement,
         with the correlated equality in the mutating SQL, as on
-        t-a05/t-a06), the CANDIDATE_FROZEN state, and the receipt's
-        identity binding (INV-68/INV-69: kind, attempt_id,
-        attempt_contract_hash). The transition then stops at the
-        ``_admitted_classification`` authority seam: receipt-DECLARED
-        completeness and deadlines carry no authority, so no candidate can
-        fail by t-a13 until Chapter 3's receipt admission supplies the
-        inputs. The arms below execute on the seam's admitted facts only:
+        t-a05/t-a06), the CANDIDATE_FROZEN state, the receipt's identity
+        binding (INV-68/INV-69: kind, attempt_id, attempt_contract_hash),
+        and the ``_admitted_classification`` authority seam: the presented
+        receipt must be ADMITTED, and the arms execute on the ADMITTED
+        facts only — the registered
+        ``execution_receipt_integrity_failed_or_incomplete_beyond_bound``:
         INTEGRITY_FAILED fails at once; INCOMPLETE fails only once its
-        derived bound has elapsed, never prematurely."""
+        derived D-C3-1 bound has elapsed, never prematurely."""
         now = instant(self.clock.now())
         with self.db.transaction() as cur:
             self._assert_lease(cur)
@@ -1529,9 +1981,9 @@ class Sequencer:
                 raise ConflictError(
                     "fail_candidate expects CANDIDATE_FROZEN, found %s"
                     % att["state"])
-            receipt = self._resolve_receipt(
-                cur, execution_receipt_address, att)
-            admitted = self._admitted_classification(cur, att, receipt)
+            self._resolve_receipt(cur, execution_receipt_address, att)
+            admitted = self._admitted_classification(
+                cur, att, execution_receipt_address)
             completeness = admitted.get("completeness")
             if completeness == "INTEGRITY_FAILED":
                 bound_fact = None

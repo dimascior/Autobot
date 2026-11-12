@@ -72,23 +72,37 @@ class ExecutionTestCase(unittest.TestCase):
         return self.rt.store.put(
             json.dumps(payload, sort_keys=True).encode("utf-8"))
 
-    def _run_and_finish(self, outcome="success"):
+    def _run_and_finish(self, outcome="success", governance=True):
         """dispatch → admit the lifecycle witness → t-a03 → admit the
-        transcript witness → t-a04/t-a11 per the role policy."""
+        governance and transcript witnesses → t-a04/t-a11 per the role
+        policy. ``governance=False`` leaves the record-required obj-12
+        unadmitted — the INCOMPLETE arm's setup."""
         self._dispatch()
-        start = self._admit("obj-11", "autoswarm", WITNESS_START)
+        start = self._admit("obj-11", "autoswarm",
+                            support.session_record_bytes(self.call_id))
         self.entry_start = self._entry(start, "obj-11", "autoswarm")
         self.seq.attempt_running(self.attempt_id, "native-sess-9",
                                  start["content_address"])
+        if governance:
+            self._admit("obj-12", "helios", b"governance log\n")
         end = self._admit("obj-13", "agent_clis", WITNESS_END)
         self.entry_end = self._entry(end, "obj-13", "agent_clis")
         return self.seq.finish_attempt(self.attempt_id, "builder", outcome,
                                        end["content_address"])
 
-    def _to_candidate_frozen(self):
-        self._run_and_finish()
+    def _to_candidate_frozen(self, governance=True):
+        self._run_and_finish(governance=governance)
         self.seq.freeze_candidate(self.attempt_id, self.fence,
                                   self.rt.store.put(CANDIDATE))
+
+    def _collect(self, window_seconds=None):
+        """Derive-and-admit the obj-15 through the registered Collector."""
+        kwargs = {}
+        if window_seconds is not None:
+            kwargs["evidence_window_seconds"] = window_seconds
+        from autobot import Collector
+        return Collector(self.seq, self.rt.store,
+                         **kwargs).collect_and_admit(self.attempt_id)
 
     def _attempt_state(self):
         return self.rt.db.conn.execute(
@@ -121,7 +135,8 @@ class DispatchTests(ExecutionTestCase):
         self.assertEqual(call["call_id"], self.call_id)
         self.assertRegex(call["call_id"], r"^call_[0-9a-f]{32}$")  # D-22
         self.assertIsNone(call["native_session_id"])
-        start = self._admit("obj-11", "autoswarm", WITNESS_START)
+        start = self._admit("obj-11", "autoswarm",
+                            support.session_record_bytes(self.call_id))
         self.entry_start = self._entry(start, "obj-11", "autoswarm")
         self.seq.attempt_running(self.attempt_id, "native-sess-9",
                                  start["content_address"])
@@ -129,6 +144,7 @@ class DispatchTests(ExecutionTestCase):
             "SELECT native_session_id FROM attempt_calls WHERE attempt_id = ?",
             (self.attempt_id,)).fetchone()
         self.assertEqual(call["native_session_id"], "native-sess-9")
+        self._admit("obj-12", "helios", b"governance log\n")
         end = self._admit("obj-13", "agent_clis", WITNESS_END)
         self.entry_end = self._entry(end, "obj-13", "agent_clis")
         self.assertEqual(
@@ -136,15 +152,17 @@ class DispatchTests(ExecutionTestCase):
                                     end["content_address"]), "FINISHED")
         candidate = self.rt.store.put(CANDIDATE)
         self.seq.freeze_candidate(self.attempt_id, self.fence, candidate)
+        outcome = self._collect()
+        self.assertEqual(outcome["completeness"], "COMPLETE")
         self.seq.complete_evidence(self.attempt_id, self.fence,
-                                   self._receipt())
+                                   outcome["receipt_address"])
         state = self.rt.db.conn.execute(
             "SELECT state FROM attempts WHERE attempt_id = ?",
             (self.attempt_id,)).fetchone()["state"]
         self.assertEqual(state, "EVIDENCE_COMPLETE")
         rules = self._rules()
         for rule in ("t-a02", "t-a03", "t-a04", "t-a05", "t-a06",
-                     "ch2:admit-witness"):
+                     "ch2:admit-witness", "ch3:admit-execution-receipt"):
             self.assertIn(rule, rules)
         self.assertEqual(self.seq.recover()["intents_in_doubt"], [])
 
@@ -210,23 +228,46 @@ class DispatchTests(ExecutionTestCase):
                 self._receipt(witnesses=[
                     {"witness_kind": "obj-11", "producer": "autoswarm",
                      "content_sha256": "sha256:" + "0" * 64}]))
-        self.seq.complete_evidence(self.attempt_id, self.fence, self._receipt())
-
-    def test_integrity_failed_candidate_is_partial(self):
-        """t-a13 is PARTIAL until Chapter 3's receipt-admission authority
-        establishes the completeness classification. Even a correctly
-        bound INTEGRITY_FAILED receipt is refused at the authority
-        boundary; the attempt state and journal are unchanged."""
-        self._to_candidate_frozen()
-        before = self._journal_count()
         with self.assertRaises(ConflictError) as ctx:
-            self.seq.fail_candidate(
-                self.attempt_id, self.fence,
-                self._receipt(completeness="INTEGRITY_FAILED"),
-                reason="witness hash mismatch")
-        self.assertIn("PARTIAL", str(ctx.exception))
-        self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
-        self.assertEqual(self._journal_count(), before)
+            # a hand-built COMPLETE receipt joining real admitted rows is
+            # still refused: it was never ADMITTED (cap-30, D-C3-2)
+            self.seq.complete_evidence(self.attempt_id, self.fence,
+                                       self._receipt())
+        self.assertIn("not admitted", str(ctx.exception))
+        self.seq.complete_evidence(self.attempt_id, self.fence,
+                                   self._collect()["receipt_address"])
+
+    def test_ch3_integrity_failure_blocks(self):
+        """INV-23's registered chapter-3 test (CH3-integrity-failure-blocks),
+        live since C3-M1: admitted evidence whose bytes are lost classifies
+        the receipt INTEGRITY_FAILED (the non-raising D-66 probe, D-C3-3);
+        t-a13 fails the candidate at once and t-s45 HALTs the sequence
+        beside it, durably blocking acceptance before verification — and
+        the next recover() independently halts at the D-66 witness
+        re-hash, the deliberate interplay D-C3-3 records."""
+        self._to_candidate_frozen()
+        # lose the transcript's bytes after admission
+        path = self.rt.store._path_for(self.entry_end["content_sha256"])
+        Path(str(path)).unlink()
+        outcome = self._collect()
+        self.assertEqual(outcome["completeness"], "INTEGRITY_FAILED")
+        with self.assertRaises(ConflictError):
+            # INTEGRITY_FAILED can never complete the evidence
+            self.seq.complete_evidence(self.attempt_id, self.fence,
+                                       outcome["receipt_address"])
+        self.seq.fail_candidate(
+            self.attempt_id, self.fence, outcome["receipt_address"],
+            reason="witness bytes lost")
+        self.assertEqual(self._attempt_state(), "FAILED")
+        seq_state = self.rt.db.conn.execute(
+            "SELECT state FROM sequences WHERE sequence_id = ?",
+            (self.sequence_id,)).fetchone()["state"]
+        self.assertEqual(seq_state, "HALTED")
+        rules = self._rules()
+        self.assertIn("t-a13", rules)
+        self.assertIn("t-s45", rules)
+        with self.assertRaises(IntegrityHalt):
+            self.seq.recover()  # D-66: the lost bytes halt recovery too
 
     def test_t_a13_stale_fence_changes_nothing(self):
         """Registered fence_matches on t-a13 (operator-identified
@@ -242,23 +283,38 @@ class DispatchTests(ExecutionTestCase):
         self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
         self.assertEqual(self._journal_count(), before)
 
-    def test_t_a13_incomplete_is_partial(self):
-        """t-a13 is PARTIAL: an INCOMPLETE receipt with a correctly bound
-        attempt and an elapsed deadline is still refused at the authority
-        boundary, because the deadline's derivation from D-28 policy
-        requires Chapter 3's receipt-admission authority."""
-        self._to_candidate_frozen()
+    def test_t_a13_incomplete_fails_only_beyond_bound(self):
+        """The INCOMPLETE arm, live since C3-M1: a required evidence kind
+        (obj-12, COMMAND_GOVERNANCE) never admitted classifies the receipt
+        INCOMPLETE with the derived D-C3-1 bound (freeze + window); inside
+        the window t-a13 refuses as premature and nothing changes; once
+        the bound elapses the SAME admitted receipt fails the candidate
+        and t-s45 halts the sequence."""
+        self._to_candidate_frozen(governance=False)
+        outcome = self._collect()
+        self.assertEqual(outcome["completeness"], "INCOMPLETE")
+        with self.assertRaises(ConflictError):
+            # the classification half of t-s09 refuses completion too
+            self.seq.complete_evidence(self.attempt_id, self.fence,
+                                       outcome["receipt_address"])
         before = self._journal_count()
-        past = "2026-11-09T11:00:00.000Z"
-        self.rt.clock.advance(3601)
         with self.assertRaises(ConflictError) as ctx:
             self.seq.fail_candidate(
-                self.attempt_id, self.fence,
-                self._receipt(completeness="INCOMPLETE", bound=past),
-                reason="evidence never completed")
-        self.assertIn("PARTIAL", str(ctx.exception))
+                self.attempt_id, self.fence, outcome["receipt_address"],
+                reason="too eager")
+        self.assertIn("premature", str(ctx.exception))
         self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
         self.assertEqual(self._journal_count(), before)
+        self.rt.clock.advance(3601)  # past freeze + 3600s (D-C3-1 default)
+        self.seq.fail_candidate(
+            self.attempt_id, self.fence, outcome["receipt_address"],
+            reason="evidence never completed")
+        self.assertEqual(self._attempt_state(), "FAILED")
+        rules = self._rules()
+        self.assertIn("t-a13", rules)
+        self.assertIn("t-s45", rules)
+        report = self.seq.recover()
+        self.assertEqual(report["intents_in_doubt"], [])
 
     def test_terminal_sequence_grants_no_intent_authority(self):
         """Closure-pass review correction: a forged terminal Sequence must
@@ -332,8 +388,8 @@ class DispatchTests(ExecutionTestCase):
 
     def test_t_a13_forged_past_deadline_wrong_binding(self):
         """Adversarial: a forged past deadline on an INCOMPLETE receipt
-        whose attempt_id is wrong is caught by the binding check before
-        the authority boundary is reached."""
+        whose attempt_id is wrong is caught by the binding check (INV-69)
+        before the admitted-classification seam is even consulted."""
         self._to_candidate_frozen()
         before = self._journal_count()
         past = "2026-11-09T11:00:00.000Z"
@@ -343,15 +399,37 @@ class DispatchTests(ExecutionTestCase):
                 self._receipt(completeness="INCOMPLETE", bound=past,
                               attempt_id="at_forged"),
                 reason="forged deadline + binding")
-        self.assertNotIn("PARTIAL", str(ctx.exception))
+        self.assertIn("INV-69", str(ctx.exception))
+        self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
+        self.assertEqual(self._journal_count(), before)
+
+    def test_declared_facts_carry_no_authority(self):
+        """Adversarial (D-C3-2): well-formed hand-built receipts that were
+        never ADMITTED grant nothing — an INCOMPLETE one with an elapsed
+        bound cannot fail the candidate, and a COMPLETE one cannot
+        complete the evidence; state and journal stay unchanged."""
+        self._to_candidate_frozen()
+        before = self._journal_count()
+        past = "2026-11-09T11:00:00.000Z"
+        self.rt.clock.advance(7200)
+        with self.assertRaises(ConflictError) as ctx:
+            self.seq.fail_candidate(
+                self.attempt_id, self.fence,
+                self._receipt(completeness="INCOMPLETE", bound=past),
+                reason="declared, never admitted")
+        self.assertIn("not admitted", str(ctx.exception))
+        with self.assertRaises(ConflictError) as ctx:
+            self.seq.complete_evidence(self.attempt_id, self.fence,
+                                       self._receipt())
+        self.assertIn("not admitted", str(ctx.exception))
         self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
         self.assertEqual(self._journal_count(), before)
 
     def test_t_a13_correct_binding_forged_classification(self):
         """Adversarial: a receipt with correct attempt binding and
         contract hash but a self-asserted INTEGRITY_FAILED classification
-        is stopped at the authority boundary — the classification is not
-        treated as authoritative without Chapter 3's receipt-admission."""
+        is stopped at the authority boundary — it was never ADMITTED, and
+        declared classifications carry no authority (cap-30, D-C3-2)."""
         self._to_candidate_frozen()
         before = self._journal_count()
         with self.assertRaises(ConflictError) as ctx:
@@ -359,14 +437,15 @@ class DispatchTests(ExecutionTestCase):
                 self.attempt_id, self.fence,
                 self._receipt(completeness="INTEGRITY_FAILED"),
                 reason="forged classification")
-        self.assertIn("PARTIAL", str(ctx.exception))
+        self.assertIn("not admitted", str(ctx.exception))
         self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
         self.assertEqual(self._journal_count(), before)
 
     def test_t_a13_correct_binding_forged_deadline(self):
         """Adversarial: a receipt with correct binding and a fabricated
-        past deadline is stopped at the authority boundary — not at the
-        deadline comparison, which it would otherwise pass."""
+        past deadline is stopped at the authority boundary (never
+        admitted) — not at the deadline comparison, which it would
+        otherwise pass."""
         self._to_candidate_frozen()
         before = self._journal_count()
         past = "2026-11-09T11:00:00.000Z"
@@ -376,7 +455,7 @@ class DispatchTests(ExecutionTestCase):
                 self.attempt_id, self.fence,
                 self._receipt(completeness="INCOMPLETE", bound=past),
                 reason="forged deadline, correct binding")
-        self.assertIn("PARTIAL", str(ctx.exception))
+        self.assertIn("not admitted", str(ctx.exception))
         self.assertEqual(self._attempt_state(), "CANDIDATE_FROZEN")
         self.assertEqual(self._journal_count(), before)
 

@@ -18,7 +18,14 @@ _SRC = str(REPO / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from autobot import Database, ManualClock, Registry, Sequencer, Store  # noqa: E402
+from autobot import (  # noqa: E402
+    Collector,
+    Database,
+    ManualClock,
+    Registry,
+    Sequencer,
+    Store,
+)
 from contract_library import content_address  # noqa: E402
 
 CH1 = REPO / "docs" / "architecture" / "chapter1"
@@ -101,7 +108,9 @@ def admitted_runtime(data_dir, clock=None, holder="test-instance"):
 
 def local_record_payload(task_contract_id=None, predecessors=None,
                          finalization_class=None,
-                         finalization_requirements=None, objective=None):
+                         finalization_requirements=None, objective=None,
+                         completion_policies=None,
+                         evidence_requirements=None):
     """The M5/M6 SL-path contract family: V-A re-targeted to the LOCAL
     authority declaration (SOURCE_MODIFYING + authority_location LOCAL,
     finalization requirement LOCAL_CANONICAL_COMMIT by default). The
@@ -128,6 +137,10 @@ def local_record_payload(task_contract_id=None, predecessors=None,
         payload["objective"] = objective
     if predecessors is not None:
         payload["predecessors"] = predecessors
+    if completion_policies is not None:
+        payload["completion_policies"] = completion_policies
+    if evidence_requirements is not None:
+        payload["evidence_requirements"] = evidence_requirements
     if finalization_class is not None:
         payload["finalization_class"] = finalization_class
     if payload["finalization_class"] == "READ_ONLY":
@@ -171,6 +184,28 @@ def intelligence_environment():
         defaults=defaults)
 
 
+def session_record_bytes(call_id, native_session_id="native-sess-9",
+                         controller_id=None, **extra):
+    """Producer-shaped obj-11 bytes (the provider task/handle record
+    family): recognized facts join the witness to the bound call."""
+    import json as _json
+    payload = {"call_id": call_id,
+               "native_session_id": native_session_id,
+               "controller_id": controller_id or ("main_" + "0" * 32)}
+    payload.update(extra)
+    return _json.dumps(payload, sort_keys=True).encode("utf-8")
+
+
+def collect_receipt(rt, attempt_id, window_seconds=None):
+    """Derive-and-admit the frozen attempt's obj-15 through the registered
+    Collector seat (cap-30); returns the admitted receipt's address."""
+    kwargs = {}
+    if window_seconds is not None:
+        kwargs["evidence_window_seconds"] = window_seconds
+    collector = Collector(rt.sequencer, rt.store, **kwargs)
+    return collector.collect_and_admit(attempt_id)["receipt_address"]
+
+
 def drive_to_verified(rt, admitted_result, role="builder"):
     """Drive one admitted sequence through the full M2–M4 lifecycle to
     sequence VERIFIED / attempt VERIFIED (shared by the finalization tests
@@ -187,27 +222,24 @@ def drive_to_verified(rt, admitted_result, role="builder"):
     attempt_id, fence = info["attempt_id"], info["fence"]
     seq.reserve_attempt(attempt_id, expected_fence=fence)
     projection = rt.store.put(b"projection bytes for finalization\n")
-    seq.dispatch_attempt(attempt_id, role, "fake", projection)
+    dispatched = seq.dispatch_attempt(attempt_id, role, "fake", projection)
+    # The provider's own session record (C3-M2): recognized facts join it
+    # to the Sequencer-minted call — the causal chain's first link.
     start = seq.admit_witness(attempt_id, "obj-11", "autoswarm",
-                              b"provider session record\n")
+                              session_record_bytes(dispatched["call_id"]))
     seq.attempt_running(attempt_id, "native-sess-9",
                         start["content_address"])
+    seq.admit_witness(attempt_id, "obj-12", "helios",
+                      b"command governance log\n")
     end = seq.admit_witness(attempt_id, "obj-13", "agent_clis",
                             b"transcript\n")
     seq.finish_attempt(attempt_id, role, "success", end["content_address"])
     seq.freeze_candidate(attempt_id, fence,
                          rt.store.put(b"candidate tree stand-in\n"))
-    receipt = rt.store.put(_json.dumps(
-        {"schema_version": "v1", "kind": "ExecutionReceipt",
-         "attempt_id": attempt_id,
-         "attempt_contract_hash": info["attempt_contract_hash"],
-         "completeness": "COMPLETE",
-         "admitted_witnesses": [
-             {"witness_kind": "obj-11", "producer": "autoswarm",
-              "content_sha256": start["content_address"]},
-             {"witness_kind": "obj-13", "producer": "agent_clis",
-              "content_sha256": end["content_address"]},
-         ]}, sort_keys=True).encode("utf-8"))
+    # The registered Collector derives COMPLETE from the frozen record's
+    # evidence_requirements (COMMAND_GOVERNANCE + EXECUTION_LIFECYCLE)
+    # over the admitted rows, mints obj-15 and admits it (C3-M1).
+    receipt = collect_receipt(rt, attempt_id)
     seq.complete_evidence(attempt_id, fence, receipt)
     environment = _json.dumps(
         {"schema_version": "v1", "kind": "ActualVerificationEnvironment",
