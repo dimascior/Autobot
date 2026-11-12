@@ -109,8 +109,13 @@ bytes (D-31 content address), referenced from the journal entry.
   `journal.py` (obj-36 hash chain), `registry.py` (actor `registry`:
   object admission, SEM-19, t-c01..t-c07 over P-1/P-2), `sequencer.py`
   (actor `sequencer`: instance lease, sequence/attempt transitions,
-  permit arithmetic, recovery), `schemas/` (byte mirror of the six v1
-  schemas).
+  permit arithmetic, witness admission, verification, recovery),
+  `effects.py`, `principals.py` and `witnesses.py` (registry-pinned
+  vocabularies), `projection.py` (obj-10 minimal form), `project_state.py`
+  (the read-only view), `transport.py` (the transport contract +
+  `reconcile_dispatched`), `verification.py` (the typed verifier-runner
+  interface + SEM-16/D-52/obj-18 evaluation), `schemas/` (byte mirror of
+  the six v1 schemas).
 - `src/contract_library/` — byte-identical mirror of
   `docs/architecture/chapter1/contract_library/` (D-65).
 - `tests/autobot/` — the CH2-* runtime tests named by Chapter 0's
@@ -129,7 +134,9 @@ TransitionRecord payloads carry `rule`: a Chapter 0 transition id (`t-…`)
 when a registered machine transition happened, or a `ch2:`-prefixed rule for
 authority primitives the full protocol later subsumes into their owning
 transitions (`ch2:admit-object`, `ch2:instance-lease`, `ch2:lease-renew`,
-`ch2:grant-permit`, `ch2:reserve-use`, `ch2:renew-reservation`). The journal
+`ch2:grant-permit`, `ch2:reserve-use`, `ch2:renew-reservation`,
+`ch2:mint-intent`, `ch2:admit-witness`, `ch2:register-verification`,
+`ch2:attest-assertion`). The journal
 records exactly what happened; no entry ever claims a protocol transition
 that did not occur. The chain construction is JH-1 (`journal_entry_hash`,
 genesis omits `previous`).
@@ -176,6 +183,263 @@ the `dispatched` crash stage. Proof of record: autobot 82/82 on CPython
 20261110-ch2m2-001..010). [M3_SPEC.md](M3_SPEC.md) is the executable
 vertical-slice specification for the first contract-authorized specialist
 execution.
+
+## Milestone 3 — the first contract-authorized specialist execution (2026-11-10)
+
+The [M3_SPEC.md](M3_SPEC.md) vertical slice, implemented against the
+deterministic fake transport (the operator's first acceptance gate; the
+bounded real-provider test follows it):
+
+- **call_id ownership reconciled** (operator's review point): the Sequencer
+  mints the call identity inside the t-a02 transaction — the `call_id` and
+  its `attempt_calls` row are durably committed BEFORE any external launch,
+  and no caller can supply or reuse one. `dispatch_attempt` returns the
+  minted id, the provider-side idempotency key.
+- **Schema v4** (D-70, additive): `attempt_witnesses` — one row per D-21
+  structured admission entry (`witness_kind` = a registered WitnessRecord
+  object id, `producer` = that kind's registered minter, `content_sha256` =
+  the D-31 address of the exact bytes, `admitted_utc`, and the execution
+  correlation read from `attempt_calls`), with an identity index making
+  re-admission idempotent.
+- **`Sequencer.admit_witness`** — the admission seam (D-21/D-38): exact
+  producer bytes to the CAS, the entry journaled (`ch2:admit-witness`) in
+  the same transaction, correlation ledger-derived (never caller-supplied),
+  producers validated against the pinned principals/witness registries
+  (`principals.py`, `witnesses.py`, cross-checked by
+  `test_principals_registry.py`). Admission requires a bound, unfrozen
+  execution; payload SEMANTICS stay Chapter 3's.
+- **t-a06's `required_joins_present` is now a real join**: the receipt's
+  `admitted_witnesses` must be D-21 structured entries, each matching an
+  admitted row FOR THIS ATTEMPT — receipt entries ⊆ admitted rows; a
+  receipt cannot introduce evidence the seam never saw.
+- **PromptProjection** (`projection.py`, obj-10's minimal indexed form):
+  a pure deterministic renderer binding the recomputed record tiers, the
+  dispatched role and transform, the exact attempt identity and the
+  attributed Chief Engineer guidance, with `authority_effect: none` stated
+  in the artifact; same inputs, same content address.
+- **ProjectState** (`project_state.py`): the Chief Engineer's read-only
+  view — sequences by state, attempts with bound calls and witness counts,
+  state-derived work eligibility, outstanding obligations (verification
+  named as the gate after EVIDENCE_COMPLETE), in-doubt intents, permits,
+  lease, journal head. No writes, no interpretation (D-63/D-64).
+- **The transport contract and restart protocol** (`transport.py`):
+  idempotent launch on the minted `call_id`; `find_session -> None` is
+  UNOBSERVED, never FAILED — `reconcile_dispatched` adopts an observable
+  session (admitting the provider's own record as the obj-11 witness,
+  t-a03), fails only on the transport's positive determination (t-a10),
+  and otherwise HOLDS the attempt in DISPATCHED. The deterministic
+  `FakeTransport` (tests) implements the contract with injection controls;
+  [TRANSPORT_GUARANTEES.md](TRANSPORT_GUARANTEES.md) grounds the real
+  AutoSwarm mapping and names the one gap (native launch idempotency) with
+  its closure designs.
+- **The acceptance scenario** (`test_acceptance_m3.py`): the published 11
+  criteria in one integration test, plus the adversarial arms — uncertain
+  launch outcome held, hidden-session adoption, stale-authority dispatch
+  refused, duplicate launch collapsed, missing-evidence receipts refused,
+  and the t-a13 boundary still failing closed. The crash matrix gains the
+  `running` stage; recovery pairs witness rows with their journaled
+  admissions in both directions.
+
+Still deferred: t-a12 (member-lease staleness), t-a07/t-a08 (verification,
+M4), receipt completeness classification (the t-a13 seam, Chapter 3),
+standalone effect machines, and the bounded real-provider test (the gate
+after this one).
+
+## Milestone 4 — verification authority and state transitions (2026-11-11)
+
+The operator's M4 directive, implemented on the committed M3/G2 baseline
+(the full disposition table and finding register are the
+[RECONCILIATION.md](RECONCILIATION.md) M4 addendum):
+
+- **The sequence walks beside its attempt**: t-s07 rides t-a05 inside
+  `freeze_candidate` and t-s09 rides t-a06 inside `complete_evidence` —
+  same trigger, evidence and fence, one transaction, two TransitionRecords
+  — so evidence completion leaves the sequence VERIFYING. t-s09's join
+  half rests on independently validated admission facts; its
+  completeness-classification half is PARTIAL with Chapter 3, and the
+  receipt's declared completeness field is never read in either direction.
+  t-s45 rides t-a13 and shares the same Chapter 3 fail-closed seam.
+- **Results enter only through typed admission seams** (schema v5
+  `attempt_verifications`, one authoritative row per attempt and
+  assertion): `register_verifier_result` admits the verifier_runner's
+  obj-19/obj-20 bytes for DETERMINISTIC assertions — SEM-16 eligibility
+  re-evaluated from the registered `service:*` requirements, the bound
+  registration resolved or IntegrityHalt (INV-53), and a declared
+  environment constraint matched against an obj-18 capture scope-bound to
+  the exact attempt; `attest_assertion` admits your scope-bound obj-37
+  `ManualAttestation.ASSERTION` (D-52) for HUMAN_ATTESTED assertions.
+  Identical re-admissions are idempotent; conflicting ones never
+  overwrite.
+- **The registered outcomes**: `conclude_verification` commits t-a07 +
+  t-s10 when every declared assertion passed or was attested (the
+  attestation durable BEFORE the commit, by construction), or t-a08 with
+  t-s11 (repair budget left: `repairs_used` against the frozen
+  `repair_policy.max_repairs`) or t-s12 budget_exhausted.
+  `halt_verification` applies t-s12's other registered arms (unknown,
+  env_mismatch, bound_artifact_unavailable); the attempt holds in
+  EVIDENCE_COMPLETE, and the HALTED resume (t-s13) stays yours. Durable
+  HALTED state commits only through t-s12 itself — an admission refusal
+  (ConflictError) and an INV-53 integrity stop (IntegrityHalt) mutate
+  nothing, proven by journal-count tests.
+- **t-a12**: `mark_member_stale` — the member lease recorded at t-a03
+  expired for a REQUIRED role with no result; the sequence retries through
+  the pre-existing t-s08.
+- **Recovery** gains section 8c: verification rows pair with their
+  journal entries in both directions, bytes re-hash, VERIFIED/REJECTED
+  attempts must carry results, and `repairs_used` must equal the journaled
+  t-s11 history. The crash matrix gains the `verifying` stage, restarting
+  into a half-verified attempt and CONCLUDING it from durable state.
+
+Proof of record: autobot 124/124 on CPython 3.8.10 and 3.12.11 (107
+baseline + 17 M4 conformance tests), coordinator 41/41. Still deferred:
+t-s13 (your resume), the t-a13/t-s45 classification authority (Chapter 3),
+the verifier-runner implementation and receipt schemas (Chapter 4), and
+finalization (M5).
+
+## Milestone 5 — finalization and real effect execution (2026-11-11)
+
+The SL path, VERIFIED → COMMITTING → COMMITTED, driven by real
+EffectIntent outcomes over a real local Git repository
+([FINALIZATION.md](FINALIZATION.md) carries the frozen-row grounding
+table, the executor contract, the PONR model, the crash matrix and the
+F-M5 findings):
+
+- **t-s15a** (`begin_commit`) mints the obj-24 reservation and the obj-25
+  intent in one transaction — the registered mints — under the full
+  attempt-scoped checks; the external effect may begin only from
+  `committed_intent()` afterwards (D-71).
+- **The first real executor** (`git_executor.py`, principal
+  git_sequencer/cap-38) performs exactly the authorized
+  `git update-ref <target> <new> <old>` — Git's own atomic CAS — observes
+  the ref independently, classifies under the frozen `local` outcome rule,
+  feeds `resolve_intent`, and mints obj-26 on HAPPENED. It grants no
+  protocol authority.
+- **The registered exits**: `commit_committed` (t-s16, the PONR row:
+  durable HAPPENED, obj-26 identity-bound, t-r01 reservation consumption
+  in the same transaction); `commit_absent` (t-s19: fenced expected-old
+  absence, back to VERIFIED to re-mint); `commit_stale` (t-s18: the
+  canonical ref moved, obj-26 observation receipt, back to READY for a
+  new attempt). The two ABSENT exits are distinguished by the intent's
+  JOURNALED observation, never a caller claim.
+- **Uncertainty stays durable**: an unfenced expected-old observation
+  decides nothing while the window is open; expiry is t-i03, retry is
+  t-i06 with full identity binding, and the retried intent completes the
+  arc — exercised against the real repository.
+- **Crash discipline**: the nine directive windows map to durable
+  equivalence classes; the hard-death `m5_post_effect` stage moves the
+  real ref and dies before observation — the restart finds the intent
+  PENDING, infers nothing, and observation alone resolves and completes.
+  Recovery gains 8d (a COMMITTING sequence must hold its minted intent;
+  journaled receipt references re-hash), and repeated recovery converges.
+
+Proof of record: autobot 139/139 on CPython 3.8.10 and 3.12.11 (125 + 14
+M5 tests), coordinator 41/41. Still deferred: t-s20 acceptance (M6), the
+remote finalization arcs (t-s15b/t-s17/t-s21..), and the Chapter 3/4
+boundaries unchanged.
+
+## Milestone 6 — acceptance, dependency release, loop closure (2026-11-11)
+
+The Chief Engineer loop closes ([ACCEPTANCE.md](ACCEPTANCE.md) carries
+the grounding table, the fact model, the released-edge and readiness
+semantics, the crash classes and the F-M6 findings):
+
+- **Acceptance is a decision over durable facts** (`accept_commit`,
+  t-s20; `accept_verified`, t-s14 — the registered PONR row): the
+  journaled t-s16 facts with their obj-26 bytes re-hashed, the durable
+  HAPPENED intent, the admitted verification rows (all PASS/ATTESTED;
+  HUMAN_REQUIRED needs your obj-37 attestation), the frozen requirement
+  set satisfiable on the path — refusals name the state, the fence or
+  the requirement; duplicates leave the journal untouched. Mints obj-30
+  binding the identity tiers, attempt, path, fence and verification
+  references.
+- **Release is ledger rows, not graph state** (`release_dependencies`,
+  t-s41): one durable released_edges row per identity tier plus the
+  obj-35 receipt, CAS and journal in a single transaction; the unique
+  tier index makes conflicting releases unrepresentable; acceptance
+  alone unlocks nothing. t-s42 completes against the resolvable obj-35
+  reference.
+- **Readiness consumes released edges only** (t-s01/t-s02/t-s03): a
+  frozen obj-07 edge is satisfied by a durable row of its declared kind
+  and target whose predecessor is DEPENDENCIES_RELEASED or COMPLETED —
+  never by inference; ACCEPTANCE_FRESH fails closed;
+  finalizer_supported_in_v1 (INV-64) enforced at both readiness rows.
+- **The loop ran end to end**: two contracts, B edge-blocked on A
+  through A's entire objective→freeze→execute→verify→real-Git-finalize→
+  accept arc (including an in-process restart at ACCEPTED), READY only
+  through the authoritative release, `project_state` exposing the
+  released edges and the actionable successor, A COMPLETED, recovery
+  converging twice.
+- **Recovery 8e**: forged acceptance, forged or deleted release rows,
+  and forged readiness each HALT; every journaled acceptance/release
+  reference re-hashes.
+
+Proof of record: autobot 147/147 on CPython 3.8.10 and 3.12.11 (139 + 8
+M6 tests), coordinator 41/41. Still deferred: the remote finalization
+and acceptance arcs (t-s15b/t-s17/t-s21.., t-s37/t-s39/t-s43/t-s44,
+t-s04), the obj-30/obj-35 payload schemas (Chapter 5), and the
+Chapter 3/4 boundaries unchanged.
+
+## Milestone 7 — the continuous engineering loop (Chief Engineer / Taskforce, 2026-11-11)
+
+The intelligence-and-orchestration layer over the committed runtime,
+delivered as the NEW integration-layer package `src/intelligence/`
+(D-63/D-64: it consumes Registry/Sequencer APIs, reads authority state
+through a read-only connection, and keeps its reasoning in its own
+`intelligence.db`). Full design, boundary table, proposal schema, event
+model, repair loop, pilot description and the F-CE finding register:
+[INTELLIGENCE.md](INTELLIGENCE.md).
+
+- **Chief Engineer service** (the frozen `planner` seat): wakes only on
+  planning events derived one-to-one from journal transitions, reasons
+  over a snapshot-bound `PlanningView`, and emits TYPED proposals
+  (CREATE_TASK, DECOMPOSE_TASK, REPAIR_TASK, INVESTIGATE,
+  ASSIGN_SPECIALIST, REQUEST_REVIEW, WAIT_FOR_AUTHORITY,
+  PROJECT_COMPLETE) through a policy seam that holds no handles.
+- **Proposal compiler** (cap-07): a pure function emitting canonical
+  TaskContractRecord candidates (D-25 ordering, SEM-03/SEM-05/D-54
+  shaping, the delegation triple and registered floors); the Registry
+  stays the sole validator and freezer, and proposal identity IS the
+  candidate's contract_digest, so restarts and resubmissions converge
+  (obj-32).
+- **Taskforce**: breadth-first sweeps over authority state — adoption
+  via the registered reconcile path, allocation gated on the planner's
+  word (first attempt from the originating proposal; every later
+  attempt needs a REPAIR/ASSIGN seat authorization), seat/provider/
+  model selection outside contract identity (cap-14), the expanded
+  PromptProjection carrying the planner's approved context bundle plus
+  a record-derived completion contract, witness/finding collection with
+  attempt traceability, the verifier-runner seam, and the registered
+  authority arcs — SL finalization only inside YOUR permit grant
+  (cap-36).
+- **Continuous driver**: planning cycle + sweep per step, restart-safe
+  end to end, one reasoning driver at a time (plan-store lease).
+- **The autonomous pilot**: investigate → finding → the planner
+  decomposes implementation + review FROM the finding's text → real
+  local Git CAS → the permit pause (where the whole plane restarts) →
+  release unblocks the review through t-s02 → PROJECT_COMPLETE → a
+  stable no-action state; plus the repair-proposal arc, the
+  no-authorization re-execution refusal, and concurrent allocation of
+  independent READY work.
+
+Findings: F-CE-1 (premature completion detection) FIXED, F-CE-3
+(interrupted-submission recovery unproven) FIXED, F-CE-5 (VERIFIED
+attempt picked by minted id) FIXED, and from the operator's pre-commit
+review F-CE-6 (candidates were submitted AS the planner — the forbidden
+planner→registry edge; the deterministic service now submits as the
+`autobot_service` boundary while `authored_by` stays the planner) and
+F-CE-7 (seat/provider/model selection ran under the Taskforce; it is
+now explicitly the `AgentFactory` — cap-14 — with `selected_by` on
+every assignment and seat) both FIXED with adversarial tests; F-CE-2
+(no cross-cycle total-work budget in v1) and F-CE-4 (ExecutionReceipt
+completeness stays the integration stand-in until Chapter 3) accepted
+and documented.
+
+Proof of record: autobot 167/167 on CPython 3.8.10 and 3.12.11 (147 +
+20 intelligence/pilot tests), coordinator 41/41 untouched. The open
+protocol surfaces are carried forward explicitly, ACCEPTANCE_FRESH
+included (INTELLIGENCE.md lists them); the LLM-backed Chief Engineer
+policy is a later provider behind the same seam, per the Transport→G2
+precedent.
 
 ## Reconciliation and progression
 

@@ -12,7 +12,9 @@ import unittest
 from pathlib import Path
 
 import support
+from fake_verifier import environment_bytes, receipt_bytes
 from autobot import Database, Sequencer, Store, journal
+from autobot.git_executor import observe_and_resolve
 from autobot.models import (
     AuthorityLost,
     ConflictError,
@@ -200,6 +202,141 @@ class RestartTests(unittest.TestCase):
         witness = store.put(b"post-restart witness\n")
         seq.attempt_running(snapshot["attempt_id"], "native-after-restart",
                             witness)
+        db.close()
+
+    def test_crash_running_stage(self):
+        """M3 criterion 10 at the RUNNING boundary: hard death after t-a03
+        restarts into the full execution relationship — attempt RUNNING,
+        bound call with its native session id, the admitted witness row
+        resolving to exact bytes — and the lifecycle resumes from it."""
+        data_dir = self.dir / "running"
+        proc = subprocess.run(
+            [sys.executable, "-I", str(CHILD), str(data_dir), "running"],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(proc.returncode, 137, proc.stdout + proc.stderr)
+        snapshot = json.loads(proc.stdout.strip().splitlines()[-1])
+
+        db = Database(data_dir / "autobot.db")
+        store = Store(data_dir / "store")
+        seq = Sequencer(db, store, support.manual_clock(), holder="crash-child")
+        seq.recover()  # includes the witness row ↔ journal pairing + bytes
+        crow = db.conn.execute(
+            "SELECT role, provider, call_id, projection_address,"
+            " native_session_id FROM attempt_calls WHERE attempt_id = ?",
+            (snapshot["attempt_id"],)).fetchone()
+        self.assertEqual(dict(crow), snapshot["call"])
+        self.assertEqual(crow["native_session_id"], "native-crash-1")
+        att = db.conn.execute(
+            "SELECT state FROM attempts WHERE attempt_id = ?",
+            (snapshot["attempt_id"],)).fetchone()
+        self.assertEqual(att["state"], "RUNNING")
+        wrow = db.conn.execute(
+            "SELECT content_sha256 FROM attempt_witnesses"
+            " WHERE admission_id = ?",
+            (snapshot["witness_admission_id"],)).fetchone()
+        self.assertEqual(store.get(wrow["content_sha256"]),
+                         b"provider session record for the crash test\n")
+
+        seq.acquire_lease(ttl_seconds=3600)
+        resumed = seq.admit_witness(
+            snapshot["attempt_id"], "obj-13", "agent_clis",
+            b"post-restart transcript\n")
+        self.assertEqual(
+            seq.finish_attempt(snapshot["attempt_id"], "builder", "success",
+                               resumed["content_address"]), "FINISHED")
+        db.close()
+
+    def test_crash_verifying_stage(self):
+        """M4 at the VERIFYING boundary: hard death after t-a06 + t-s09 and
+        one admitted verifier result restarts into the full verification
+        relationship — sequence VERIFYING, attempt EVIDENCE_COMPLETE, the
+        result row journal-paired with resolvable bytes — and the
+        lifecycle CONCLUDES from durable state alone (t-a07 + t-s10)."""
+        data_dir = self.dir / "verifying"
+        proc = subprocess.run(
+            [sys.executable, "-I", str(CHILD), str(data_dir), "verifying"],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(proc.returncode, 137, proc.stdout + proc.stderr)
+        snapshot = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(snapshot["sequence"]["state"], "VERIFYING")
+
+        db = Database(data_dir / "autobot.db")
+        store = Store(data_dir / "store")
+        seq = Sequencer(db, store, support.manual_clock(),
+                        holder="crash-child")
+        seq.recover()  # includes the verification row <-> journal pairing
+        att = db.conn.execute(
+            "SELECT state, fence FROM attempts WHERE attempt_id = ?",
+            (snapshot["attempt_id"],)).fetchone()
+        self.assertEqual(att["state"], "EVIDENCE_COMPLETE")
+        vrow = db.conn.execute(
+            "SELECT outcome, receipt_sha256 FROM attempt_verifications"
+            " WHERE verification_id = ?",
+            (snapshot["verification_id"],)).fetchone()
+        self.assertEqual(vrow["outcome"], "PASS")
+        store.get(vrow["receipt_sha256"])  # exact bytes survive the crash
+
+        seq.acquire_lease(ttl_seconds=3600)
+        identity = {"sequence_id": snapshot["sequence_id"],
+                    "attempt_id": snapshot["attempt_id"],
+                    "version": 1, "fence": att["fence"]}
+        seq.register_verifier_result(
+            snapshot["attempt_id"], "a1", "PASS", "verifier_runner",
+            receipt_bytes("a1", "registry-checker", "PASS",
+                          snapshot["attempt_id"]),
+            environment=environment_bytes(identity))
+        result = seq.conclude_verification(snapshot["attempt_id"],
+                                           att["fence"])
+        self.assertEqual(result, {"attempt": "VERIFIED",
+                                  "sequence": "VERIFIED"})
+        db.close()
+
+    def test_crash_m5_post_effect(self):
+        """M5's post-PONR window: the authorized real Git CAS happened and
+        the process died hard before any observation. The restart finds the
+        intent durably PENDING (nothing inferred), recovery passes the
+        finalization coherence checks, and OBSERVATION alone resolves
+        HAPPENED — then t-r01 consumes the reservation at the registered
+        point inside t-s16 and the sequence lands COMMITTED; repeated
+        recovery converges on the same state."""
+        data_dir = self.dir / "m5"
+        proc = subprocess.run(
+            [sys.executable, "-I", str(CHILD), str(data_dir),
+             "m5_post_effect"],
+            capture_output=True, text=True, timeout=180,
+        )
+        self.assertEqual(proc.returncode, 137, proc.stdout + proc.stderr)
+        snapshot = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(snapshot["update_ref_exit"], 0)
+
+        db = Database(data_dir / "autobot.db")
+        store = Store(data_dir / "store")
+        seq = Sequencer(db, store, support.manual_clock(),
+                        holder="crash-child")
+        seq.recover()  # includes the COMMITTING-has-intent coherence check
+        irow = db.conn.execute(
+            "SELECT state FROM effect_intents WHERE intent_id = ?",
+            (snapshot["intent_id"],)).fetchone()
+        self.assertEqual(irow["state"], "PENDING")  # restart inferred nothing
+        seq.acquire_lease(ttl_seconds=3600)
+        report = observe_and_resolve(seq, snapshot["intent_id"],
+                                     snapshot["repo"], executor_fenced=True)
+        self.assertEqual((report["observation"], report["outcome"]),
+                         ("target_equals_new", "HAPPENED"))
+        seq.commit_committed(snapshot["m5_sequence_id"],
+                             snapshot["m5_fence"], report["receipt"])
+        row = db.conn.execute(
+            "SELECT state FROM sequences WHERE sequence_id = ?",
+            (snapshot["m5_sequence_id"],)).fetchone()
+        self.assertEqual(row["state"], "COMMITTED")
+        rrow = db.conn.execute(
+            "SELECT state FROM reservations WHERE reservation_id = ?",
+            (snapshot["reservation_id"],)).fetchone()
+        self.assertEqual(rrow["state"], "CONSUMED")
+        self.assertEqual(seq.recover()["intents_in_doubt"], [])
+        self.assertEqual(seq.recover()["intents_in_doubt"], [])
         db.close()
 
     def test_takeover_after_expiry_advances_epoch_and_fences_stale_authority(self):

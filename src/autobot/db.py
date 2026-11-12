@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 from .models import SchemaTooNew
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 6
 
 # Schema v1 (D-67): explicit state tables for Sequence, Attempt,
 # InstanceLease, permit state/reservations and EffectIntent, plus the
@@ -182,7 +182,89 @@ _DDL_V3 = (
     )""",
 )
 
-_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3}
+# Schema v4 (D-70, additive): the witness-admission seam (M3). Each row is
+# one Chapter 1 D-21 structured admission entry — the witness_kind
+# discriminator (a registered WitnessRecord object id, obj-11..obj-14), the
+# producer (that kind's registered minter, a principals.json id), the D-31
+# content address of the exact producer bytes, the D-27 admission instant,
+# and the execution correlation (call_id; native session id once known) read
+# from the ledger at admission. The identity index makes re-admission of
+# identical evidence idempotent. Witness payload SEMANTICS stay Chapter 3's.
+_DDL_V4 = (
+    """CREATE TABLE IF NOT EXISTS attempt_witnesses (
+        admission_id TEXT PRIMARY KEY,
+        attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+        witness_kind TEXT NOT NULL,
+        producer TEXT NOT NULL,
+        content_sha256 TEXT NOT NULL,
+        call_id TEXT NOT NULL,
+        native_session_id TEXT,
+        admitted_utc TEXT NOT NULL
+    )""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_witness_identity
+        ON attempt_witnesses(attempt_id, witness_kind, producer, content_sha256)""",
+)
+
+# Schema v5 (D-70, additive): the M4 verification surface.
+# - attempt_verifications: one authoritative verification result per
+#   (attempt, assertion) — the registered mode, the outcome (PASS/FAIL/
+#   INCONCLUSIVE from the verifier_runner, or ATTESTED by you under D-52),
+#   the producing principal, the D-31 address of the exact receipt bytes
+#   (obj-19/obj-20/obj-37) and, when the assertion declares an environment
+#   constraint, the obj-18 capture's address. The unique index makes a
+#   second admission for the same assertion either idempotent (identical)
+#   or a refused conflict — never a silent overwrite.
+# - sequences.repairs_used: the t-s11 repair-budget counter, checked
+#   against the frozen record's repair_policy.max_repairs.
+# - attempt_calls.member_lease_expires_utc: the required-member liveness
+#   window t-a12 (lease_expired_required_member_without_result) reads;
+#   set when t-a03 binds the native session.
+_DDL_V5 = (
+    """CREATE TABLE IF NOT EXISTS attempt_verifications (
+        verification_id TEXT PRIMARY KEY,
+        attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+        assertion_id TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK (mode IN ('DETERMINISTIC','HUMAN_ATTESTED')),
+        verifier_id TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN
+            ('PASS','FAIL','INCONCLUSIVE','ATTESTED')),
+        by_principal TEXT NOT NULL,
+        receipt_sha256 TEXT NOT NULL,
+        environment_sha256 TEXT,
+        recorded_utc TEXT NOT NULL
+    )""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_verification_one_per_assertion
+        ON attempt_verifications(attempt_id, assertion_id)""",
+    "ALTER TABLE sequences ADD COLUMN repairs_used INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE attempt_calls ADD COLUMN member_lease_expires_utc TEXT",
+)
+
+# Schema v6 (D-70, additive): the M6 dependency-release surface. One row
+# per tier a released predecessor's acceptance can satisfy (its
+# record_hash / contract_digest / requirement_digest, the frozen obj-07
+# edge_kind vocabulary): t-s41 writes all three in its transaction with
+# the obj-30 acceptance reference and the obj-35 release receipt
+# reference, and t-s02/t-s03 readiness consumes them as durable ledger
+# facts — never inferred graph state. The unique index makes a second
+# release of the same tier impossible (duplicate releases are refused at
+# the state gate; conflicting rows cannot exist).
+_DDL_V6 = (
+    """CREATE TABLE IF NOT EXISTS released_edges (
+        release_id TEXT PRIMARY KEY,
+        predecessor_sequence_id TEXT NOT NULL REFERENCES sequences(sequence_id),
+        edge_kind TEXT NOT NULL CHECK (edge_kind IN
+            ('RECORD','CONTRACT','REQUIREMENT')),
+        edge_value TEXT NOT NULL,
+        acceptance_sha256 TEXT NOT NULL,
+        release_sha256 TEXT NOT NULL,
+        released_utc TEXT NOT NULL
+    )""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_released_edges_identity
+        ON released_edges(predecessor_sequence_id, edge_kind)""",
+)
+
+_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4, 5: _DDL_V5,
+               6: _DDL_V6}
 
 
 class Database:

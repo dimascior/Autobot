@@ -199,3 +199,137 @@ Only real machine transitions carry `t-…` rule ids (t-i01..t-i07 inclusive);
 the mint uses `ch2:mint-intent` because the registered minting transitions
 (t-s15a/b, t-s21, t-s31/32) are sequence-machine rows this milestone does
 not reach. No journal entry claims a protocol transition that did not occur.
+
+## M3 slice addendum (2026-11-10)
+
+The operator's five-part M3 scope against the frozen registries, with the
+two named reconciliation details:
+
+| Surface | Disposition |
+|---|---|
+| call_id ownership (operator detail 1) | CORRECTED: `dispatch_attempt` mints `call_id` inside the t-a02 transaction and returns it; the caller-supplied parameter is gone; `call_id_bound` holds by construction; durable before any launch |
+| t-a02..t-a04 | IMPLEMENTED (milestone 2), now driven end-to-end by the acceptance scenario over the fake transport |
+| t-a06 `required_joins_present` | UPGRADED to the real join: receipt `admitted_witnesses` = D-21 structured entries, each matching an `attempt_witnesses` row for THIS attempt (receipt ⊆ admitted); completeness CLASSIFICATION stays Chapter 3's |
+| Witness admission (D-21/D-38) | IMPLEMENTED as `admit_witness` + schema v4 `attempt_witnesses`: exact producer bytes, ledger-derived correlation, registered kind/minter vocabulary (pinned `witnesses.py`/`principals.py`), idempotent on identity, journaled `ch2:admit-witness`, recovery-paired both directions; witness payload SEMANTICS deferred to Chapter 3 |
+| PromptProjection (obj-10) | IMPLEMENTED minimal indexed form: pure deterministic renderer, recomputed record binding, attributed guidance, `authority_effect: none`; full obj-10 schema stays Chapter 3's |
+| ProjectState | IMPLEMENTED read-only (`project_state`): no writes, no interpretation (D-63/D-64); deep validation remains `recover()`'s |
+| Transport contract + restart protocol | IMPLEMENTED (`transport.py`): idempotent launch on the minted key; `find_session -> None` = UNOBSERVED (the attempt HOLDS in DISPATCHED); t-a10 only on the transport's positive determination; adoption admits the provider's own record as the obj-11 witness before t-a03 |
+| Real-provider guarantees (operator detail 2) | ANALYZED in TRANSPORT_GUARANTEES.md: correlation/observation/determination surfaces PROVEN by inspection of the installed AutoSwarm home and the coordinator's production discipline; native launch idempotency is the one gap, closed by the named A1 (adapter registry) or A2 (fork `--call-id`) design — executable proof belongs to the bounded real-provider test, the gate AFTER the fake-transport acceptance |
+| t-a13 | UNCHANGED and fail-closed (PARTIAL): the `_admitted_classification` seam still refuses receipt-declared completeness/deadlines pending Chapter 3 receipt admission — re-proven inside the integrated scenario |
+| t-a12, t-a07/t-a08 | DEFERRED (M4, member-lease and verification semantics) |
+| Crash matrix | EXTENDED: `running` stage (restart reconstructs attempt ↔ call ↔ witness and resumes); the acceptance scenario restarts in-process at DISPATCHED and adopts via `find_session` |
+
+## M4 addendum (2026-11-11)
+
+The operator's M4 directive (verification authority and state transitions)
+against the frozen registries, every requirement classified with its
+enforcement point, proof and owning chapter:
+
+| Requirement | Disposition |
+|---|---|
+| t-a07 EVIDENCE_COMPLETE→VERIFIED (obj-19, fence_matches) | IMPLEMENTED: `conclude_verification` — every declared assertion PASS or ATTESTED from admitted rows only, obj-19 receipt addresses journaled; proof `test_all_pass_concludes_verified` |
+| t-a08 EVIDENCE_COMPLETE→REJECTED (obj-20) | IMPLEMENTED: any admitted FAIL; obj-20 references journaled; proof `test_fail_repairs_then_budget_exhausts` |
+| t-a12 RUNNING→STALE (cap-16) | IMPLEMENTED: `mark_member_stale` — the recorded member lease (set at t-a03; the 7200 s default is D-18 configuration, Chapter 6 representation) has expired, the dispatched role is a REQUIRED member, and no result exists (the attempt is still RUNNING); the successor is the pre-existing t-s08 `retry_sequence`; proof `StaleMemberTests` |
+| t-s07 EXECUTING→CANDIDATE_FROZEN | IMPLEMENTED: coupled with t-a05 inside `freeze_candidate` — same trigger, evidence (obj-16) and fence_matches, one transaction, two TransitionRecords |
+| t-s09 CANDIDATE_FROZEN→VERIFYING | SPLIT (operator acceptance check 1): the JOIN half of `execution_receipt_complete` is IMPLEMENTED on independently validated admission facts — receipt identity, attempt binding, contract hash, every named witness admitted FOR THIS ATTEMPT with resolvable bytes (the t-a06 real join); the COMPLETENESS-CLASSIFICATION half is PARTIAL with Chapter 3's receipt-admission authority, fail-closed beside t-a13/t-s45. The receipt's DECLARED completeness field is never read in either direction — proven by `test_t_s09_declared_classification_is_inert` (a declared "PARTIAL" with valid joins still transitions; a declared "COMPLETE" grants nothing) |
+| t-s45 CANDIDATE_FROZEN→HALTED | PARTIAL (fail-closed): coupled with t-a13 behind the `_admitted_classification` seam — registered, journal-ready, and unreachable until Chapter 3 receipt admission, exactly like t-a13 |
+| t-s10 VERIFYING→VERIFIED | IMPLEMENTED: required_assertions_pass_or_attested over admitted rows; bound_registered_artifacts_only because results ENTER only through the typed admission seams; attestation_before_commit_if_source_human_required holds by construction (the obj-37 row must exist before conclusion); derived eligibility journaled |
+| t-s11 VERIFYING→READY | IMPLEMENTED: assertion_failed + repair_budget_left — `sequences.repairs_used` (schema v5) against the frozen `repair_policy.max_repairs`, counter reconciled against the journaled t-s11 history in `recover()` |
+| t-s12 VERIFYING→HALTED | IMPLEMENTED, with the outcome tiers explicit (operator acceptance check 2). DURABLE t-s12 (sequence → HALTED, journaled with its reason) commits in exactly two places: automatically inside `conclude_verification` for budget_exhausted, and through `halt_verification` for all four registered reasons — proven durable for unknown, env_mismatch and bound_artifact_unavailable (the last after an INV-53 stop). NOT durable: an admission refusal (environment mismatch, INCONCLUSIVE conclusion) is a ConflictError that mutates nothing — journal count and Sequence state proven unchanged; a missing bound artifact is an IntegrityHalt that stops processing with NO transition committed — also proven unchanged. `halt_verification` is how an observed stop becomes durable HALTED state |
+| Typed verifier-runner interface | IMPLEMENTED: `verification.VerifierRunner` (capture_environment / run_assertion) + the Sequencer admission seams `register_verifier_result` / `attest_assertion`; the runner implementation and the obj-18/19/20 payload SCHEMAS stay Chapter 4's |
+| SEM-16 eligibility (D-57) | IMPLEMENTED as defense in depth: `verifier_eligibility` re-evaluates the registered `service:*` requirements at admission (the freeze already refuses the binding); the negative is proven against the frozen service-dependent fixture registration |
+| INV-53 HALT | IMPLEMENTED: a bound verifier registration missing from the ledger or the CAS raises IntegrityHalt — never substituted, never skipped; closure LEAF availability is recorded as Chapter 4's dispatch obligation |
+| D-52 attestation path | IMPLEMENTED: `attest_assertion` — obj-37 `ManualAttestation.ASSERTION` minted by you, scope-bound to the exact attempt, assertion and contract hash, PASS-only verdicts, preserved by exact bytes (the t-i07 D-29 kind-grammar finding applies identically); HUMAN_REQUIRED derivation (SEM-13) proven on a frozen fixture record |
+| Verification environment | IMPLEMENTED: obj-18 captures are scope-bound to the exact attempt identity; a declared constraint is matched on the interpreter section and ANY unsupported section fails closed; supplied captures are stored even without a constraint (review finding F-M4-2) |
+| Outcome distinctions | IMPLEMENTED: deterministic PASS/FAIL/INCONCLUSIVE (verifier_runner) vs ATTESTED (you, D-52) vs receipt-admission authority (Chapter 3 — t-a13/t-s45 stay PARTIAL and fail-closed) |
+| Verification budgets | IMPLEMENTED: the repair budget (t-s11/t-s12) from the frozen record; the retry budget was pre-existing (t-s06/t-s08); one authoritative result per (attempt, assertion) by unique index |
+| Evidence integrity | IMPLEMENTED: content-addressed receipt and environment bytes (D-66 re-hash in recover), producer attribution (`by_principal`), attempt identity (rows + obj-18 scope), contract identity (attestation hash binding), provenance journaled (`ch2:register-verification`, `ch2:attest-assertion`) |
+| Recovery | IMPLEMENTED: recover() section 8c — verification row ↔ journal pairing both directions, byte re-hash, admission-state gating, VERIFIED/REJECTED attempts require at least one result, repairs_used equals the journaled t-s11 history; crash stage `verifying` restarts and CONCLUDES from durable state alone |
+| t-s13 HALTED→READY | DEFERRED: your resume (trigger cap-47) is outside M4 by the registry's trigger ownership |
+
+Cross-chapter obligations recorded by this milestone: Chapter 3 — receipt
+completeness classification and deadline derivation (the t-a13/t-s45
+seams) and receipt-admission authority; Chapter 4 — the verifier-runner
+implementation, the obj-18/obj-19/obj-20 payload schemas, closure-leaf
+INV-53 verification at dispatch, and the remote arcs (obj-21); Chapter 6 —
+the member-lease and budget configuration representation (D-18).
+
+### M4 finding register
+
+| id | Finding | Resolution |
+|---|---|---|
+| F-M4-1 | First suite run: the conformance helper bound the obj-18 capture to the wrong sequence; the runtime's scope check refused it | Test helper fixed (tracks the active sequence); the refusal is the scope binding WORKING (gates m4-001→m4-002) |
+| F-M4-2 | Adversarial review: a supplied obj-18 capture on an assertion without a declared constraint was silently dropped | Fixed: supplied evidence is always scope-validated and stored (m4-005/m4-006 green) |
+| F-M4-3 | Adversarial review, accepted: receipt/attestation bytes written to the CAS before a conflicting-duplicate refusal remain as store orphans | Consistent with the admit_witness precedent and D-66's harmless-orphan side; recover() reports them |
+| F-M4-4 | Operator acceptance check 1: t-s09's `execution_receipt_complete` was classified IMPLEMENTED although only its join half rests on independently validated admission facts | Reclassified SPLIT — join IMPLEMENTED / completeness classification PARTIAL (Chapter 3); inertness of the declared field proven by a dedicated test |
+| F-M4-5 | Operator acceptance check 2: the report blurred durable t-s12 transitions with admission refusals and IntegrityHalt stops | Outcome tiers made explicit in the t-s12 row, the `halt_verification` docstring and three tests proving refusals/stops mutate nothing and the durable halt commits only through t-s12 itself |
+
+## M5 addendum (2026-11-11)
+
+The finalization milestone: the SL path VERIFIED → COMMITTING → COMMITTED
+driven by real EffectIntent outcomes over a real local Git repository. The
+full grounding table (every frozen row with source, destination, actor,
+capability, requires, mints, preconditions, effect class, PONR status,
+owner and status), the executor contract, the PONR model, the
+crash/recovery matrix, receipt ownership and the F-M5 finding register are
+[FINALIZATION.md](FINALIZATION.md). Dispositions:
+
+| Surface | Disposition |
+|---|---|
+| t-s15a | IMPLEMENTED: `begin_commit` mints obj-24 + obj-25 in one transaction (the registered mints) under the full attempt-scoped checks; SL only (authority_location LOCAL) — the remote arcs are DEFERRED |
+| t-s16 (PONR) | IMPLEMENTED: `commit_committed` — durable HAPPENED required, obj-26 identity-bound and byte-preserved, t-r01 consumption in the same transaction (the registered durable point) |
+| t-s18 / t-s19 | IMPLEMENTED: the two ABSENT exits distinguished by the intent's JOURNALED observation (target_other → READY/new attempt with the obj-26 observation receipt; fenced expected-old → VERIFIED/re-mint), t-r02 released in-transaction |
+| Real executor (eff-local-canonical-cas) | IMPLEMENTED: `git_executor` — committed_intent() authority only, the one authorized `git update-ref` CAS, independent observation, the frozen `local` rule, obj-26 minting; grants no protocol authority |
+| Intent machine over the real effect | PRE-EXISTING (M2) t-i01..t-i07, exercised live: HAPPENED, fenced ABSENT, moved-ref ABSENT, window-open PENDING hold, t-i03 expiry, t-i06 retry with identity binding |
+| Crash/recovery | IMPLEMENTED: the nine directive windows mapped to durable equivalence classes; hard-death `m5_post_effect` stage over a real repository (restart infers nothing; observation resolves); recovery 8d (COMMITTING ⇒ intent exists; journaled receipt references re-hash); repeated recovery converges |
+| Receipts | obj-26 reference handling IMPLEMENTED (identity binding, exact bytes, D-66 re-hash); obj-26 payload SCHEMA deferred to its owning chapter; obj-27/28/30/41 belong to the deferred remote/M6 rows |
+| t-s20 (acceptance) | DEFERRED (M6) |
+| t-s15b/t-s17/t-s21.. | DEFERRED (remote finalization arcs) |
+| Findings | F-M5-1 FIXED (durable intent ordering by insertion, not tying created_utc); F-M5-2 accepted (reservation-lease expiry between PONR and t-s16 holds in COMMITTING — registry-faithful, bounded by INV-60 renewal); F-M5-3 accepted (committed_intent read bounded by the hard window + single-writer discipline, per D-71) |
+
+## M6 addendum (2026-11-11)
+
+Acceptance, dependency release and the ProjectState loop closure. The
+full grounding table, the acceptance fact model, the released-edge
+semantics, the readiness matrix, the crash equivalence classes, recovery
+8e and the F-M6 finding register are [ACCEPTANCE.md](ACCEPTANCE.md).
+Dispositions:
+
+| Surface | Disposition |
+|---|---|
+| t-s20 | IMPLEMENTED: `accept_commit` — a deterministic decision over durable facts only (journaled t-s16 facts with the obj-26 bytes re-hashed, the durable HAPPENED intent, the admitted verification rows, derived eligibility); finalization_requirements_satisfied refuses any requirement outside the SL set by name; duplicate/superseded/abandoned refused at the state gate with the journal untouched |
+| t-s14 (PONR) | IMPLEMENTED: `accept_verified` — the READ_ONLY acceptance straight from VERIFIED; read_only enforced from the frozen record, automatic_or_attested from the admitted rows (HUMAN_REQUIRED needs an obj-37 ATTESTED row), `ponr: true` journaled |
+| obj-30 | Minting/binding/reference handling IMPLEMENTED (identity tiers + attempt + path + fence + eligibility + verification references, canonical bytes, D-66 re-hash in recovery); payload SCHEMA deferred to Chapter 5 |
+| t-s41 | IMPLEMENTED: `release_dependencies` — three durable released_edges rows (RECORD/CONTRACT/REQUIREMENT) + obj-35 + CAS + journal in one transaction; UNIQUE(predecessor, kind) makes conflicting rows impossible; duplicates refused at the ACCEPTED gate; known_successors recorded as snapshot, never authority |
+| t-s42 | IMPLEMENTED: `complete_sequence` — the journaled obj-35 reference must resolve; no further frozen preconditions |
+| t-s01/t-s02/t-s03 | IMPLEMENTED: readiness consumes DURABLE released edges only (declared tier + durably released predecessor); unsatisfied edges transition nothing and journal nothing at t-s02; ACCEPTANCE_FRESH fails closed (reuse/dominance rules deferred); finalizer_supported_in_v1 (INV-64) enforced at both t-s02 and t-s03; not_quarantined vacuous (no quarantine exists in this runtime) |
+| t-s04 | DEFERRED with the REMOTE path (mediated-publication finalizer arm) |
+| t-s37/t-s39/t-s43/t-s44 | DEFERRED (reuse/dominance acceptance arms) |
+| project_state | IMPLEMENTED: accepted_awaiting_release / dependencies_released / completed / blocked_work / ready_work obligations + the released_edges rows; still write-free |
+| Recovery | IMPLEMENTED (8e): forged ACCEPTED-or-beyond HALTs; released_edges↔t-s41 journal pairing both directions; predecessor durably released; acceptance/release bytes re-hash; READY-with-unsatisfied-edges HALTs; the loop pilot restarts in-process at ACCEPTED and repeated recovery converges |
+| Findings | F-M6-1 FIXED (INV-64 enforcement at t-s03); F-M6-2 FIXED (forged-ACCEPTED HALT now tested); F-M6-3 FIXED (deterministic released-edge binding); F-M6-4 accepted (journal-scan fact reads — the M5 precedent); F-M6-5 accepted (content-addressed edges satisfy by digest — the frozen obj-07 design) |
+
+## M7 addendum (2026-11-11) — the intelligence plane
+
+The Chief Engineer / Taskforce integration layer
+([INTELLIGENCE.md](INTELLIGENCE.md)). This phase adds NO authority
+surface: every row below is integration-layer behavior over the
+registered transitions, or an explicitly carried boundary.
+
+| Surface | Disposition |
+|---|---|
+| Plane boundary (D-63/D-64) | IMPLEMENTED as structure: `src/intelligence/` consumes public Registry/Sequencer APIs only; its authority reads run on a SQLite mode=ro connection (write attempts are refused operations, test-pinned); reasoning state lives in a separate `intelligence.db` |
+| Chief Engineer (principals `planner`; cap-01 R, cap-07, cap-13) | IMPLEMENTED: event-woken cycles over snapshot-bound PlanningViews; typed, validated, budget-capped proposals; the reasoning policy is a handle-free seam (deterministic policies in the suite; an LLM provider is a later implementation behind the same seam) |
+| planner→registry handoff (CORR-15; forbidden edge) | IMPLEMENTED: the planner authors (`authored_by: "planner"`, cap-07); the deterministic service submits as the `autobot_service` boundary principal (`autobot_service → registry` = "authenticated freeze requests"); the Registry alone freezes (cap-08); the split is visible in the ledger and adversarially tested |
+| cap-14 seat selection (owner agent_factory, forbidden task_force) | IMPLEMENTED: the `AgentFactory` component embodies the `agent_factory` principal; the Taskforce requests only (capability, role); assignments and seat rows record `selected_by: "agent_factory"`; the dispatcher consumption is t-a02; adversarially tested |
+| Proposal → freeze | IMPLEMENTED over t-c01..t-c07 unchanged: the compiler emits canonical candidates; QUEUED_FOR_YOU (SEM-11/t-c04) surfaces as a proposal status — the operator boundary, not an error; DUPLICATE converges and binds the live sequence (obj-32) |
+| Planning events | IMPLEMENTED: one event per registered journal transition, keyed by journal seq (exactly-once across restart); objectives (cap-01) and findings are intelligence-plane events |
+| Taskforce (cap-22/23; cap-14 seat selection) | IMPLEMENTED: allocation gated on the planner's word (first attempt = originating proposal; later attempts = REPAIR_TASK/ASSIGN_SPECIALIST authorization); provider/model never in contract identity; execution identity rides the Sequencer-minted call_id and the registered adoption protocol |
+| PromptProjection expansion | IMPLEMENTED in `autobot.projection` additively: optional planner-approved context bundle (context_refs, predecessor_findings by finding_id, repository_context, expected_outputs) + a record-derived completion_contract; the base {author, guidance} artifact is byte-identical to M3's; obj-10 full schema stays Chapter 3's |
+| Findings | IMPLEMENTED (intelligence-plane): structured, content-identified, traceable to attempt/call/evidence addresses; information only — a conformance test pins that no finding becomes work without a proposal |
+| Repair loop | IMPLEMENTED over the frozen arms: t-s11 repair_ready → REPAIR_TASK → informed attempt on the SAME requirement; t-s12/t-s13, cap-36 permits, cap-44 attestation, cap-10 supersession stay YOURS (WAIT_FOR_AUTHORITY rows make the stop visible); obj-33/34 repair objects stay deferred with their chapters |
+| Continuous driver | IMPLEMENTED: planning cycle + Taskforce sweep per step; restart-safe (durable candidates resubmit byte-for-byte, F-CE-3 test; the pilot restarts the plane at the permit boundary with zero duplicates); one reasoning driver via the plan-store lease |
+| Autonomous pilot | PROVEN: investigate → finding → decomposition FROM the finding → real git CAS → permit pause/restart → released successor READY through t-s02 → PROJECT_COMPLETE → stable no-action; plus repair, the re-execution gate, and concurrent allocation |
+| ACCEPTANCE_FRESH | UNCHANGED: still the PARTIAL fail-closed readiness arm (kept visible per the operator, 2026-11-11) |
+| t-a13 / ExecutionReceipt completeness | CARRIED: the Taskforce's receipt assembly is the integration stand-in the M3 suite already used; classification authority remains Chapter 3's (F-CE-4) |
+| Findings (F-CE) | F-CE-1 FIXED (completion only from a cycle that proposes nothing else); F-CE-2 accepted (no cross-cycle total-work budget in v1 — per-cycle cap + driver step bound; the knob is cap-47, yours); F-CE-3 FIXED (interrupted-submission recovery proven); F-CE-4 accepted/carried (above); F-CE-5 FIXED (latest VERIFIED attempt by insertion order — the F-M5-1 lesson); F-CE-6 FIXED (submission identity: the service, never the planner — the operator's review); F-CE-7 FIXED (seat selection is the Agent Factory's, cap-14 — the operator's review) |
