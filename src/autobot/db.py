@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 from .models import SchemaTooNew
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Schema v1 (D-67): explicit state tables for Sequence, Attempt,
 # InstanceLease, permit state/reservations and EffectIntent, plus the
@@ -263,8 +263,33 @@ _DDL_V6 = (
         ON released_edges(predecessor_sequence_id, edge_kind)""",
 )
 
+# Schema v7 (D-70, additive): the C3-M1 receipt-admission seam. One row
+# per ADMITTED ExecutionReceipt version (obj-15 is append-only:
+# re-collection over changed facts makes a new version; the latest is by
+# rowid, never by minted id). completeness and evidence_complete_by_utc
+# are the DERIVED facts the admission seam re-computed from the ledger
+# before admitting the byte-identical payload (D-C3-2); t-a06/t-s09 and
+# t-a13/t-s45 consume these columns and never the payload's declared
+# fields. The unique identity index makes re-admission of identical bytes
+# idempotent.
+_DDL_V7 = (
+    """CREATE TABLE IF NOT EXISTS attempt_receipts (
+        admission_id TEXT PRIMARY KEY,
+        attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+        content_sha256 TEXT NOT NULL,
+        completeness TEXT NOT NULL CHECK (completeness IN
+            ('COMPLETE','INCOMPLETE','INTEGRITY_FAILED')),
+        evidence_complete_by_utc TEXT NOT NULL,
+        minter TEXT NOT NULL,
+        call_id TEXT NOT NULL,
+        admitted_utc TEXT NOT NULL
+    )""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_receipt_identity
+        ON attempt_receipts(attempt_id, content_sha256)""",
+)
+
 _MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4, 5: _DDL_V5,
-               6: _DDL_V6}
+               6: _DDL_V6, 7: _DDL_V7}
 
 
 class Database:

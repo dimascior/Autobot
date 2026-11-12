@@ -7,10 +7,10 @@ One global append-only chain per ledger. Every entry's hash is
 UTF-8, so validation re-hashes every entry exactly as it was appended.
 
 Payload vocabulary: ``rule`` is a Chapter 0 transition id (``t-…``) when a
-registered machine transition happened, or a ``ch2:``-prefixed rule for
-authority primitives the full protocol later subsumes into their owning
-transitions. The journal records exactly what happened — no entry claims a
-protocol transition that did not occur.
+registered machine transition happened, or a chapter-prefixed rule
+(``ch2:…``, ``ch3:…``) for authority primitives the full protocol later
+subsumes into their owning transitions. The journal records exactly what
+happened — no entry claims a protocol transition that did not occur.
 """
 
 import json

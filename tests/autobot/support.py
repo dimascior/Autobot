@@ -18,7 +18,14 @@ _SRC = str(REPO / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from autobot import Database, ManualClock, Registry, Sequencer, Store  # noqa: E402
+from autobot import (  # noqa: E402
+    Collector,
+    Database,
+    ManualClock,
+    Registry,
+    Sequencer,
+    Store,
+)
 from contract_library import content_address  # noqa: E402
 
 CH1 = REPO / "docs" / "architecture" / "chapter1"
@@ -171,6 +178,16 @@ def intelligence_environment():
         defaults=defaults)
 
 
+def collect_receipt(rt, attempt_id, window_seconds=None):
+    """Derive-and-admit the frozen attempt's obj-15 through the registered
+    Collector seat (cap-30); returns the admitted receipt's address."""
+    kwargs = {}
+    if window_seconds is not None:
+        kwargs["evidence_window_seconds"] = window_seconds
+    collector = Collector(rt.sequencer, rt.store, **kwargs)
+    return collector.collect_and_admit(attempt_id)["receipt_address"]
+
+
 def drive_to_verified(rt, admitted_result, role="builder"):
     """Drive one admitted sequence through the full M2–M4 lifecycle to
     sequence VERIFIED / attempt VERIFIED (shared by the finalization tests
@@ -192,22 +209,17 @@ def drive_to_verified(rt, admitted_result, role="builder"):
                               b"provider session record\n")
     seq.attempt_running(attempt_id, "native-sess-9",
                         start["content_address"])
+    seq.admit_witness(attempt_id, "obj-12", "helios",
+                      b"command governance log\n")
     end = seq.admit_witness(attempt_id, "obj-13", "agent_clis",
                             b"transcript\n")
     seq.finish_attempt(attempt_id, role, "success", end["content_address"])
     seq.freeze_candidate(attempt_id, fence,
                          rt.store.put(b"candidate tree stand-in\n"))
-    receipt = rt.store.put(_json.dumps(
-        {"schema_version": "v1", "kind": "ExecutionReceipt",
-         "attempt_id": attempt_id,
-         "attempt_contract_hash": info["attempt_contract_hash"],
-         "completeness": "COMPLETE",
-         "admitted_witnesses": [
-             {"witness_kind": "obj-11", "producer": "autoswarm",
-              "content_sha256": start["content_address"]},
-             {"witness_kind": "obj-13", "producer": "agent_clis",
-              "content_sha256": end["content_address"]},
-         ]}, sort_keys=True).encode("utf-8"))
+    # The registered Collector derives COMPLETE from the frozen record's
+    # evidence_requirements (COMMAND_GOVERNANCE + EXECUTION_LIFECYCLE)
+    # over the admitted rows, mints obj-15 and admits it (C3-M1).
+    receipt = collect_receipt(rt, attempt_id)
     seq.complete_evidence(attempt_id, fence, receipt)
     environment = _json.dumps(
         {"schema_version": "v1", "kind": "ActualVerificationEnvironment",

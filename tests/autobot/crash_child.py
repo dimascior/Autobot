@@ -57,6 +57,9 @@ def main():
             snapshot["attempt_id"], "native-crash-1",
             admitted["content_address"])
     if stage == "verifying":
+        rt.sequencer.admit_witness(
+            snapshot["attempt_id"], "obj-12", "helios",
+            b"command governance log for the crash test\n")
         transcript = rt.sequencer.admit_witness(
             snapshot["attempt_id"], "obj-13", "agent_clis",
             b"transcript for the crash test\n")
@@ -66,17 +69,10 @@ def main():
         rt.sequencer.freeze_candidate(
             snapshot["attempt_id"], snapshot["fence"],
             rt.store.put(b"candidate for the crash test\n"))
-        receipt = rt.store.put(json.dumps(
-            {"schema_version": "v1", "kind": "ExecutionReceipt",
-             "attempt_id": snapshot["attempt_id"],
-             "attempt_contract_hash": snapshot["attempt_contract_hash"],
-             "completeness": "COMPLETE",
-             "admitted_witnesses": [
-                 {"witness_kind": "obj-11", "producer": "autoswarm",
-                  "content_sha256": admitted["content_address"]},
-                 {"witness_kind": "obj-13", "producer": "agent_clis",
-                  "content_sha256": transcript["content_address"]},
-             ]}, sort_keys=True).encode("utf-8"))
+        # C3-M1: the registered Collector derives-and-admits obj-15; the
+        # crash may now also land between the admission and the
+        # transition, and recovery converges either way.
+        receipt = support.collect_receipt(rt, snapshot["attempt_id"])
         rt.sequencer.complete_evidence(
             snapshot["attempt_id"], snapshot["fence"], receipt)
         registered = rt.sequencer.register_verifier_result(

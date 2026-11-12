@@ -29,6 +29,7 @@ from .models import (
     instant,
     mint_id,
 )
+from .collector import Collector
 from .project_state import project_state
 from .projection import project_prompt
 from .git_executor import execute_local_cas, observe_and_resolve

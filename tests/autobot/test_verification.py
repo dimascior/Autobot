@@ -93,8 +93,7 @@ class VerificationTestCase(unittest.TestCase):
         self.seq.reserve_attempt(self.attempt_id, expected_fence=self.fence)
         return info
 
-    def _to_evidence_complete(self, sequence_id=None, role="builder",
-                              completeness="COMPLETE"):
+    def _to_evidence_complete(self, sequence_id=None, role="builder"):
         self._start(sequence_id)
         self.seq.dispatch_attempt(self.attempt_id, role, "fake",
                                   self.projection)
@@ -102,23 +101,16 @@ class VerificationTestCase(unittest.TestCase):
                                        WITNESS_START)
         self.seq.attempt_running(self.attempt_id, "native-sess-9",
                                  start["content_address"])
+        self.seq.admit_witness(self.attempt_id, "obj-12", "helios",
+                               b"governance log\n")
         end = self.seq.admit_witness(self.attempt_id, "obj-13", "agent_clis",
                                      WITNESS_END)
         self.seq.finish_attempt(self.attempt_id, role, "success",
                                 end["content_address"])
         self.seq.freeze_candidate(self.attempt_id, self.fence,
                                   self.rt.store.put(CANDIDATE))
-        receipt = self.rt.store.put(json.dumps(
-            {"schema_version": "v1", "kind": "ExecutionReceipt",
-             "attempt_id": self.attempt_id,
-             "attempt_contract_hash": self.attempt_contract_hash,
-             "completeness": completeness,
-             "admitted_witnesses": [
-                 {"witness_kind": "obj-11", "producer": "autoswarm",
-                  "content_sha256": start["content_address"]},
-                 {"witness_kind": "obj-13", "producer": "agent_clis",
-                  "content_sha256": end["content_address"]},
-             ]}, sort_keys=True).encode("utf-8"))
+        # C3-M1: the registered Collector derives-and-admits obj-15.
+        receipt = support.collect_receipt(self.rt, self.attempt_id)
         self.seq.complete_evidence(self.attempt_id, self.fence, receipt)
 
     def _identity(self):
@@ -166,15 +158,45 @@ class SequenceArcTests(VerificationTestCase):
             self.assertIn(rule, rules)
         self.assertEqual(self._attempt_state(), "EVIDENCE_COMPLETE")
 
-    def test_t_s09_declared_classification_is_inert(self):
-        """Operator acceptance check 1: the receipt's DECLARED completeness
-        field carries no authority in either direction — t-a06/t-s09 fire
-        on the independently validated admission facts (the real join)
-        whatever the receipt declares, because acting on the declaration
-        would BE trusting receipt self-assertion. The classification half
-        of execution_receipt_complete is PARTIAL with Chapter 3, fail
-        closed at the t-a13/t-s45 seam."""
-        self._to_evidence_complete(completeness="PARTIAL")
+    def test_t_s09_requires_the_admitted_complete_classification(self):
+        """Operator acceptance check 1, carried into C3-M1: the receipt's
+        DECLARED completeness still carries no authority — a hand-built
+        COMPLETE receipt was never ADMITTED and is refused outright — and
+        t-a06/t-s09 now fire only on the collector's admitted COMPLETE
+        classification (the classification half of
+        execution_receipt_complete, closed)."""
+        self._start()
+        self.seq.dispatch_attempt(self.attempt_id, "builder", "fake",
+                                  self.projection)
+        start = self.seq.admit_witness(self.attempt_id, "obj-11",
+                                       "autoswarm", WITNESS_START)
+        self.seq.attempt_running(self.attempt_id, "native-sess-9",
+                                 start["content_address"])
+        self.seq.admit_witness(self.attempt_id, "obj-12", "helios",
+                               b"governance log\n")
+        end = self.seq.admit_witness(self.attempt_id, "obj-13",
+                                     "agent_clis", WITNESS_END)
+        self.seq.finish_attempt(self.attempt_id, "builder", "success",
+                                end["content_address"])
+        self.seq.freeze_candidate(self.attempt_id, self.fence,
+                                  self.rt.store.put(CANDIDATE))
+        declared = self.rt.store.put(json.dumps(
+            {"schema_version": "v1", "kind": "ExecutionReceipt",
+             "attempt_id": self.attempt_id,
+             "attempt_contract_hash": self.attempt_contract_hash,
+             "completeness": "COMPLETE",
+             "admitted_witnesses": [
+                 {"witness_kind": "obj-11", "producer": "autoswarm",
+                  "content_sha256": start["content_address"]},
+                 {"witness_kind": "obj-13", "producer": "agent_clis",
+                  "content_sha256": end["content_address"]},
+             ]}, sort_keys=True).encode("utf-8"))
+        with self.assertRaises(ConflictError) as ctx:
+            self.seq.complete_evidence(self.attempt_id, self.fence,
+                                       declared)
+        self.assertIn("not admitted", str(ctx.exception))
+        receipt = support.collect_receipt(self.rt, self.attempt_id)
+        self.seq.complete_evidence(self.attempt_id, self.fence, receipt)
         self.assertEqual(self._attempt_state(), "EVIDENCE_COMPLETE")
         self.assertEqual(self._sequence_state()["state"], "VERIFYING")
 
@@ -271,21 +293,15 @@ class ResultAdmissionTests(VerificationTestCase):
                                        WITNESS_START)
         self.seq.attempt_running(self.attempt_id, "native-sess-9",
                                  start["content_address"])
+        self.seq.admit_witness(self.attempt_id, "obj-12", "helios",
+                               b"governance log\n")
         end = self.seq.admit_witness(self.attempt_id, "obj-13", "agent_clis",
                                      WITNESS_END)
         self.seq.finish_attempt(self.attempt_id, "builder", "success",
                                 end["content_address"])
         self.seq.freeze_candidate(self.attempt_id, self.fence,
                                   self.rt.store.put(CANDIDATE))
-        receipt = self.rt.store.put(json.dumps(
-            {"schema_version": "v1", "kind": "ExecutionReceipt",
-             "attempt_id": self.attempt_id,
-             "attempt_contract_hash": self.attempt_contract_hash,
-             "completeness": "COMPLETE",
-             "admitted_witnesses": [
-                 {"witness_kind": "obj-13", "producer": "agent_clis",
-                  "content_sha256": end["content_address"]}]},
-            sort_keys=True).encode("utf-8"))
+        receipt = support.collect_receipt(self.rt, self.attempt_id)
         self.seq.complete_evidence(self.attempt_id, self.fence, receipt)
         with self.assertRaises(ConflictError):
             self._register("a2", "PASS", by="you")  # not the obj-19 minter

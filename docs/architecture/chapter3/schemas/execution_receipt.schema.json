@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "autobot/object/ExecutionReceipt/v1",
+  "title": "ExecutionReceipt (obj-15): the collector's authoritative completeness classification over admitted evidence",
+  "type": "object",
+  "required": [
+    "schema_version", "kind", "minter",
+    "attempt_id", "attempt_contract_hash", "call_id",
+    "completeness", "completeness_by_role",
+    "admitted_witnesses", "integrity_failures",
+    "derivation", "evidence_complete_by_utc"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "kind": {"const": "ExecutionReceipt"},
+    "minter": {"const": "collector"},
+    "attempt_id": {"type": "string", "pattern": "^at_[0-9a-f]{32}$"},
+    "attempt_contract_hash": {"$ref": "#/$defs/digest"},
+    "call_id": {"type": "string", "pattern": "^call_[0-9a-f]{32}$"},
+    "completeness": {"enum": ["COMPLETE", "INCOMPLETE", "INTEGRITY_FAILED"]},
+    "completeness_by_role": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/name_id"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["required_kinds", "present_kinds", "missing_kinds"],
+        "additionalProperties": false,
+        "properties": {
+          "required_kinds": {"$ref": "#/$defs/kind_list"},
+          "present_kinds": {"$ref": "#/$defs/kind_list"},
+          "missing_kinds": {"$ref": "#/$defs/kind_list"}
+        }
+      }
+    },
+    "admitted_witnesses": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/admission_entry"}
+    },
+    "integrity_failures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/admission_entry"}
+    },
+    "derivation": {
+      "type": "object",
+      "required": ["rule", "anchor_utc", "window_seconds"],
+      "additionalProperties": false,
+      "properties": {
+        "rule": {"const": "ch3:evidence-window-after-freeze"},
+        "anchor_utc": {"$ref": "#/$defs/instant"},
+        "window_seconds": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "evidence_complete_by_utc": {"$ref": "#/$defs/instant"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "instant": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"},
+    "name_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "principal": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "witness_kind": {"enum": ["obj-11", "obj-12", "obj-13", "obj-14"]},
+    "kind_list": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/witness_kind"}
+    },
+    "admission_entry": {
+      "type": "object",
+      "required": ["witness_kind", "producer", "content_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "witness_kind": {"$ref": "#/$defs/witness_kind"},
+        "producer": {"$ref": "#/$defs/principal"},
+        "content_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

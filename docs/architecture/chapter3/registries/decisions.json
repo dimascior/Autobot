@@ -1,0 +1,20 @@
+{
+  "schema": "autobot-ch3-decisions/v1",
+  "decisions": [
+    {"id": "D-C3-1",
+     "name": "Evidence completion bound: anchor and window",
+     "statement": "The ExecutionReceipt's evidence_complete_by_utc derives as anchor + window. The anchor is the attempt's CANDIDATE_FROZEN instant — the t-a05 TransitionRecord's recorded_utc, equal by construction to the attempt row's updated_utc while the attempt remains CANDIDATE_FROZEN (the only transition into that state, and receipt admission is only possible in it). The window is evidence_collection_window_seconds, a D-18 configuration default (default 3600, integer seconds per D-28; effective value = the stricter of delegation or repository policy and operational config, carried as collector configuration in v1). The derivation is recorded inside the receipt's derivation block {rule, anchor_utc, window_seconds}, so every bound is auditable from the receipt alone and re-derivable from the ledger.",
+     "basis": ["D-18", "D-27", "D-28", "RECONCILIATION M2 addendum: the bound's derivation from admission facts is Chapter 3's receipt semantics", "transitions.json policy_defaults precedent"]},
+    {"id": "D-C3-2",
+     "name": "Receipt authority is derived, never declared",
+     "statement": "admit_execution_receipt re-derives the entire canonical receipt payload from durable ledger facts (the frozen record's evidence_requirements, the attempt's dispatched role, the attempt_witnesses rows, the D-66 store probe, the D-C3-1 anchor) plus exactly one collector-supplied parameter (the window, validated as a D-28 uint >= 1) and admits the submitted bytes only when they are BYTE-IDENTICAL to the re-derivation. A receipt therefore cannot declare any classification, bound, witness set or role fact the ledger does not support: forging any field changes the bytes and the admission is refused. The admitted row's completeness and evidence_complete_by_utc are the only inputs t-a06/t-s09 (execution_receipt_complete) and t-a13/t-s45 (execution_receipt_integrity_failed_or_incomplete_beyond_bound) consume.",
+     "basis": ["cap-30", "obj-15 (minter collector, append-only)", "CORR-03", "INV-68", "INV-69", "D-12", "D-25", "D-66"]},
+    {"id": "D-C3-3",
+     "name": "INTEGRITY_FAILED classification and the D-66 interplay",
+     "statement": "The collector classifies INTEGRITY_FAILED when an admitted witness row's bytes are missing from the content store or no longer re-hash to their admitted address, probed non-raising at collection (store.verify). t-a13 then fails the candidate and t-s45 halts the sequence by REGISTERED transitions in one transaction, durably blocking acceptance (INV-23) in the running session. The same corruption independently halts the next recover() at its D-66 witness re-hash: both behaviors are fail-closed and deliberate — a store that lost admitted evidence requires the operator, and no receipt, transition or recovery ever trusts or replaces the bytes.",
+     "basis": ["INV-23", "D-66", "t-s45 source: Phase C finding (no exit for INTEGRITY_FAILED before verification)"]}
+  ],
+  "enforcement_notes": [
+    "cap-30 enforcement is 'interim: code' per capabilities.json: the Collector component (principal 'collector', the registered obj-15 minter) is the only code path that mints and submits receipts; the Taskforce (forbidden on cap-30) only asks the collector to collect. The admission seam additionally refuses any payload whose minter is not the registered obj-15 minter, so a forged principal fails structurally before the byte-equality check. The ipc_acl target enforcement stays with the later process-separation milestone."
+  ]
+}

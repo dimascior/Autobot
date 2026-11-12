@@ -40,7 +40,12 @@ from intelligence import (
     PlanStore,
 )
 
+# The frozen record family requires COMMAND_GOVERNANCE +
+# EXECUTION_LIFECYCLE (va_record evidence_requirements), so a COMPLETE
+# obj-15 classification needs obj-12 + obj-11 admitted (C3-M1); the
+# transcript rides along as extra admitted evidence.
 WITNESSES = [("obj-11", "autoswarm", b"provider session record\n"),
+             ("obj-12", "helios", b"command governance log\n"),
              ("obj-13", "agent_clis", b"session transcript\n")]
 FOLLOW_UP = ("Advance refs/heads/main to the prepared commit so the"
              " pilot subsystem lands.")
