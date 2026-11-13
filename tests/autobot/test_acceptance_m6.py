@@ -256,16 +256,14 @@ class AcceptanceGateTests(AcceptanceTestCase):
         # admission and begin_commit refuses non-LOCAL records, so a
         # COMMITTED remote record is reachable only by ledger surgery:
         # the runtime check is defense in depth.
-        remote = self.rt.db.conn.execute(
-            "SELECT sequence_id FROM sequences WHERE sequence_id != ?",
-            (a_id,)).fetchone()["sequence_id"]
-        # V-A's frozen bindings are chapter-1 identity fixtures with no
-        # executable closure bytes, so this seam-level drive uses the
-        # scripted fake (bound receipts, no execution).
-        from fake_verifier import FakeVerifierRunner
-        info_r = support.drive_to_verified(
-            self.rt, {"sequence_id": remote},
-            runner=FakeVerifierRunner(self.seq))
+        # C4-M2: the remote shape is the LIVE-BOUND sibling record (the
+        # fixture record's bindings have no executable closure bytes, and
+        # the role-transform check re-executes the bound transform), so
+        # the PRODUCTION runner drives it.
+        remote_admitted = self.rt.registry.admit_payload(
+            support.remote_record_payload(), submitted_by="planner")
+        remote = remote_admitted["sequence_id"]
+        info_r = support.drive_to_verified(self.rt, remote_admitted)
         with self.rt.db.transaction() as tx:
             tx.execute("UPDATE sequences SET state = 'COMMITTED'"
                        " WHERE sequence_id = ?", (remote,))

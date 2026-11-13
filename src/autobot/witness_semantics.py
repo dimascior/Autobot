@@ -21,6 +21,7 @@ observation of a fail-open, never an inference from absence alone).
 Enforced DENYs classify nothing: DENY counts stay diagnostic.
 """
 
+import hashlib
 import json
 
 # kind -> recognized fact name -> producer spellings (first present wins).
@@ -98,6 +99,17 @@ def extract_facts(witness_kind, data):
         value = source.get("id")
         if isinstance(value, str) and value:
             facts["native_session_id"] = value
+    if witness_kind == "obj-11":
+        # C4-M2 (INV-49): the provider task record's persisted prompt is
+        # the producer evidence of what the child actually received. The
+        # recognized fact is its CONTENT IDENTITY (a derived digest, never
+        # the text itself — the exact bytes stay producer-owned in the
+        # CAS); the role-transform check compares it against the exact
+        # registered transform's recomputed output.
+        prompt = source.get("prompt")
+        if isinstance(prompt, str) and prompt:
+            facts["prompt_sha256"] = "sha256:" + hashlib.sha256(
+                prompt.encode("utf-8")).hexdigest()
     return facts
 
 

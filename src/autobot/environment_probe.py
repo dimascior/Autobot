@@ -130,13 +130,16 @@ def default_tool_prober(name):
 
 def constraint_names(constraints):
     """The env-var and tool names the frozen constraints declare — the
-    ONLY names the probe may capture (D-56)."""
+    ONLY names the probe may capture (D-56). The frozen constraint
+    section for variables is spelled ``env`` (task_contract_record and
+    obj-10 schemas; F-C4-2), while the obj-18 CAPTURE field is
+    ``env_vars``."""
     env_names = set()
     tool_names = set()
     for constraint in constraints:
         if not isinstance(constraint, dict):
             continue
-        env_rule = constraint.get("env_vars")
+        env_rule = constraint.get("env")
         if isinstance(env_rule, dict):
             env_names.update(k for k in env_rule if isinstance(k, str))
         tool_rule = constraint.get("tools")

@@ -125,6 +125,73 @@ LIVE_SPECS = {
     ("vector-checker", "PROSE"): ("c5", LIVE_PROSE_SCRIPT),
 }
 
+# ---------------------------------------------------------------------------
+# The LIVE transform plane (C4-M2, INV-44/INV-49): registered transforms
+# whose closures are REAL executable scripts, so the role-transform check's
+# admission-time re-execution runs the exact registered closure. The frozen
+# fixture transform (transform_identity_v1) stays the admission corpus; any
+# record that must CONCLUDE verification binds these instead.
+
+# identity-projection: output bytes == input bytes (the runtime's declared
+# role transform; matches the v13/v14 evidence where prompt files were
+# already LF-only with no BOM).
+LIVE_IDENTITY_TRANSFORM_SCRIPT = b'''import sys
+
+with open(sys.argv[1], "rb") as fh:
+    data = fh.read()
+with open(sys.argv[2], "wb") as fh:
+    fh.write(data)
+sys.exit(0)
+'''
+
+# autoswarm-input-v1: the U-12-calibrated A1 ingestion transform — strict
+# UTF-8 (non-UTF-8 input is an execution failure, exit 3, never a guess),
+# BOM KEPT as U+FEFF, universal newlines (\\r\\n and \\r -> \\n), nothing
+# appended or stripped. Calibrated against the installed AutoSwarM
+# cli.prompt_from/stdin ingestion (Path.read_text/TextIOWrapper semantics).
+LIVE_AUTOSWARM_TRANSFORM_SCRIPT = b'''import sys
+
+with open(sys.argv[1], "rb") as fh:
+    raw = fh.read()
+try:
+    text = raw.decode("utf-8")
+except UnicodeDecodeError:
+    sys.exit(3)
+text = text.replace("\\r\\n", "\\n").replace("\\r", "\\n")
+with open(sys.argv[2], "wb") as fh:
+    fh.write(text.encode("utf-8"))
+sys.exit(0)
+'''
+
+# transform_id -> (registration_id suffix, script bytes).
+LIVE_TRANSFORM_SPECS = {
+    "identity-projection": ("d1", LIVE_IDENTITY_TRANSFORM_SCRIPT),
+    "autoswarm-input-v1": ("d2", LIVE_AUTOSWARM_TRANSFORM_SCRIPT),
+}
+
+
+def live_transform_registration(transform_id):
+    """The live TransformRegistration payload for one registered transform:
+    a reproducibly pinned python closure over the live interpreter, argv
+    protocol ``transform.py <input> <output>``."""
+    suffix, script = LIVE_TRANSFORM_SPECS[transform_id]
+    closure = {"kind": "python",
+               "script_sha256": content_address(script),
+               "interpreter_id": interpreter_identity(),
+               "dependency_lock_sha256": content_address(LIVE_LOCK)}
+    return {"schema_version": "v1", "kind": "TransformRegistration",
+            "registration_id": "rg_" + suffix.rjust(32, "0"),
+            "transform_id": transform_id, "version": "1.0.0",
+            "closure": closure, "artifact_root": artifact_root(closure),
+            "entrypoint": "transform.py", "execution_requirements": [],
+            "registered_by": "you",
+            "registered_utc": "2026-11-13T00:00:00.000Z"}
+
+
+def live_transform_hash(transform_id):
+    return object_hash("TransformRegistration",
+                       live_transform_registration(transform_id))
+
 
 def live_registration(verifier_id, behavior="PASS"):
     """The live VerifierRegistration payload for one (verifier, behavior):
@@ -198,6 +265,11 @@ def seed_bound_objects(rt, names=SEED_OBJECTS):
         _suffix, script = LIVE_SPECS[(verifier_id, behavior)]
         rt.store.put(script)
         rt.registry.admit_object(live_registration(verifier_id, behavior),
+                                 submitted_by="you")
+    for transform_id in sorted(LIVE_TRANSFORM_SPECS):
+        _suffix, script = LIVE_TRANSFORM_SPECS[transform_id]
+        rt.store.put(script)
+        rt.registry.admit_object(live_transform_registration(transform_id),
                                  submitted_by="you")
     rt.store.put(LIVE_LOCK)
     record = load_fixture("va_record.json")
@@ -290,6 +362,11 @@ def local_record_payload(task_contract_id=None, predecessors=None,
         live_registration_hash("registry-checker", "PASS"),
         live_registration_hash("vector-checker", vector_behavior),
     ))
+    # C4-M2: role_transforms stays the frozen {builder: identity-projection}
+    # but the BINDING is the live, executable transform registration, so
+    # the role-transform check's admission re-execution runs a real closure.
+    payload["resolved_bindings"]["transform_registrations"] = [
+        live_transform_hash("identity-projection")]
     if objective is not None:
         payload["objective"] = objective
     if predecessors is not None:
@@ -308,6 +385,31 @@ def local_record_payload(task_contract_id=None, predecessors=None,
         finalization_requirements if finalization_requirements is not None
         else ([] if payload["finalization_class"] == "READ_ONLY"
               else ["LOCAL_CANONICAL_COMMIT"]))
+    return payload
+
+
+def remote_record_payload(task_contract_id=None, objective=None,
+                          vector_behavior="PASS"):
+    """V-A's REMOTE shape re-bound to the LIVE verification plane (C4-M2):
+    the frozen fixture's source_domain and finalization requirements with
+    executable live verifier AND transform registrations, so every seam —
+    including the role-transform check's admission re-execution — operates
+    over real closures. The remote finalization/acceptance drives use THIS
+    record; the untouched chapter-1 fixture record remains the admission
+    corpus."""
+    import json as _json
+    payload = _json.loads(_json.dumps(load_fixture("va_record.json")))
+    payload["task_contract_id"] = task_contract_id or ("tc_" + "feed" * 8)
+    payload["acceptance_assertions"]["ids_and_environment_constraints"][0][
+        "environment_constraint"] = live_environment_constraint()
+    payload["resolved_bindings"]["verifier_registrations"] = sorted((
+        live_registration_hash("registry-checker", "PASS"),
+        live_registration_hash("vector-checker", vector_behavior),
+    ))
+    payload["resolved_bindings"]["transform_registrations"] = [
+        live_transform_hash("identity-projection")]
+    if objective is not None:
+        payload["objective"] = objective
     return payload
 
 
@@ -338,6 +440,9 @@ def intelligence_environment():
         "effect_policy": {"effect_intent_ttl_seconds": 300,
                           "effect_hard_timeout_seconds": 240},
         "role_transform_id": "identity-projection",
+        # C4-M2: compiled records declare the V-A specification input, so
+        # the role-transform check has its exact input bytes (INV-44).
+        "specification_inputs": record["specification_inputs"],
     }
     return RepositoryEnvironment(
         declaration=graph["declaration_local"],
@@ -345,18 +450,27 @@ def intelligence_environment():
         verifier_registrations=[
             live_registration("registry-checker", "PASS"),
             live_registration("vector-checker", "PASS")],
-        transform_registrations=[graph["transform_identity_v1"]],
+        # C4-M2: compiled contracts bind the LIVE identity transform, so
+        # the role-transform check's admission re-execution runs its real
+        # closure (the fixture transform has no executable bytes).
+        transform_registrations=[
+            live_transform_registration("identity-projection")],
         defaults=defaults)
 
 
 def session_record_bytes(call_id, native_session_id="native-sess-9",
-                         controller_id=None, **extra):
+                         controller_id=None, prompt=None, **extra):
     """Producer-shaped obj-11 bytes (the provider task/handle record
-    family): recognized facts join the witness to the bound call."""
+    family): recognized facts join the witness to the bound call. Since
+    C4-M2 the record may carry ``prompt`` — the provider-persisted prompt
+    the child actually received (task.json's field), whose derived content
+    identity is INV-49's observed side."""
     import json as _json
     payload = {"call_id": call_id,
                "native_session_id": native_session_id,
                "controller_id": controller_id or ("main_" + "0" * 32)}
+    if prompt is not None:
+        payload["prompt"] = prompt
     payload.update(extra)
     return _json.dumps(payload, sort_keys=True).encode("utf-8")
 
@@ -372,11 +486,16 @@ def collect_receipt(rt, attempt_id, window_seconds=None):
 
 
 def drive_to_evidence_complete(rt, admitted_result, role="builder",
-                               artifact=b"engineering artifact bytes\n"):
+                               artifact=b"engineering artifact bytes\n",
+                               prompt=VA_INPUT, projection=None):
     """Drive one admitted sequence to attempt EVIDENCE_COMPLETE / sequence
     VERIFYING through the full production evidence plane: dispatch,
     witnesses, finish, the REAL git_adapter-minted obj-16 freeze, the
-    registered Collector's obj-15, complete_evidence."""
+    registered Collector's obj-15, complete_evidence. ``prompt`` is the
+    provider-persisted prompt the obj-11 witness carries (None omits it —
+    the missing-producer-evidence scenarios); ``projection`` overrides the
+    dispatched projection bytes (e.g. a REAL obj-10 with
+    transform_provenance)."""
     seq = rt.sequencer
     sequence_id = admitted_result["sequence_id"]
     state = rt.db.conn.execute(
@@ -387,12 +506,18 @@ def drive_to_evidence_complete(rt, admitted_result, role="builder",
     info = seq.start_execution(sequence_id)
     attempt_id, fence = info["attempt_id"], info["fence"]
     seq.reserve_attempt(attempt_id, expected_fence=fence)
-    projection = rt.store.put(b"projection bytes for finalization\n")
+    projection = rt.store.put(
+        projection if projection is not None
+        else b"projection bytes for finalization\n")
     dispatched = seq.dispatch_attempt(attempt_id, role, "fake", projection)
     # The provider's own session record (C3-M2): recognized facts join it
-    # to the Sequencer-minted call — the causal chain's first link.
+    # to the Sequencer-minted call — the causal chain's first link. Since
+    # C4-M2 it carries the provider-persisted prompt: the identity
+    # transform over the record's one specification input means the child
+    # received exactly those bytes (INV-49's observed == expected).
     start = seq.admit_witness(attempt_id, "obj-11", "autoswarm",
-                              session_record_bytes(dispatched["call_id"]))
+                              session_record_bytes(dispatched["call_id"],
+                                                   prompt=prompt))
     seq.attempt_running(attempt_id, "native-sess-9",
                         start["content_address"])
     seq.admit_witness(attempt_id, "obj-12", "helios",

@@ -269,15 +269,14 @@ class AuthorityGateTests(FinalizationTestCase):
     def test_sl_only_boundary_on_remote_record(self):
         """A VERIFIED sequence whose frozen record is REMOTE cannot enter
         the SL path: the remote finalization arcs are deferred rows."""
-        remote = self.rt.db.conn.execute(
-            "SELECT sequence_id FROM sequences WHERE sequence_id != ?",
-            (self.sequence_id,)).fetchone()["sequence_id"]
-        # V-A's frozen bindings are chapter-1 identity fixtures (no
-        # executable closure bytes): the scripted fake drives this seam.
-        from fake_verifier import FakeVerifierRunner
-        info = support.drive_to_verified(
-            self.rt, {"sequence_id": remote},
-            runner=FakeVerifierRunner(self.seq))
+        # C4-M2: the remote shape is the LIVE-BOUND sibling record (the
+        # fixture record's bindings have no executable closure bytes, and
+        # the role-transform check re-executes the bound transform), so
+        # the PRODUCTION runner drives it.
+        remote_admitted = self.rt.registry.admit_payload(
+            support.remote_record_payload(), submitted_by="planner")
+        remote = remote_admitted["sequence_id"]
+        info = support.drive_to_verified(self.rt, remote_admitted)
         self.seq.grant_permit(remote, permitted_uses=1)
         with self.assertRaises(ConflictError) as caught:
             self.seq.begin_commit(remote, info["attempt_id"], TARGET,

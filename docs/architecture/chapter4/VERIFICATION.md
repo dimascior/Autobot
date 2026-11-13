@@ -1,9 +1,11 @@
-# Chapter 4 Verification Architecture (C4-M1)
+# Chapter 4 Verification Architecture (C4-M1 + C4-M2)
 
 Every statement here is implemented and proven by the suite
-(`tests/autobot/test_chapter4.py` plus the rewired verification, receipt,
-provenance, finalization, acceptance, recovery and pilot suites). Registry
-citations are to the frozen Chapter 0/1 registers.
+(`tests/autobot/test_chapter4.py` and `test_chapter4_m2.py` plus the
+rewired verification, receipt, provenance, finalization, acceptance,
+recovery and pilot suites). Registry citations are to the frozen
+Chapter 0/1 registers. Sections 1–12 are C4-M1 (amended where C4-M2
+extended them); sections 13–19 are C4-M2.
 
 ## 1. CandidateReceipt (obj-16)
 
@@ -246,13 +248,177 @@ result.
 
 ## 12. Chapter boundaries
 
-Not in this chapter's M1, per the frozen roadmap: obj-14 remote-check
+Not in this chapter, per the frozen roadmap: obj-14 remote-check
 witnesses and remote verification/publication (Chapter 6), obj-30/obj-35
-full schemas (Chapter 5), ACCEPTANCE_FRESH (existing deferred arm), HDB
-as authority (forbidden by existing architecture), planner/Taskforce
-authority over verifier results (forbidden by cap-32/cap-35), CORR-57
-governance and Helios implementation cleanup (separate tracks). Remaining
-chapter-4 registered proofs for later milestones:
+full schemas and acceptance semantics (Chapter 5), ACCEPTANCE_FRESH
+(existing deferred arm), HDB as authority (forbidden by existing
+architecture), planner/Taskforce authority over verifier results
+(forbidden by cap-32/cap-35), CORR-57 governance and Helios
+implementation cleanup (separate tracks). The proofs M1 left open —
 `CH4-a1-transform-chain` (INV-44), `CH4-role-transform-check` (INV-49),
-`CH4-artifact-retention`'s retention-window half (INV-58), plus the
-BY_ATTESTATION obj-19 arm and executable packaged closures.
+`CH4-artifact-retention` (INV-58), the BY_ATTESTATION obj-19 arm and
+executable packaged closures — closed in C4-M2 (sections 13–19).
+
+## 13. The A1 transform calibration (U-12, INV-44) — C4-M2
+
+U-12 is RESOLVED from the executing provider source and recomputed
+retained evidence, not from documentation or memory:
+
+- **Ingestion (AutoSwarm `--input` file and stdin alike)**: strict UTF-8
+  (non-UTF-8 input fails closed — never decoded by guess), the BOM kept
+  as U+FEFF, universal newlines (CRLF and lone CR fold to LF), nothing
+  appended, nothing stripped. `task.json` persists the prompt string
+  VERBATIM (atomic UTF-8; JSON escaping shields the value), and the
+  coordinator's stdin pipe round-trips the decoded string identically.
+- **Evidence**: the v13 and v14 Luna prompts are byte-identical to their
+  prompt files (raw file sha == recorded prompt sha; LF-only, no BOM);
+  six PS 5.1-composed monitor prompts carry exactly the predicted
+  signature — BOM retained, CRLF normalized at ingestion, the PS-appended
+  terminator present in the input bytes. PowerShell 5.1's encoding and
+  append effects are INPUT-side facts: they land in the specification
+  bytes and are covered by INV-21 exact-byte identity.
+
+The calibrated family is REGISTERED and EXECUTED: `identity-projection`
+(byte identity — the runtime's declared role transform) and
+`autoswarm-input-v1` (the ingestion calibration above), both reproducibly
+pinned python closures with the argv protocol
+`transform.py <input_path> <output_path>` (exit 0 = the output file holds
+the exact output bytes; any nonzero exit is an execution failure with no
+output). One byte of input difference is a different specification and a
+different output identity; nothing anywhere decodes, normalizes or
+compares TEXT — identity is bytes (INV-21/INV-44). Historical ingestion
+paths that differed would be registered as DISTINCT transforms; none are
+claimed beyond the calibrated one.
+
+## 14. The role-transform check (INV-49) — C4-M2
+
+**Chain**: the frozen record's single declared specification input (exact
+bytes, by address) → the record's declared registered transform for the
+DISPATCHED role (`role_transforms`, bound through
+`resolved_bindings.transform_registrations`) → the EXPECTED prompt
+identity → compared against the OBSERVED identity derived ONLY from
+admitted obj-11 producer bytes (the provider's persisted task record
+carries the prompt the child was actually given; `witness_semantics`
+derives its content identity as a recognized fact). A child claiming
+"this is the prompt I received" is not evidence, and neither is the
+runner: a receipt claiming an observed identity that no admitted producer
+record carries is refused, a claim differing from the admitted evidence
+is refused, and several DISTINCT admitted identities are an ambiguity
+refusal — never chosen from.
+
+**Result model** (D-C4-8): a BY_VERIFIER result over the D-47
+ROLE_TRANSFORM part, row key `role-transform/<role>`, with the bound
+TransformRegistration and a `transform_check` block carrying the exact
+identities. PASS ⇔ completed transform and observed == expected; FAIL ⇔
+`transform_output_mismatch` (the ordinary repair path, t-a08/t-s11);
+INCONCLUSIVE ⇔ `verifier_execution_failed` or
+`missing_producer_evidence` (blocks to t-s12 unknown).
+
+**Admission (D-C3-2 grade)**: for every completed-transform claim the
+seam RE-EXECUTES the bound transform closure over the exact declared
+input bytes and refuses an expected identity it did not just re-derive —
+so a forged expected value dies even when every byte of the receipt is
+internally consistent. The runner performs the same derivation first;
+the seam's re-derivation is the authority.
+
+**Conclusion**: when the frozen record declares a transform for the
+dispatched role, NO conclusion exists without the admitted check; a PASS
+row unlocks t-s10 (journaled under `role_transform_checks`), FAIL and
+INCONCLUSIVE behave as any row. The production runner executes the check
+before any assertion, so a child that received the wrong prompt is caught
+even when every assertion would pass.
+
+## 15. obj-10 transform provenance (INV-44) — C4-M2
+
+`PromptProjection` gains the optional `transform_provenance` block
+{transform_id, registration, input_name, input_sha256, output_sha256} —
+the dispatcher's CLAIM of the registered transform execution it
+performed, carried only for a role the frozen record binds to that
+transform (both schema mirrors amended; `authority_effect` stays none).
+At the check's admission the claim must agree with the re-derivation:
+wrong transform, wrong registration, wrong input or wrong output in the
+projection refuses the admission (dispatcher drift dies at the seam);
+a projection that is not a canonical obj-10, or carries no claim, simply
+contributes nothing — the check's authority never came from the
+projection.
+
+## 16. BY_ATTESTATION (D-52/D-53) — C4-M2
+
+`attest_assertion` is the obj-37 ADMISSION seam (D-C4-11): durable
+identity (minted by you), provenance (attests PASS) and FULL scope
+binding — the exact attempt, its contract hash, the admitted obj-16
+candidate the verdict is ABOUT, and the D-47 part reference
+{record, ASSERTION, assertion_id}. The exact bytes are preserved (D-31)
+and the `attempt_attestations` row (schema v10, one per
+(attempt, assertion)) is journaled `ch4:admit-attestation`. The verifier
+runner INCORPORATES an admitted attestation into the canonical obj-19
+BY_ATTESTATION arm — {attestation_sha256, outcome ATTESTED, mode
+HUMAN_ATTESTED, and NO registration, execution or environment: an
+attestation is a human act and is never dressed up as an execution} —
+through `register_attested_result`, which re-validates every binding
+including byte-address equality with the ADMITTED attestation. The row's
+authority principal is you; the runner can never synthesize an
+attestation, only give an admitted one its canonical receipt form.
+Attestation remains durable BEFORE t-s10 can commit. Chapter-5 boundary
+untouched: acceptance consumes PASS/ATTESTED rows exactly as before.
+A documented vocabulary boundary: an `environment_constraint` declared on
+a HUMAN_ATTESTED assertion constrains nothing — no execution exists to
+constrain, and D-52's authority never involved environments.
+
+## 17. Packaged closures (D-C4-10) — C4-M2
+
+The `packaged`/`manifest_sha256` form EXECUTES: the manifest bytes are a
+PackageManifest v1 naming every entry {path, content_sha256}, the
+entrypoint (one of the entries, and it must AGREE with the
+registration's), and an optional pinned interpreter identity. Every entry
+materializes from the content store at its relative slash path — the
+grammar fails closed on absolute paths, `..`, backslashes and duplicates
+— and only the bound entrypoint executes. The
+`packaged`/`image_digest` form names a container image; no container
+engine is part of this runtime's frozen environment, so it HALTs
+explicitly rather than being approximated. ONE resolver and ONE
+materializer (`autobot.transforms`) serve verifier executions and
+transform executions alike; execution parity is proven for python and
+packaged closures (the corpus holds no native binary to execute; native
+parity is proven at resolution and materialization).
+
+## 18. Artifact retention (INV-58) — C4-M2
+
+Two halves, explicitly split:
+
+- **Retention roots** (`Sequencer.retention_roots`): content address →
+  the NON-terminal sequences whose frozen records bind it through their
+  registrations' closures (python: script + lock; native: executable;
+  packaged: manifest + every entry). A leaf is live while ANY
+  non-terminal sequence binds it; registration REPLACEMENT frees nothing
+  until every sequence bound to the old registration is terminal.
+- **Reclamation** (`Sequencer.reclaim`): an EXPLICIT act over named
+  addresses — never a sweeper — that recomputes the roots INSIDE the
+  call (a list computed before a restart, an admission or a replacement
+  is stale and protects nothing), refuses every live closure leaf, every
+  address any ledger column references, and every frozen record's
+  declared specification input (resolvable forever: recovery re-resolves
+  ALL records' inputs and INV-44's chain starts at those exact bytes),
+  unlinks the rest, and journals removals (`ch4:reclaim`).
+
+Recovery REPORTS `retention.missing_bound_leaves` for live records whose
+bound leaves do not resolve (D-C4-9) — visibility at restart, while the
+fail-closed act stays dispatch-time INV-53. Deletion attempts in every
+live state are refused; a shared leaf is retained until ALL binders are
+terminal; eligibility after terminality is proven over the real
+READ_ONLY completion path.
+
+## 19. C4-M2 residuals, recorded
+
+- The in-process writer residual of D-C4-5 applies to the transform
+  plane identically: a writer with content-store access could plant
+  consistent FAILURE diagnostics to BLOCK (never to pass — every
+  completed-transform claim is re-derived at admission); Chapter 8's
+  authority-service identity closes the caller boundary.
+- The observed side is as strong as the admitted producer evidence:
+  witness admission (producer gates, C3 provenance) is the trust
+  boundary, and fabricated obj-11 records can at most force ambiguity or
+  mismatch — refusals and FAILs, never PASS.
+- Registration authors seed closure leaves; admitting a registration
+  whose leaves were never uploaded leaves dispatch HALTing (INV-53) and
+  recovery reporting (D-C4-9) — fail-closed, visible, recoverable.

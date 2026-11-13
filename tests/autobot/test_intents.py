@@ -29,16 +29,22 @@ class SchemaEvolutionTests(unittest.TestCase):
         (attempt_verifications, the repair counter, the member lease),
         v6 the M6 released_edges dependency surface, v7 the C3-M1
         attempt_receipts admission surface, v8 the C3-M2
-        attempt_artifacts provenance index and v9 the C4-M1 candidate and
-        environment proof-object tables, all additively; a database newer
-        than the running code is refused."""
+        attempt_artifacts provenance index, v9 the C4-M1 candidate and
+        environment proof-object tables and v10 the C4-M2
+        attempt_attestations admission surface, all additively; a database
+        newer than the running code is refused."""
         tmp = tempfile.TemporaryDirectory()
         try:
             path = Path(tmp.name) / "autobot.db"
             db = Database(path)
             row = db.conn.execute(
                 "SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            self.assertEqual(row["value"], "9")
+            self.assertEqual(row["value"], "10")
+            attestation_columns = {r["name"] for r in db.conn.execute(
+                "PRAGMA table_info(attempt_attestations)").fetchall()}
+            self.assertLessEqual(
+                {"admission_id", "attempt_id", "assertion_id",
+                 "content_sha256", "admitted_utc"}, attestation_columns)
             candidate_columns = {r["name"] for r in db.conn.execute(
                 "PRAGMA table_info(attempt_candidates)").fetchall()}
             self.assertLessEqual(

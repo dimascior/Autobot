@@ -49,18 +49,47 @@ The registered chapter-4 proofs closed in M1: `CH4-llm-output-never-pass`
 (INV-06), `CH4-mandatory-assertions-required` (INV-07),
 `CH4-verification-binding` (INV-17), `CH4-evidence-not-reused` (INV-18).
 
-Remaining chapter-4 registered proofs (later milestones):
-`CH4-a1-transform-chain` (INV-44), `CH4-role-transform-check` (INV-49),
-`CH4-artifact-retention` (INV-58 — recovery already marks closure leaves
-referenced; the retention WINDOW proof remains).
+## Milestone 2 (C4-M2) — this tree
 
-Documents: `VERIFICATION.md` (the architecture), `registries/decisions.json`
-(D-C4-1..7), `schemas/` (the obj-16/19/20 mirrors, byte-identical to
-`src/autobot/schemas_chapter4/`).
+- **U-12 RESOLVED** — the A1 transform calibration from executing
+  provider source plus recomputed retained evidence; the calibrated
+  family registered and executed (`identity-projection`,
+  `autoswarm-input-v1`), re-executed at every check admission.
+- **`CH4-a1-transform-chain` (INV-44) closed** — exact input bytes →
+  registered transform → expected prompt identity; BOM/CRLF/UTF-16/
+  append/strip vectors all change an identity or fail closed.
+- **`CH4-role-transform-check` (INV-49) closed** — the dispatched child's
+  RECEIVED prompt identity from admitted obj-11 producer bytes only;
+  mismatch is an authoritative FAIL on the repair path; missing producer
+  evidence blocks conclusion; replays, stale registrations, forged
+  expected values and dispatcher (obj-10 `transform_provenance`) drift
+  die at the seam; conclusion REQUIRES the admitted check.
+- **BY_ATTESTATION (D-C4-11)** — `attest_assertion` reshaped into the
+  obj-37 admission (full D-53 bindings incl. candidate + D-47 part;
+  `attempt_attestations`, schema v10); the runner incorporates admitted
+  attestations into canonical obj-19 BY_ATTESTATION results (no
+  registration, no execution, no environment); Chapter-5 acceptance
+  semantics untouched.
+- **Packaged closures (D-C4-10)** — the manifest form executes its exact
+  content-addressed entries under one shared resolver/materializer
+  (`autobot.transforms`); the image form HALTs explicitly; python/
+  packaged execution parity proven.
+- **`CH4-artifact-retention` (INV-58) closed** — `retention_roots` over
+  non-terminal sequences, explicit re-derived `reclaim` (ledger columns
+  and frozen records' specification inputs are never reclaimable),
+  replacement frees nothing until every binder is terminal, recovery
+  REPORTS missing bound leaves (D-C4-9).
+- **F-C4-2 fixed (D-C4-12)** — the env-var constraint section is the
+  frozen `env` spelling; `env_vars` as a constraint section fails closed.
 
-Boundaries kept out of this chapter's M1, per the frozen roadmap: obj-14
+Documents: `VERIFICATION.md` (the architecture, sections 13–19 for M2),
+`registries/decisions.json` (D-C4-1..12), `schemas/` (the obj-16/19/20
+mirrors, byte-identical to `src/autobot/schemas_chapter4/`).
+
+Boundaries kept out of this chapter, per the frozen roadmap: obj-14
 remote checks and remote verification/publication (Chapter 6), obj-30 and
-obj-35 full schemas (Chapter 5), ACCEPTANCE_FRESH (existing deferred arm),
-HDB as authority (forbidden), planner/Taskforce authority over verifier
-results (forbidden), CORR-57 governance and Helios implementation cleanup
-(separate tracks).
+obj-35 full schemas and acceptance semantics (Chapter 5),
+ACCEPTANCE_FRESH (existing deferred arm), HDB as authority (forbidden),
+planner/Taskforce authority over verifier results (forbidden), a general
+repository garbage collector (reclaim judges only named candidates),
+CORR-57 governance and Helios implementation cleanup (separate tracks).

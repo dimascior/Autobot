@@ -153,12 +153,23 @@ class SchemaAndRegistryPinningTests(Chapter4TestCase):
         self.assertEqual(
             verification_receipts.candidate_schema()["properties"][
                 "minter"]["const"], "git_adapter")
-        for schema in (verification_receipts.verification_receipt_schema(),
-                       verification_receipts.failure_receipt_schema()):
-            self.assertEqual(schema["properties"]["minter"]["const"],
-                             "verifier_runner")
-            self.assertEqual(schema["properties"]["result_source"]["const"],
-                             "BY_VERIFIER")
+        # C4-M2: obj-19/obj-20 are oneOf arms; EVERY arm pins the
+        # registered minter, and the arm vocabulary is exactly the
+        # registered result sources (obj-19 adds BY_ATTESTATION).
+        obj19 = verification_receipts.verification_receipt_schema()
+        obj20 = verification_receipts.failure_receipt_schema()
+        for schema in (obj19, obj20):
+            for arm in schema["oneOf"]:
+                self.assertEqual(arm["properties"]["minter"]["const"],
+                                 "verifier_runner")
+        self.assertEqual(
+            {arm["properties"]["result_source"]["const"]
+             for arm in obj19["oneOf"]},
+            {"BY_VERIFIER", "BY_ATTESTATION"})
+        self.assertEqual(
+            {arm["properties"]["result_source"]["const"]
+             for arm in obj20["oneOf"]},
+            {"BY_VERIFIER"})
 
     def test_registered_capabilities_forbid_the_taskforce(self):
         """cap-32 and cap-35 FORBID task_force; the intelligence plane's
@@ -411,7 +422,7 @@ class CandidateImmutabilityTests(Chapter4TestCase):
         self.assertFalse(outcome["inconclusive"])
         self.assertEqual(
             sorted(r["outcome"] for r in outcome["results"]),
-            ["PASS", "PASS"])
+            ["PASS", "PASS", "PASS"])  # a1, a2 and the role-transform check
         # the receipts bind the ORIGINAL candidate, not the drifted tree
         unchanged = self._candidate_row()
         self.assertEqual(unchanged["candidate_tree"], frozen_tree)
@@ -451,9 +462,12 @@ class EnvironmentPlaneTests(Chapter4TestCase):
         never the process environment."""
         os.environ["AUTOBOT_C4_TEST_VAR"] = "expected-value"
         try:
-            constraints = [{"env_vars": {"AUTOBOT_C4_TEST_VAR":
-                                         "expected-value",
-                                         "AUTOBOT_C4_UNSET_VAR": "x"},
+            # F-C4-2: the FROZEN constraint section for variables is
+            # spelled ``env`` (task_contract_record / obj-10 schemas); the
+            # obj-18 CAPTURE field it feeds is ``env_vars``.
+            constraints = [{"env": {"AUTOBOT_C4_TEST_VAR":
+                                    "expected-value",
+                                    "AUTOBOT_C4_UNSET_VAR": "x"},
                             "tools": {"c4tool": {"versions": ["9.9.9"]}}}]
             payload = capture_environment(
                 {"sequence_id": "sq_" + "0" * 32,
@@ -488,7 +502,7 @@ class EnvironmentPlaneTests(Chapter4TestCase):
                 "platform": {"os": ["windows", "linux"],
                              "architectures": ["x86_64"]},
                 "tools": {"git": {"versions": ["2.47.0"]}},
-                "env_vars": {"CI": "true"}}
+                "env": {"CI": "true"}}
         self.assertIsNone(environment_satisfies(good, actual))
         cases = [
             ({"interpreter": {"versions": ["3.8.10"]}}, "version"),
@@ -498,12 +512,15 @@ class EnvironmentPlaneTests(Chapter4TestCase):
             ({"platform": {"architectures": ["arm64"]}}, "architecture"),
             ({"tools": {"uv": {"versions": ["1.0"]}}}, "uv"),
             ({"tools": {"git": {"versions": ["9.9"]}}}, "version"),
-            ({"env_vars": {"UNSET_NAME": "x"}}, "UNSET_NAME"),
-            ({"env_vars": {"CI": "false"}}, "CI"),
+            ({"env": {"UNSET_NAME": "x"}}, "UNSET_NAME"),
+            ({"env": {"CI": "false"}}, "CI"),
             ({"container": {"image": "x"}}, "not supported"),
             ({"interpreter": {"builds": ["x"]}}, "not supported"),
             ({"platform": {"kernels": ["x"]}}, "not supported"),
             ({"tools": {"git": {"paths": ["x"]}}}, "not supported"),
+            # F-C4-2's other half: a constraint SECTION spelled env_vars is
+            # not the frozen vocabulary — it fails closed, never guessed.
+            ({"env_vars": {"CI": "true"}}, "not supported"),
         ]
         for constraint, marker in cases:
             refusal = environment_satisfies(constraint, actual)
@@ -582,8 +599,10 @@ class ClosureDisciplineTests(Chapter4TestCase):
         before = self._journal_count()
         with self.assertRaises(IntegrityHalt):
             self._runner().verify_attempt(self.attempt_id)
-        self.assertEqual(self._journal_count(),
-                         before + 1)  # only the durable obj-18 admission
+        # only the durable obj-18 admission and the role-transform check
+        # (C4-M2: the identity transform's leaves are intact) committed;
+        # the missing VERIFIER leaf halted before any assertion result.
+        self.assertEqual(self._journal_count(), before + 2)
         self.assertEqual(self._sequence_state()["state"], "VERIFYING")
         self.seq.halt_verification(self.sequence_id,
                                    "bound_artifact_unavailable")
@@ -614,8 +633,22 @@ class ClosureDisciplineTests(Chapter4TestCase):
             resolve_closure(self.rt.store, registration)
         self.assertIn("interpreter", str(ctx.exception))
 
-    def test_packaged_closure_is_unexecutable_in_v1(self):
+    def test_packaged_image_form_and_missing_manifest_halt(self):
+        """D-C4-10 (C4-M2 reshapes the C4-M1 refusal): the packaged
+        MANIFEST form is now executable — so a manifest whose bytes are
+        absent HALTs at resolution (INV-53) — while the image_digest form
+        names a container image no part of this runtime's frozen
+        environment can execute, and HALTs explicitly rather than being
+        approximated by another closure kind."""
         from contract_library import artifact_root
+        image = {"kind": "packaged",
+                 "image_digest": "sha256:" + "cd" * 32}
+        registration = {"registration_id": "rg_" + "f" * 32,
+                        "closure": image,
+                        "artifact_root": artifact_root(image)}
+        with self.assertRaises(IntegrityHalt) as ctx:
+            resolve_closure(self.rt.store, registration)
+        self.assertIn("container", str(ctx.exception))
         closure = {"kind": "packaged",
                    "manifest_sha256": "sha256:" + "ab" * 32}
         registration = {"registration_id": "rg_" + "f" * 32,
@@ -762,7 +795,8 @@ class ResultProtocolTests(Chapter4TestCase):
         info = support.drive_to_verified(self.rt, self.admitted)
         self.attempt_id = info["attempt_id"]
         rows = self._verification_rows()
-        self.assertEqual([r["outcome"] for r in rows], ["PASS", "PASS"])
+        self.assertEqual([r["outcome"] for r in rows],
+                         ["PASS", "PASS", "PASS"])  # a1, a2, role-transform
         candidate = self._candidate_row()
         environment = self._environment_row()
         for vrow in rows:
@@ -778,12 +812,24 @@ class ResultProtocolTests(Chapter4TestCase):
                              candidate["content_sha256"])
             self.assertEqual(payload["environment_sha256"],
                              environment["content_sha256"])
-            self.assertEqual(payload["assertion"]["part"]["part_kind"],
-                             "ASSERTION")
-            # the execution output is durable and carries the protocol line
             output = self.rt.store.get(
                 payload["execution"]["output_sha256"])
-            self.assertIn(b"autobot_verifier_result", output)
+            if vrow["assertion_id"].startswith("role-transform/"):
+                # C4-M2: the INV-49 check rides the same INV-17 binding;
+                # its durable execution output IS the transform's exact
+                # output bytes (identity over the declared input), and the
+                # admitted producer identity equals the derived expected.
+                self.assertEqual(payload["assertion"]["part"]["part_kind"],
+                                 "ROLE_TRANSFORM")
+                self.assertEqual(output, support.VA_INPUT.encode("utf-8"))
+                check = payload["transform_check"]
+                self.assertEqual(check["expected_sha256"],
+                                 check["observed_sha256"])
+            else:
+                self.assertEqual(payload["assertion"]["part"]["part_kind"],
+                                 "ASSERTION")
+                # durable output carrying the registered protocol line
+                self.assertIn(b"autobot_verifier_result", output)
         rules = self._rules()
         self.assertIn("t-a07", rules)
         self.assertIn("t-s10", rules)

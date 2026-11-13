@@ -18,13 +18,16 @@ registered transitions move state.
 The authority discipline, per registered rule:
 
 - INV-66/INV-53 (D-57): the runner executes exactly the registered
-  artifact closure — the script and lock bytes at their content addresses
-  (materialized from the content store, never a same-named workspace
-  file), under the interpreter the registration's ``interpreter_id``
-  names. A missing leaf, a recompute-divergent ``artifact_root`` or an
-  unavailable registered interpreter is an IntegrityHalt — never a
-  substitution, never a PATH lookup (the registered t-s12 arm is
-  ``bound_artifact_unavailable``).
+  artifact closure — the python script+lock, the native executable or the
+  packaged manifest's entry bytes at their content addresses (materialized
+  from the content store, never a same-named workspace file), under the
+  interpreter the closure pins. A missing leaf, a recompute-divergent
+  ``artifact_root``, an unavailable pinned interpreter or a container
+  ``image_digest`` form is an IntegrityHalt — never a substitution, never
+  a PATH lookup (the registered t-s12 arm is
+  ``bound_artifact_unavailable``). Since C4-M2 the resolver and
+  materializer live in ``transforms``: ONE closure discipline shared by
+  verifier executions and transform executions.
 - SEM-16 (D-57): a ``service:*`` registration never executes for a
   DETERMINISTIC assertion.
 - D-56: the obj-18 environment is captured ONCE per attempt by the
@@ -48,14 +51,14 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 
-from contract_library import artifact_root, canonicalize, content_address
+from contract_library import canonicalize, content_address
 
 from . import environment_probe
+from . import transforms
 from . import verification_receipts
-from .models import ConflictError, IntegrityHalt
+from .models import ConflictError
 from .verification import (
     VerifierRunner,
     environment_satisfies,
@@ -68,45 +71,12 @@ from .verification import (
 RESULT_KEY = verification_receipts.RESULT_KEY
 _parse_conclusion = verification_receipts.parse_conclusion
 
-
-def resolve_closure(store, registration):
-    """INV-53/INV-66/SEM-15 at dispatch: recompute the artifact_root from
-    the closure manifest, prove every required leaf's exact bytes exist in
-    the content store, and prove the registered interpreter is the one
-    actually available. Anything missing or divergent is an IntegrityHalt
-    (never substituted); the sequence-level HALT is t-s12
-    bound_artifact_unavailable. Returns the closure dict."""
-    closure = registration.get("closure")
-    if not isinstance(closure, dict):
-        raise IntegrityHalt(
-            "registration %r carries no closure manifest (INV-53)"
-            % registration.get("registration_id"))
-    recomputed = artifact_root(closure)
-    if recomputed != registration.get("artifact_root"):
-        raise IntegrityHalt(
-            "registration %r artifact_root does not recompute from its"
-            " closure manifest (SEM-15/D-32: forged or corrupted"
-            " registration)" % registration.get("registration_id"))
-    kind = closure.get("kind")
-    if kind == "python":
-        for leaf in ("script_sha256", "dependency_lock_sha256"):
-            store.get(closure[leaf])  # D-66: missing/altered leaf HALTs
-        live = environment_probe.interpreter_identity()
-        if closure["interpreter_id"] != live:
-            raise IntegrityHalt(
-                "registered interpreter %r is not available (live identity"
-                " %r): the closure executes the EXACT registered"
-                " interpreter or HALTs (INV-66, never a PATH substitute)"
-                % (closure["interpreter_id"], live))
-    elif kind == "native":
-        store.get(closure["executable_sha256"])
-    else:
-        raise IntegrityHalt(
-            "closure kind %r is not executable by this runtime (v1"
-            " executes reproducibly pinned python and native closures;"
-            " a packaged closure HALTs rather than being approximated)"
-            % kind)
-    return closure
+# The closure discipline (INV-53/INV-66/SEM-15 resolution plus
+# materialization) lives in ``transforms`` since C4-M2 — one resolver for
+# verifier closures and transform closures alike, with the
+# packaged/manifest form supported in both. Re-exported under its M1 name
+# for the chapter-4 call sites and proofs.
+resolve_closure = transforms.resolve_closure
 
 
 class ProductionVerifierRunner(VerifierRunner):
@@ -222,6 +192,74 @@ class ProductionVerifierRunner(VerifierRunner):
                     % refusal)
         results = []
         inconclusive = False
+        # C4-M2 (INV-44/INV-49): when the frozen record declares a
+        # transform for the DISPATCHED role, the role-transform check is
+        # part of verification — executed before any assertion so a child
+        # that received the wrong prompt is caught even when every
+        # assertion would pass.
+        transform = state.get("role_transform")
+        if transform is not None:
+            row_key = "role-transform/%s" % transform["role"]
+            existing = self.sequencer.db.conn.execute(
+                "SELECT outcome FROM attempt_verifications"
+                " WHERE attempt_id = ? AND assertion_id = ?",
+                (attempt_id, row_key)).fetchone()
+            if existing is not None:
+                if existing["outcome"] == "INCONCLUSIVE":
+                    inconclusive = True
+            else:
+                outcome, receipt = self._check_role_transform(
+                    state, transform, env_address)
+                admitted = self.sequencer.register_transform_check(
+                    attempt_id, transform["role"], outcome,
+                    verification_receipts.RESULT_PRODUCER, receipt,
+                    environment=env_bytes)
+                if outcome == "INCONCLUSIVE":
+                    inconclusive = True
+                results.append({"assertion_id": row_key,
+                                "outcome": outcome,
+                                "verification_id":
+                                    admitted["verification_id"],
+                                "receipt_address":
+                                    admitted["receipt_address"]})
+        # C4-M2 (D-52/D-53): incorporate admitted obj-37 attestations for
+        # HUMAN_ATTESTED assertions into canonical obj-19 BY_ATTESTATION
+        # results. No attestation, no row — D-52's human act is never
+        # synthesized; the runner only gives an ADMITTED one its canonical
+        # receipt form.
+        attestations = state.get("attestations", {})
+        for entry in state["assertions"]:
+            if entry.get("mode") != "HUMAN_ATTESTED":
+                continue
+            address = attestations.get(entry["assertion_id"])
+            if address is None:
+                continue
+            existing = self.sequencer.db.conn.execute(
+                "SELECT outcome FROM attempt_verifications"
+                " WHERE attempt_id = ? AND assertion_id = ?",
+                (attempt_id, entry["assertion_id"])).fetchone()
+            if existing is not None:
+                continue
+            binding = {"sequence_id": state["sequence_id"],
+                       "attempt_id": state["attempt_id"],
+                       "fence": state["fence"],
+                       "attempt_contract_hash":
+                           state["attempt_contract_hash"],
+                       "record_hash": state["record_hash"],
+                       "candidate_receipt_sha256":
+                           state["candidate_receipt_sha256"]}
+            payload = verification_receipts.build_attested_result_payload(
+                binding, entry["assertion_id"], address)
+            admitted = self.sequencer.register_attested_result(
+                attempt_id, entry["assertion_id"],
+                verification_receipts.RESULT_PRODUCER,
+                verification_receipts.receipt_bytes(payload))
+            results.append({"assertion_id": entry["assertion_id"],
+                            "outcome": "ATTESTED",
+                            "verification_id":
+                                admitted["verification_id"],
+                            "receipt_address":
+                                admitted["receipt_address"]})
         for entry in deterministic:
             existing = self.sequencer.db.conn.execute(
                 "SELECT outcome FROM attempt_verifications"
@@ -261,6 +299,66 @@ class ProductionVerifierRunner(VerifierRunner):
                                 admitted["receipt_address"]})
         return {"results": results, "inconclusive": inconclusive}
 
+    def _check_role_transform(self, state, transform, env_address):
+        """INV-44/INV-49: execute the EXACT bound transform closure over
+        the record's single declared specification input, derive the
+        OBSERVED identity from admitted obj-11 producer bytes, and mint
+        the canonical ROLE_TRANSFORM receipt. The admission seam
+        re-derives every piece of this (D-C3-2 discipline, including
+        re-executing the transform): the runner's job is honest assembly,
+        never authority."""
+        record_payload = state["record_payload"]
+        inputs = record_payload.get("specification_inputs", {}).get(
+            "name_to_exact_byte_sha256", {})
+        if len(inputs) != 1:
+            raise ConflictError(
+                "the frozen record declares %d specification inputs; the"
+                " v1 role-transform binding is defined over exactly ONE"
+                % len(inputs))
+        input_name = sorted(inputs)[0]
+        input_address = inputs[input_name]
+        input_bytes = self.store.get(input_address)
+        registration = transform["payload"]
+        output_bytes, execution = transforms.execute_transform(
+            self.store, registration, input_bytes, workdir=self.workdir)
+        # The OBSERVED side comes from admitted producer bytes alone. The
+        # sequencer's derivation is the ONE implementation (the admission
+        # re-derives with the same code over the same durable rows), so
+        # the runner reads through it rather than growing a second one.
+        observed = self.sequencer._observed_prompt_identity(
+            self.sequencer.db.conn.cursor(), state["attempt_id"])
+        check = {"input_name": input_name, "input_sha256": input_address}
+        if output_bytes is None:
+            outcome, basis = "INCONCLUSIVE", "verifier_execution_failed"
+            if observed is not None:
+                check["observed_sha256"] = observed
+        else:
+            expected = execution["output_sha256"]
+            check["expected_sha256"] = expected
+            if observed is None:
+                outcome, basis = ("INCONCLUSIVE",
+                                  "missing_producer_evidence")
+            else:
+                check["observed_sha256"] = observed
+                if observed == expected:
+                    outcome, basis = "PASS", None
+                else:
+                    outcome, basis = "FAIL", "transform_output_mismatch"
+        binding = {"sequence_id": state["sequence_id"],
+                   "attempt_id": state["attempt_id"],
+                   "fence": state["fence"],
+                   "attempt_contract_hash":
+                       state["attempt_contract_hash"],
+                   "record_hash": state["record_hash"],
+                   "candidate_receipt_sha256":
+                       state["candidate_receipt_sha256"],
+                   "environment_sha256": env_address}
+        payload = verification_receipts.build_transform_result_payload(
+            binding, transform["role"], transform["transform_id"],
+            registration, transform["object_sha256"], outcome, execution,
+            check, conclusion_basis=basis)
+        return outcome, verification_receipts.receipt_bytes(payload)
+
     # --------------------------------------------------------- execution
 
     def _execute(self, closure, registration, assertion, context):
@@ -269,35 +367,14 @@ class ProductionVerifierRunner(VerifierRunner):
         bytes). The subject's artifact bytes come from the content store
         by their admitted addresses — never from any workspace — so a
         verifier can never silently evaluate a newer filesystem version."""
-        entrypoint = registration["entrypoint"]
-        if ".." in entrypoint.split("/"):
-            raise ConflictError(
-                "registration entrypoint %r escapes its closure"
-                % entrypoint)
+        entrypoint = (closure["package"]["entrypoint"]
+                      if closure["kind"] == "packaged"
+                      else registration["entrypoint"])
         run_dir = tempfile.mkdtemp(prefix="autobot-verify-",
                                    dir=self.workdir)
         try:
-            script_path = os.path.join(run_dir,
-                                       *entrypoint.split("/"))
-            parent = os.path.dirname(script_path)
-            if parent and not os.path.isdir(parent):
-                os.makedirs(parent)
-            if closure["kind"] == "python":
-                script_bytes = self.store.get(closure["script_sha256"])
-                lock_bytes = self.store.get(
-                    closure["dependency_lock_sha256"])
-                with open(script_path, "wb") as fh:
-                    fh.write(script_bytes)
-                with open(os.path.join(run_dir, "dependency.lock"),
-                          "wb") as fh:
-                    fh.write(lock_bytes)
-                argv = [sys.executable, "-I", script_path]
-            else:  # native (resolve_closure admitted only python|native)
-                executable_bytes = self.store.get(
-                    closure["executable_sha256"])
-                with open(script_path, "wb") as fh:
-                    fh.write(executable_bytes)
-                argv = [script_path]
+            argv = transforms.materialize_closure(self.store, closure,
+                                                  run_dir, entrypoint)
             subject_dir = os.path.join(run_dir, "subject")
             os.makedirs(subject_dir)
             manifest = []

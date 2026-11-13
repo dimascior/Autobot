@@ -136,8 +136,11 @@ def environment_satisfies(constraint, actual):
     - ``platform``: os list, architecture list;
     - ``tools``: named tool presence, each with an optional exact version
       list — a tool the capture does not carry is a mismatch;
-    - ``env_vars``: named variable exact values — a variable the capture
-      does not carry is a mismatch.
+    - ``env``: named variable exact values — a variable the capture does
+      not carry is a mismatch. (The FROZEN contract and obj-10 schemas
+      name this section ``env``; the obj-18 CAPTURE field it matches
+      against is ``env_vars``. F-C4-2: C4-M1 matched a section spelled
+      ``env_vars``, which the frozen schemas cannot even represent.)
 
     Every declared section and every rule key inside it must be understood;
     an unsupported section or rule key fails CLOSED (never substituted or
@@ -203,7 +206,7 @@ def environment_satisfies(constraint, actual):
                                           tool_rule[key])
                     if refusal is not None:
                         return refusal
-        elif section == "env_vars":
+        elif section == "env":
             captured = actual.get("env_vars", {})
             for name in sorted(rule):
                 expected = rule[name]
@@ -242,15 +245,20 @@ def validate_environment_capture(payload, att):
     return None
 
 
-def validate_assertion_attestation(attestation, att, assertion_id):
-    """D-52: the authorized HUMAN_REQUIRED attestation path. The obj-37
-    ManualAttestation (kind ASSERTION) must carry durable identity (minted
-    by you), provenance (the attested assertion and verdict) and scope
-    binding (the exact attempt and its contract hash). Returns None when
-    valid, else the refusal text. The D-29 kind-grammar finding recorded on
-    t-i07 applies here identically: the dotted registry kind cannot be
-    object-hashed under Chapter 1 as frozen, so the attestation is
-    preserved by exact bytes (D-31) and referenced from the journal."""
+def validate_assertion_attestation(attestation, att, assertion_id,
+                                   candidate_receipt_sha256, record_hash):
+    """D-52/D-53: the authorized HUMAN_REQUIRED attestation path. The
+    obj-37 ManualAttestation (kind ASSERTION) must carry durable identity
+    (minted by you), provenance (the attested assertion and verdict) and
+    FULL scope binding — the exact attempt and its contract hash, and
+    since C4-M2 the admitted obj-16 candidate the verdict is ABOUT and the
+    D-47 typed part reference {record, ASSERTION, assertion_id}. An
+    attestation that names another candidate, another record's part or no
+    part at all attests nothing here. Returns None when valid, else the
+    refusal text. The D-29 kind-grammar finding recorded on t-i07 applies
+    here identically: the dotted registry kind cannot be object-hashed
+    under Chapter 1 as frozen, so the attestation is preserved by exact
+    bytes (D-31) and referenced from the journal."""
     if not isinstance(attestation, dict):
         return "attestation is not a mapping"
     if attestation.get("kind") != "ManualAttestation.ASSERTION":
@@ -268,6 +276,24 @@ def validate_assertion_attestation(attestation, att, assertion_id):
     if attestation.get("attempt_contract_hash") != att["attempt_contract_hash"]:
         return ("attestation attempt_contract_hash does not match the"
                 " durable contract (D-52 scope binding)")
+    if candidate_receipt_sha256 is None:
+        return ("no admitted obj-16 candidate exists for this attempt: an"
+                " attestation is a verdict about the frozen candidate"
+                " (D-53), so there is nothing it could bind")
+    if attestation.get("candidate_receipt_sha256") != \
+            candidate_receipt_sha256:
+        return ("attestation binds candidate %r, not the attempt's admitted"
+                " obj-16 %s (D-53: the attested verdict is about THIS"
+                " frozen candidate)" % (
+                    attestation.get("candidate_receipt_sha256"),
+                    candidate_receipt_sha256))
+    part = attestation.get("part")
+    expected_part = {"record": record_hash, "part_kind": "ASSERTION",
+                     "part_id": assertion_id}
+    if part != expected_part:
+        return ("attestation part reference %r does not name assertion %r"
+                " of the frozen record (D-47 typed part reference"
+                " required)" % (part, assertion_id))
     if attestation.get("attests") != "PASS":
         return ("attestation attests %r; only PASS is an attestable verdict"
                 " (a failing assertion is a FAIL receipt, not an"

@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 from .models import SchemaTooNew
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Schema v1 (D-67): explicit state tables for Sequence, Attempt,
 # InstanceLease, permit state/reservations and EffectIntent, plus the
@@ -346,8 +346,29 @@ _DDL_V9 = (
         ON attempt_environments(attempt_id)""",
 )
 
+# Schema v10 (D-70, additive): the C4-M2 attestation admission. One
+# admitted obj-37 ManualAttestation.ASSERTION per (attempt, assertion) —
+# your durable, fully bound authorization (D-52/D-53) with the D-31
+# address of the exact attestation bytes. The verification ROW for the
+# assertion is written separately, when the verifier runner incorporates
+# the admitted attestation into a canonical obj-19 BY_ATTESTATION result
+# (``register_attested_result``); the unique index makes a second,
+# different attestation for the same assertion a refused conflict, never
+# a silent replacement.
+_DDL_V10 = (
+    """CREATE TABLE IF NOT EXISTS attempt_attestations (
+        admission_id TEXT PRIMARY KEY,
+        attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+        assertion_id TEXT NOT NULL,
+        content_sha256 TEXT NOT NULL,
+        admitted_utc TEXT NOT NULL
+    )""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_attestation_one_per_assertion
+        ON attempt_attestations(attempt_id, assertion_id)""",
+)
+
 _MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4, 5: _DDL_V5,
-               6: _DDL_V6, 7: _DDL_V7, 8: _DDL_V8, 9: _DDL_V9}
+               6: _DDL_V6, 7: _DDL_V7, 8: _DDL_V8, 9: _DDL_V9, 10: _DDL_V10}
 
 
 class Database:

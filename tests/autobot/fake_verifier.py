@@ -12,6 +12,7 @@ verification suite drives it.
 """
 
 import json
+import platform
 
 from contract_library import canonicalize, content_address
 
@@ -19,11 +20,18 @@ from autobot import verification_receipts
 from autobot.verification import VerifierRunner
 
 
-def environment_bytes(attempt_identity, implementation="cpython",
-                      version="3.12.4", env_vars=None, tools=None):
+def environment_bytes(attempt_identity, implementation=None,
+                      version=None, env_vars=None, tools=None):
     """A canonical obj-18 ActualVerificationEnvironment payload bound to
     the given attempt identity (the frozen Chapter 1 schema's required
-    shape; the interpreter defaults match V-A's a1 constraint)."""
+    shape). The interpreter defaults are the LIVE interpreter's identity
+    since C4-M2 — the live-bound records' a1 constraint names it — and a
+    test that wants V-A's frozen 3.12.4 constraint (or a mismatch) passes
+    explicit values."""
+    if implementation is None:
+        implementation = platform.python_implementation().lower()
+    if version is None:
+        version = platform.python_version()
     payload = {
         "schema_version": "v1",
         "kind": "ActualVerificationEnvironment",
@@ -103,6 +111,82 @@ def bound_receipt_bytes(sequencer, attempt_id, assertion_id, outcome,
     return verification_receipts.receipt_bytes(payload)
 
 
+def transform_receipt_bytes(sequencer, attempt_id, environment,
+                            outcome="PASS", conclusion_basis=None,
+                            observed=None, **overrides):
+    """Canonical ROLE_TRANSFORM obj-19/obj-20 bytes binding the attempt's
+    durable facts (C4-M2, INV-49), scripted like ``bound_receipt_bytes``.
+    Built around the live identity transform's semantics: the expected
+    output identity IS the declared input's address (so the admission's
+    re-execution of the real closure re-derives exactly it, and the output
+    evidence resolves — the input bytes are in the store at that same
+    address). ``observed`` overrides the claimed observed identity for the
+    mismatch/forgery scenarios; ``overrides`` forge top-level members for
+    the binding negatives."""
+    state = sequencer.verification_state(attempt_id)
+    transform = state["role_transform"]
+    registration = transform["payload"]
+    inputs = state["record_payload"]["specification_inputs"][
+        "name_to_exact_byte_sha256"]
+    input_name = sorted(inputs)[0]
+    input_address = inputs[input_name]
+    check = {"input_name": input_name, "input_sha256": input_address}
+    execution = {"closure_kind": registration["closure"]["kind"],
+                 "entrypoint": registration["entrypoint"],
+                 "exit_code": 0, "output_sha256": input_address}
+    if outcome == "PASS":
+        check["expected_sha256"] = input_address
+        check["observed_sha256"] = observed or input_address
+    elif outcome == "FAIL":
+        conclusion_basis = conclusion_basis or "transform_output_mismatch"
+        check["expected_sha256"] = input_address
+        check["observed_sha256"] = observed or ("sha256:" + "f" * 64)
+    else:  # INCONCLUSIVE
+        if conclusion_basis is None:
+            conclusion_basis = "missing_producer_evidence"
+        if conclusion_basis == "missing_producer_evidence":
+            check["expected_sha256"] = input_address
+        else:  # verifier_execution_failed: no completed transform
+            diagnostics = sequencer.store.put(
+                b"scripted transform crash before any output\n")
+            execution["exit_code"] = 3
+            execution["output_sha256"] = diagnostics
+            if observed is not None:
+                check["observed_sha256"] = observed
+    binding = {"sequence_id": state["sequence_id"],
+               "attempt_id": state["attempt_id"],
+               "fence": state["fence"],
+               "attempt_contract_hash": state["attempt_contract_hash"],
+               "record_hash": state["record_hash"],
+               "candidate_receipt_sha256":
+                   state["candidate_receipt_sha256"],
+               "environment_sha256": content_address(bytes(environment))}
+    payload = verification_receipts.build_transform_result_payload(
+        binding, transform["role"], transform["transform_id"],
+        registration, transform["object_sha256"], outcome, execution,
+        check, conclusion_basis=conclusion_basis)
+    payload.update(overrides)
+    return verification_receipts.receipt_bytes(payload)
+
+
+def attested_receipt_bytes(sequencer, attempt_id, assertion_id,
+                           attestation_sha256, **overrides):
+    """Canonical obj-19 BY_ATTESTATION bytes binding the attempt's durable
+    facts and the admitted obj-37's address (C4-M2, D-52/D-53)."""
+    state = sequencer.verification_state(attempt_id)
+    binding = {"sequence_id": state["sequence_id"],
+               "attempt_id": state["attempt_id"],
+               "fence": state["fence"],
+               "attempt_contract_hash": state["attempt_contract_hash"],
+               "record_hash": state["record_hash"],
+               "candidate_receipt_sha256":
+                   state["candidate_receipt_sha256"]}
+    payload = verification_receipts.build_attested_result_payload(
+        binding, assertion_id, attestation_sha256)
+    payload.update(overrides)
+    return verification_receipts.receipt_bytes(payload)
+
+
 class FakeVerifierRunner(VerifierRunner):
     """Scripted outcomes over REAL bindings: the typed M4 contract,
     admission-valid under C4-M1, with no execution. The default outcome is
@@ -141,6 +225,54 @@ class FakeVerifierRunner(VerifierRunner):
             self.sequencer.admit_environment_capture(attempt_id, env)
         results = []
         inconclusive = False
+        # C4-M2: the scripted role-transform check (the admission still
+        # re-executes the real bound closure) and the incorporation of
+        # admitted attestations — mirroring the production contract.
+        transform = state.get("role_transform")
+        if transform is not None:
+            row_key = "role-transform/%s" % transform["role"]
+            existing = self.sequencer.db.conn.execute(
+                "SELECT outcome FROM attempt_verifications"
+                " WHERE attempt_id = ? AND assertion_id = ?",
+                (attempt_id, row_key)).fetchone()
+            if existing is not None:
+                if existing["outcome"] == "INCONCLUSIVE":
+                    inconclusive = True
+            else:
+                outcome = self.outcomes.get(row_key, "PASS")
+                receipt = transform_receipt_bytes(
+                    self.sequencer, attempt_id, env, outcome=outcome)
+                admitted = self.sequencer.register_transform_check(
+                    attempt_id, transform["role"], outcome,
+                    "verifier_runner", receipt, environment=env)
+                if outcome == "INCONCLUSIVE":
+                    inconclusive = True
+                results.append({"assertion_id": row_key,
+                                "outcome": outcome,
+                                "verification_id":
+                                    admitted["verification_id"]})
+        for entry in state["assertions"]:
+            if entry.get("mode") != "HUMAN_ATTESTED":
+                continue
+            address = state.get("attestations", {}).get(
+                entry["assertion_id"])
+            if address is None:
+                continue
+            existing = self.sequencer.db.conn.execute(
+                "SELECT outcome FROM attempt_verifications"
+                " WHERE attempt_id = ? AND assertion_id = ?",
+                (attempt_id, entry["assertion_id"])).fetchone()
+            if existing is not None:
+                continue
+            receipt = attested_receipt_bytes(
+                self.sequencer, attempt_id, entry["assertion_id"], address)
+            admitted = self.sequencer.register_attested_result(
+                attempt_id, entry["assertion_id"], "verifier_runner",
+                receipt)
+            results.append({"assertion_id": entry["assertion_id"],
+                            "outcome": "ATTESTED",
+                            "verification_id":
+                                admitted["verification_id"]})
         for entry in state["assertions"]:
             if entry.get("mode") != "DETERMINISTIC":
                 continue

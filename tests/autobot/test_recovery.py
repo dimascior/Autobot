@@ -238,7 +238,8 @@ class RestartTests(unittest.TestCase):
         self.assertEqual(
             store.get(wrow["content_sha256"]),
             support.session_record_bytes(
-                crow["call_id"], native_session_id="native-crash-1"))
+                crow["call_id"], native_session_id="native-crash-1",
+                prompt=support.VA_INPUT))
 
         seq.acquire_lease(ttl_seconds=3600)
         resumed = seq.admit_witness(
@@ -289,6 +290,15 @@ class RestartTests(unittest.TestCase):
             snapshot["attempt_id"], "a1", "PASS", "verifier_runner",
             bound_receipt_bytes(seq, snapshot["attempt_id"], "a1", "PASS",
                                 environment),
+            environment=environment)
+        # C4-M2: the dispatched role declares a transform, so conclusion
+        # also needs the admitted role-transform check (the admission
+        # re-executes the live identity closure from the recovered store).
+        from fake_verifier import transform_receipt_bytes
+        seq.register_transform_check(
+            snapshot["attempt_id"], "builder", "PASS", "verifier_runner",
+            transform_receipt_bytes(seq, snapshot["attempt_id"],
+                                    environment),
             environment=environment)
         result = seq.conclude_verification(snapshot["attempt_id"],
                                            att["fence"])

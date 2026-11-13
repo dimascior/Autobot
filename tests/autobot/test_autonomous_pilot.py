@@ -44,7 +44,15 @@ from intelligence import (
 # EXECUTION_LIFECYCLE (va_record evidence_requirements), so a COMPLETE
 # obj-15 classification needs obj-12 + obj-11 admitted (C3-M1); the
 # transcript rides along as extra admitted evidence.
-WITNESSES = [("obj-11", "autoswarm", b"provider session record\n"),
+# C4-M2 (INV-49): the provider task record carries the prompt the child
+# actually received — the identity transform over the compiled records'
+# declared specification input means that prompt IS the V-A input bytes.
+# No execution-identity facts ride along (the pilot's transport is not
+# minting call joins here), so the witness admits UNJOINED, exactly as
+# the prose record did.
+WITNESSES = [("obj-11", "autoswarm",
+              json.dumps({"prompt": support.VA_INPUT},
+                         sort_keys=True).encode("utf-8")),
              ("obj-12", "helios", b"command governance log\n"),
              ("obj-13", "agent_clis", b"session transcript\n")]
 FOLLOW_UP = ("Advance refs/heads/main to the prepared commit so the"

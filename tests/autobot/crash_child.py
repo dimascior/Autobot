@@ -29,13 +29,26 @@ def main():
     rt, result = support.admitted_runtime(
         data_dir, clock=support.manual_clock(), holder="crash-child")
     sequence_id = result["sequence_id"]
+    execution_stages = ("executing", "reserved", "mid_transaction",
+                        "intent", "mid_intent_tx", "dispatched", "running",
+                        "verifying")
+    if stage in execution_stages:
+        # C4-M2: concluding verification includes the role-transform
+        # check, whose admission RE-EXECUTES the bound transform closure —
+        # so the execution stages run the LIVE-bound V-A shape (the frozen
+        # fixture record's transform binding has no executable bytes).
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        local = rt.registry.admit_payload(support.local_record_payload(),
+                                          submitted_by="planner")
+        sequence_id = local["sequence_id"]
     snapshot = {"stage": stage, "sequence_id": sequence_id}
 
     if stage != "admitted":
         rt.sequencer.acquire_lease(ttl_seconds=3600)
         rt.sequencer.mark_ready(sequence_id)
-    if stage in ("executing", "reserved", "mid_transaction", "intent",
-                 "mid_intent_tx", "dispatched", "running", "verifying"):
+    if stage in execution_stages:
         info = rt.sequencer.start_execution(sequence_id)
         snapshot["attempt_id"] = info["attempt_id"]
         snapshot["fence"] = info["fence"]
@@ -53,7 +66,8 @@ def main():
         admitted = rt.sequencer.admit_witness(
             snapshot["attempt_id"], "obj-11", "autoswarm",
             support.session_record_bytes(snapshot["call_id"],
-                                         native_session_id="native-crash-1"))
+                                         native_session_id="native-crash-1",
+                                         prompt=support.VA_INPUT))
         snapshot["witness_admission_id"] = admitted["admission_id"]
         rt.sequencer.attempt_running(
             snapshot["attempt_id"], "native-crash-1",

@@ -55,6 +55,16 @@ CONCLUSION_BASES = {
                      "malformed_verifier_result"),
 }
 
+# The ROLE_TRANSFORM arm's basis vocabulary (C4-M2, INV-49): a transform
+# FAIL exists only as an output-identity mismatch the admission re-derived;
+# a transform that did not execute, or a check with no admitted producer
+# record carrying the child's received prompt identity, concludes nothing.
+TRANSFORM_CONCLUSION_BASES = {
+    "FAIL": ("transform_output_mismatch",),
+    "INCONCLUSIVE": ("verifier_execution_failed",
+                     "missing_producer_evidence"),
+}
+
 _SCHEMAS_DIR = Path(__file__).resolve().parent / "schemas_chapter4"
 _SCHEMA_CACHE = {}
 
@@ -136,6 +146,70 @@ def parse_conclusion(stdout_bytes):
     return conclusion if conclusion in CONCLUSIONS else None
 
 
+def _transform_consistency(payload, execution, exit_code, outcome):
+    """The ROLE_TRANSFORM coupling (C4-M2): PASS/FAIL exist only over a
+    COMPLETED transform (exit 0) whose derived expected output IS the
+    execution evidence (expected_sha256 == execution.output_sha256), with
+    the observed producer identity present and equal (PASS) or present and
+    unequal (FAIL); a failed execution derives no expected output; missing
+    producer evidence carries the derived expected and NO observed."""
+    check = payload.get("transform_check", {})
+    expected = check.get("expected_sha256")
+    observed = check.get("observed_sha256")
+    output = execution.get("output_sha256")
+    if outcome == "PASS":
+        if exit_code != 0:
+            return "claimed transform PASS over a nonzero exit"
+        if expected is None or observed is None or expected != observed:
+            return ("claimed transform PASS without present, EQUAL"
+                    " expected/observed identities (expected %r,"
+                    " observed %r)" % (expected, observed))
+        if output != expected:
+            return ("transform PASS does not couple to its execution"
+                    " evidence: output %r is not the expected %r"
+                    % (output, expected))
+        return None
+    basis = payload.get("conclusion_basis")
+    if outcome == "FAIL":
+        if basis != "transform_output_mismatch":
+            return ("a transform FAIL exists only as"
+                    " transform_output_mismatch, not %r" % (basis,))
+        if exit_code != 0:
+            return ("transform_output_mismatch requires a completed"
+                    " transform; the evidence shows exit %r" % (exit_code,))
+        if expected is None or observed is None or expected == observed:
+            return ("transform_output_mismatch requires present, UNEQUAL"
+                    " expected/observed identities (expected %r,"
+                    " observed %r)" % (expected, observed))
+        if output != expected:
+            return ("transform FAIL does not couple to its execution"
+                    " evidence: output %r is not the expected %r"
+                    % (output, expected))
+        return None
+    if basis == "verifier_execution_failed":
+        if exit_code == 0:
+            return ("conclusion_basis verifier_execution_failed requires a"
+                    " nonzero exit; the evidence shows exit 0")
+        if expected is not None:
+            return ("a failed transform execution derives no expected"
+                    " output; the receipt claims one")
+        return None
+    if basis == "missing_producer_evidence":
+        if exit_code != 0:
+            return ("missing_producer_evidence requires a completed"
+                    " transform (the expected output IS derived); the"
+                    " evidence shows exit %r" % (exit_code,))
+        if expected is None or output != expected:
+            return ("missing_producer_evidence requires the derived"
+                    " expected output coupled to the execution evidence"
+                    " (expected %r, output %r)" % (expected, output))
+        if observed is not None:
+            return ("missing_producer_evidence with an observed identity"
+                    " is a contradiction: producer evidence exists")
+        return None
+    return "unrecognized conclusion_basis %r" % (basis,)
+
+
 def outcome_consistency(payload, output_bytes):
     """F-C4-1: the receipt's CLAIMED outcome must agree with its durable
     execution evidence — the exact output bytes at execution.output_sha256
@@ -143,11 +217,27 @@ def outcome_consistency(payload, output_bytes):
     exists only at exit 0; authority uncertainty is never spelled PASS or
     FAIL. Returns None when consistent, else the refusal text. Shared by
     the admission seam and recovery, so a verifier-shaped receipt whose
-    outcome its own evidence does not support dies at the boundary."""
+    outcome its own evidence does not support dies at the boundary.
+
+    Arm- and part-aware since C4-M2: the BY_ATTESTATION arm carries no
+    execution evidence at all (its authority is the admitted obj-37, whose
+    bindings the admission validates separately); a ROLE_TRANSFORM part
+    couples through its transform_check identities instead of the stdout
+    protocol (``_transform_consistency``)."""
+    if payload.get("result_source") == "BY_ATTESTATION":
+        if payload.get("outcome") != "ATTESTED":
+            return ("a BY_ATTESTATION result carries outcome ATTESTED,"
+                    " not %r" % (payload.get("outcome"),))
+        return None
     execution = payload.get("execution", {})
     exit_code = execution.get("exit_code")
-    conclusion = parse_conclusion(output_bytes) if exit_code == 0 else None
     outcome = payload.get("outcome")
+    part_kind = (payload.get("assertion", {}).get("part", {})
+                 .get("part_kind"))
+    if part_kind == "ROLE_TRANSFORM":
+        return _transform_consistency(payload, execution, exit_code,
+                                      outcome)
+    conclusion = parse_conclusion(output_bytes) if exit_code == 0 else None
     if outcome == "PASS":
         if conclusion != "PASS":
             return ("claimed PASS is not supported by the execution"
@@ -235,3 +325,96 @@ def build_result_payload(binding, assertion_id, verifier_id,
     elif conclusion_basis is not None:
         raise ValueError("obj-19 carries no conclusion_basis")
     return payload
+
+
+def transform_part_ref(record_hash, role):
+    """The D-47 typed part reference naming one frozen role-transform
+    binding (C4-M2): the immutable record hash pins the bytes; the ROLE is
+    the selector (``role_transforms`` is keyed by role, and the ledger row
+    key is ``role-transform/<role>`` — the name_id grammar forbids ``/``,
+    so no assertion id can collide with it)."""
+    return {"record": record_hash, "part_kind": "ROLE_TRANSFORM",
+            "part_id": role}
+
+
+def build_transform_result_payload(binding, role, transform_id,
+                                   registration, registration_hash,
+                                   outcome, execution, transform_check,
+                                   conclusion_basis=None):
+    """The canonical obj-19/obj-20 payload for one ROLE_TRANSFORM check
+    (C4-M2, INV-49): same INV-17 binding authority as an assertion result,
+    with the bound TransformRegistration in the registration block and the
+    check identities in ``transform_check`` ({input_name, input_sha256}
+    always; expected_sha256 when the transform completed; observed_sha256
+    when admitted producer evidence carries the child's received prompt
+    identity)."""
+    kind = RESULT_KINDS.get(outcome)
+    if kind is None:
+        raise ValueError("outcome %r has no registered receipt kind"
+                         % (outcome,))
+    payload = {
+        "schema_version": "v1",
+        "kind": kind,
+        "minter": RESULT_PRODUCER,
+        "attempt": {"sequence_id": binding["sequence_id"],
+                    "attempt_id": binding["attempt_id"],
+                    "fence": binding["fence"]},
+        "attempt_contract_hash": binding["attempt_contract_hash"],
+        "record_hash": binding["record_hash"],
+        "candidate_receipt_sha256": binding["candidate_receipt_sha256"],
+        "environment_sha256": binding["environment_sha256"],
+        "assertion": {
+            "part": transform_part_ref(binding["record_hash"], role),
+            "verifier_id": transform_id,
+            "mode": "DETERMINISTIC",
+        },
+        "registration": {
+            "object_sha256": registration_hash,
+            "registration_id": registration["registration_id"],
+            "artifact_root": registration["artifact_root"],
+        },
+        "result_source": "BY_VERIFIER",
+        "outcome": outcome,
+        "execution": dict(execution),
+        "transform_check": dict(transform_check),
+    }
+    if kind == "VerificationFailureReceipt":
+        allowed = TRANSFORM_CONCLUSION_BASES[outcome]
+        if conclusion_basis not in allowed:
+            raise ValueError(
+                "conclusion_basis %r is not registered for a ROLE_TRANSFORM"
+                " %s (allowed: %s)" % (conclusion_basis, outcome,
+                                       ", ".join(allowed)))
+        payload["conclusion_basis"] = conclusion_basis
+    elif conclusion_basis is not None:
+        raise ValueError("obj-19 carries no conclusion_basis")
+    return payload
+
+
+def build_attested_result_payload(binding, assertion_id,
+                                  attestation_sha256):
+    """The canonical obj-19 BY_ATTESTATION payload (C4-M2, D-52/D-53): the
+    runner's incorporation of your admitted obj-37 for one HUMAN_ATTESTED
+    assertion. It binds the attempt, contract, record, candidate and the
+    exact attestation bytes — and carries NO registration, execution or
+    environment: an attestation is a human act, not an execution, and
+    nothing here may dress it up as one."""
+    return {
+        "schema_version": "v1",
+        "kind": "VerificationReceipt",
+        "minter": RESULT_PRODUCER,
+        "attempt": {"sequence_id": binding["sequence_id"],
+                    "attempt_id": binding["attempt_id"],
+                    "fence": binding["fence"]},
+        "attempt_contract_hash": binding["attempt_contract_hash"],
+        "record_hash": binding["record_hash"],
+        "candidate_receipt_sha256": binding["candidate_receipt_sha256"],
+        "assertion": {
+            "part": assertion_part_ref(binding["record_hash"],
+                                       assertion_id),
+            "mode": "HUMAN_ATTESTED",
+        },
+        "result_source": "BY_ATTESTATION",
+        "outcome": "ATTESTED",
+        "attestation_sha256": attestation_sha256,
+    }
