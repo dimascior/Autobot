@@ -20,6 +20,7 @@ sys.path.insert(0, str(HERE.parents[2] / "src"))
 sys.path.insert(0, str(HERE.parent))
 
 import support  # noqa: E402
+from fake_verifier import bound_receipt_bytes, environment_bytes  # noqa: E402
 
 
 def main():
@@ -67,22 +68,25 @@ def main():
         rt.sequencer.finish_attempt(
             snapshot["attempt_id"], "builder", "success",
             transcript["content_address"])
-        rt.sequencer.freeze_candidate(
-            snapshot["attempt_id"], snapshot["fence"],
-            rt.store.put(b"candidate for the crash test\n"))
+        # C4-M1: the REAL obj-16 freeze (git_adapter + admission).
+        candidate = support.mint_and_freeze(
+            rt, snapshot["attempt_id"], snapshot["fence"])
+        snapshot["candidate_address"] = candidate
         # C3-M1: the registered Collector derives-and-admits obj-15; the
         # crash may now also land between the admission and the
         # transition, and recovery converges either way.
         receipt = support.collect_receipt(rt, snapshot["attempt_id"])
         rt.sequencer.complete_evidence(
             snapshot["attempt_id"], snapshot["fence"], receipt)
+        identity = {"sequence_id": sequence_id,
+                    "attempt_id": snapshot["attempt_id"],
+                    "version": 1, "fence": snapshot["fence"]}
+        environment = environment_bytes(identity)
         registered = rt.sequencer.register_verifier_result(
             snapshot["attempt_id"], "a2", "PASS", "verifier_runner",
-            json.dumps({"schema_version": "v1",
-                        "kind": "VerificationReceipt",
-                        "assertion_id": "a2", "outcome": "PASS",
-                        "attempt_id": snapshot["attempt_id"]},
-                       sort_keys=True).encode("utf-8"))
+            bound_receipt_bytes(rt.sequencer, snapshot["attempt_id"],
+                                "a2", "PASS", environment),
+            environment=environment)
         snapshot["verification_id"] = registered["verification_id"]
     if stage in ("intent", "mid_intent_tx"):
         rt.sequencer.grant_permit(sequence_id, permitted_uses=2)

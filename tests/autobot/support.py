@@ -22,11 +22,18 @@ from autobot import (  # noqa: E402
     Collector,
     Database,
     ManualClock,
+    ProductionVerifierRunner,
     Registry,
     Sequencer,
     Store,
+    mint_candidate_receipt,
 )
-from contract_library import content_address  # noqa: E402
+from autobot.environment_probe import interpreter_identity  # noqa: E402
+from contract_library import (  # noqa: E402
+    artifact_root,
+    content_address,
+    object_hash,
+)
 
 CH1 = REPO / "docs" / "architecture" / "chapter1"
 FIXTURES = CH1 / "vectors" / "fixtures"
@@ -47,6 +54,108 @@ SEED_OBJECTS = (
     "verifier_vector_v1",
     "transform_identity_v1",
 )
+
+# ---------------------------------------------------------------------------
+# The LIVE verification plane (C4-M1): registrations whose closures are REAL
+# seedable script bytes under the interpreter actually running this suite,
+# so the production verifier runner executes the exact registered closure.
+# The frozen Chapter 1 fixture registrations stay untouched (their closure
+# digests are identity vectors, not executable artifacts) — records that
+# must EXECUTE verification bind these instead.
+
+# A real verifier honoring the registered result protocol: it re-hashes
+# every subject artifact against its content address (the candidate's exact
+# bytes — drift means FAIL), then concludes PASS.
+LIVE_PASS_SCRIPT = b'''import hashlib
+import json
+import sys
+
+
+def main():
+    with open(sys.argv[1], "r", encoding="utf-8") as fh:
+        context = json.load(fh)
+    for artifact in context["subject"]["artifacts"]:
+        with open(artifact["file"], "rb") as fh:
+            digest = "sha256:" + hashlib.sha256(fh.read()).hexdigest()
+        if digest != artifact["content_sha256"]:
+            print(json.dumps({"autobot_verifier_result": {
+                "conclusion": "FAIL",
+                "detail": "subject artifact drifted: %s"
+                          % artifact["logical_path"]}}))
+            return 0
+    print(json.dumps({"autobot_verifier_result": {
+        "conclusion": "PASS",
+        "detail": "subject bytes verified against their content"
+                  " addresses"}}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+LIVE_FAIL_SCRIPT = b'''import json
+import sys
+
+print(json.dumps({"autobot_verifier_result": {
+    "conclusion": "FAIL", "detail": "registered assertion unmet"}}))
+sys.exit(0)
+'''
+
+# Exits without a typed conclusion: the production runner translates this
+# to INCONCLUSIVE (verifier_execution_failed) — never FAIL, never PASS.
+LIVE_CRASH_SCRIPT = b'''import sys
+sys.exit(3)
+'''
+
+# Exit 0 with prose instead of the result protocol: INCONCLUSIVE
+# (malformed_verifier_result) — a model-style "tests passed" is not a
+# receipt (CH4-llm-output-never-pass).
+LIVE_PROSE_SCRIPT = b'''print("All tests passed! Everything looks great.")
+'''
+
+LIVE_LOCK = b"# autobot live verifier dependency lock: stdlib only\\n"
+
+# (verifier_id, behavior) -> (registration_id suffix, script bytes).
+LIVE_SPECS = {
+    ("registry-checker", "PASS"): ("c1", LIVE_PASS_SCRIPT),
+    ("vector-checker", "PASS"): ("c2", LIVE_PASS_SCRIPT),
+    ("vector-checker", "FAIL"): ("c3", LIVE_FAIL_SCRIPT),
+    ("vector-checker", "CRASH"): ("c4", LIVE_CRASH_SCRIPT),
+    ("vector-checker", "PROSE"): ("c5", LIVE_PROSE_SCRIPT),
+}
+
+
+def live_registration(verifier_id, behavior="PASS"):
+    """The live VerifierRegistration payload for one (verifier, behavior):
+    a reproducibly pinned python closure over the live interpreter
+    identity, its artifact_root recomputed per D-32."""
+    suffix, script = LIVE_SPECS[(verifier_id, behavior)]
+    closure = {"kind": "python",
+               "script_sha256": content_address(script),
+               "interpreter_id": interpreter_identity(),
+               "dependency_lock_sha256": content_address(LIVE_LOCK)}
+    return {"schema_version": "v1", "kind": "VerifierRegistration",
+            "registration_id": "rg_" + suffix.rjust(32, "0"),
+            "verifier_id": verifier_id, "version": "1.0.0",
+            "closure": closure, "artifact_root": artifact_root(closure),
+            "entrypoint": "verify.py", "execution_requirements": [],
+            "registered_by": "you",
+            "registered_utc": "2026-11-12T00:00:00.000Z"}
+
+
+def live_registration_hash(verifier_id, behavior="PASS"):
+    return object_hash("VerifierRegistration",
+                       live_registration(verifier_id, behavior))
+
+
+def live_environment_constraint():
+    """An obj-17 constraint the live interpreter satisfies (the a1
+    constraint of every live-bound record)."""
+    import platform
+    return {"interpreter": {
+        "implementations": [platform.python_implementation().lower()],
+        "versions": [platform.python_version()]}}
 
 
 def load_json(path):
@@ -80,10 +189,17 @@ def make_runtime(data_dir, clock, holder="test-instance"):
 
 
 def seed_bound_objects(rt, names=SEED_OBJECTS):
-    """Admit the bound graph objects and the specification input bytes."""
+    """Admit the bound graph objects, the LIVE verifier registrations with
+    their executable closure bytes, and the specification input bytes."""
     graph = load_fixture("graph.json")
     for name in names:
         rt.registry.admit_object(graph[name], submitted_by="you")
+    for verifier_id, behavior in sorted(LIVE_SPECS):
+        _suffix, script = LIVE_SPECS[(verifier_id, behavior)]
+        rt.store.put(script)
+        rt.registry.admit_object(live_registration(verifier_id, behavior),
+                                 submitted_by="you")
+    rt.store.put(LIVE_LOCK)
     record = load_fixture("va_record.json")
     listed = record["specification_inputs"]["name_to_exact_byte_sha256"][
         "chapter1-brief.md"]
@@ -94,6 +210,35 @@ def seed_bound_objects(rt, names=SEED_OBJECTS):
             " address — fixture drift, fix the constant"
         )
     rt.store.put(data)
+
+
+def ensure_candidate_repo(rt):
+    """A lazily created real Git repository per runtime, for candidate
+    tree capture (cap-42): branch main at commit A, commit B reachable.
+    Returns (repo_path, sha_old, sha_new)."""
+    if not hasattr(rt, "candidate_repo"):
+        repo = rt.data_dir / "candidate-repo"
+        sha_old, sha_new = init_git_repo(repo)
+        rt.candidate_repo = (repo, sha_old, sha_new)
+    return rt.candidate_repo
+
+
+def mint_and_freeze(rt, attempt_id, fence, treeish=None):
+    """Mint the REAL obj-16 through the git_adapter (SOURCE_MODIFYING work
+    captures the candidate tree from the runtime's candidate repository;
+    READ_ONLY work takes no tree) and freeze it (t-a05/t-s07). Returns the
+    admitted candidate address."""
+    state = rt.sequencer.candidate_state(attempt_id)
+    if state["finalization_class"] == "SOURCE_MODIFYING":
+        repo, _sha_old, sha_new = ensure_candidate_repo(rt)
+        minted = mint_candidate_receipt(rt.sequencer, rt.store, attempt_id,
+                                        repo_path=repo,
+                                        treeish=treeish or sha_new)
+    else:
+        minted = mint_candidate_receipt(rt.sequencer, rt.store, attempt_id)
+    rt.sequencer.freeze_candidate(attempt_id, fence,
+                                  minted["candidate_address"])
+    return minted["candidate_address"]
 
 
 def admitted_runtime(data_dir, clock=None, holder="test-instance"):
@@ -110,11 +255,16 @@ def local_record_payload(task_contract_id=None, predecessors=None,
                          finalization_class=None,
                          finalization_requirements=None, objective=None,
                          completion_policies=None,
-                         evidence_requirements=None):
+                         evidence_requirements=None,
+                         vector_behavior="PASS"):
     """The M5/M6 SL-path contract family: V-A re-targeted to the LOCAL
     authority declaration (SOURCE_MODIFYING + authority_location LOCAL,
-    finalization requirement LOCAL_CANONICAL_COMMIT by default). The
-    keyword overrides mint sibling contracts for the dependency-release
+    finalization requirement LOCAL_CANONICAL_COMMIT by default), bound —
+    since C4-M1 — to the LIVE verifier registrations so the production
+    runner executes real registered closures (a1 keeps its environment
+    constraint, now satisfied by the live interpreter; a2's verifier
+    behavior is selectable: PASS, FAIL, CRASH or PROSE). The keyword
+    overrides mint sibling contracts for the dependency-release
     scenarios: a distinct ``objective`` changes the requirement tier
     (``task_contract_id`` alone is record-tier only, so admission
     deduplicates it on the shared contract_digest), ``predecessors`` are
@@ -122,7 +272,6 @@ def local_record_payload(task_contract_id=None, predecessors=None,
     per D-54 (no target_ref; the delegation's registered floor for
     (autobot, READ_ONLY) is empty; SEM-05 derives requirements [])."""
     import json as _json
-    from contract_library import object_hash
     payload = _json.loads(_json.dumps(load_fixture("va_record.json")))
     graph = load_fixture("graph.json")
     payload["task_contract_id"] = task_contract_id or ("tc_" + "face" * 8)
@@ -133,6 +282,14 @@ def local_record_payload(task_contract_id=None, predecessors=None,
         object_hash("RepositoryAuthorityDeclaration",
                     graph["declaration_local"]))
     payload.pop("remote_verification_mode", None)
+    # The live verification plane: the assertions keep their frozen ids and
+    # verifier names; the BINDINGS name the executable live registrations.
+    payload["acceptance_assertions"]["ids_and_environment_constraints"][0][
+        "environment_constraint"] = live_environment_constraint()
+    payload["resolved_bindings"]["verifier_registrations"] = sorted((
+        live_registration_hash("registry-checker", "PASS"),
+        live_registration_hash("vector-checker", vector_behavior),
+    ))
     if objective is not None:
         payload["objective"] = objective
     if predecessors is not None:
@@ -160,11 +317,18 @@ def intelligence_environment():
     verifiers and the identity transform, with the V-A engineering
     profile as defaults. Everything here is an object the tests also
     admit through the Registry, so compiled candidates freeze cleanly."""
+    import json as _json
     from intelligence import RepositoryEnvironment
     graph = load_fixture("graph.json")
     record = load_fixture("va_record.json")
+    # C4-M1: compiled contracts bind the LIVE registrations, so the
+    # production runner executes their closures; a1's constraint names the
+    # live interpreter.
+    assertions = _json.loads(_json.dumps(record["acceptance_assertions"]))
+    assertions["ids_and_environment_constraints"][0][
+        "environment_constraint"] = live_environment_constraint()
     defaults = {
-        "acceptance_assertions": record["acceptance_assertions"],
+        "acceptance_assertions": assertions,
         "allowed_scope": record["allowed_scope"],
         "capability_requirements": record["capability_requirements"],
         "evidence_requirements": record["evidence_requirements"],
@@ -178,8 +342,9 @@ def intelligence_environment():
     return RepositoryEnvironment(
         declaration=graph["declaration_local"],
         delegation=graph["delegation_a"],
-        verifier_registrations=[graph["verifier_checker_v1"],
-                                graph["verifier_vector_v1"]],
+        verifier_registrations=[
+            live_registration("registry-checker", "PASS"),
+            live_registration("vector-checker", "PASS")],
         transform_registrations=[graph["transform_identity_v1"]],
         defaults=defaults)
 
@@ -206,11 +371,12 @@ def collect_receipt(rt, attempt_id, window_seconds=None):
     return collector.collect_and_admit(attempt_id)["receipt_address"]
 
 
-def drive_to_verified(rt, admitted_result, role="builder"):
-    """Drive one admitted sequence through the full M2–M4 lifecycle to
-    sequence VERIFIED / attempt VERIFIED (shared by the finalization tests
-    and the crash driver). The caller holds the instance lease."""
-    import json as _json
+def drive_to_evidence_complete(rt, admitted_result, role="builder",
+                               artifact=b"engineering artifact bytes\n"):
+    """Drive one admitted sequence to attempt EVIDENCE_COMPLETE / sequence
+    VERIFYING through the full production evidence plane: dispatch,
+    witnesses, finish, the REAL git_adapter-minted obj-16 freeze, the
+    registered Collector's obj-15, complete_evidence."""
     seq = rt.sequencer
     sequence_id = admitted_result["sequence_id"]
     state = rt.db.conn.execute(
@@ -233,37 +399,42 @@ def drive_to_verified(rt, admitted_result, role="builder"):
                       b"command governance log\n")
     end = seq.admit_witness(attempt_id, "obj-13", "agent_clis",
                             b"transcript\n")
+    if artifact is not None:
+        seq.admit_artifact(attempt_id, "artifact/engineering-notes",
+                           artifact)
     seq.finish_attempt(attempt_id, role, "success", end["content_address"])
-    seq.freeze_candidate(attempt_id, fence,
-                         rt.store.put(b"candidate tree stand-in\n"))
+    # C4-M1: the REAL obj-16 — the git_adapter captures the candidate (the
+    # tree for SOURCE_MODIFYING work) and the freeze admission validates
+    # every ledger-derivable binding.
+    mint_and_freeze(rt, attempt_id, fence)
     # The registered Collector derives COMPLETE from the frozen record's
     # evidence_requirements (COMMAND_GOVERNANCE + EXECUTION_LIFECYCLE)
     # over the admitted rows, mints obj-15 and admits it (C3-M1).
     receipt = collect_receipt(rt, attempt_id)
     seq.complete_evidence(attempt_id, fence, receipt)
-    environment = _json.dumps(
-        {"schema_version": "v1", "kind": "ActualVerificationEnvironment",
-         "environment_id": "ve_" + "0" * 32,
-         "attempt": {"sequence_id": sequence_id, "attempt_id": attempt_id,
-                     "version": 1, "fence": fence},
-         "probed_utc": "2026-11-09T12:00:00.000Z",
-         "interpreter": {"implementation": "cpython", "version": "3.12.4",
-                         "executable_sha256": "sha256:" + "0" * 64},
-         "platform": {"os": "windows", "os_version": "10",
-                      "architecture": "x86_64"},
-         "env_vars": {}, "tools": {}}, sort_keys=True).encode("utf-8")
-    for assertion_id, env in (("a1", environment), ("a2", None)):
-        seq.register_verifier_result(
-            attempt_id, assertion_id, "PASS", "verifier_runner",
-            _json.dumps({"schema_version": "v1",
-                         "kind": "VerificationReceipt",
-                         "assertion_id": assertion_id, "outcome": "PASS",
-                         "attempt_id": attempt_id},
-                        sort_keys=True).encode("utf-8"),
-            environment=env)
-    seq.conclude_verification(attempt_id, fence)
     return {"attempt_id": attempt_id, "fence": fence,
             "attempt_contract_hash": info["attempt_contract_hash"]}
+
+
+def drive_to_verified(rt, admitted_result, role="builder", runner=None):
+    """Drive one admitted sequence through the full M2–C4 lifecycle to
+    sequence VERIFIED / attempt VERIFIED (shared by the finalization tests
+    and the crash driver): the production evidence plane, then the
+    PRODUCTION verifier runner executing the exact registered live
+    closures, then conclusion. The caller holds the instance lease.
+    ``runner`` overrides the production runner for records whose frozen
+    bindings are the chapter-1 identity fixtures (no executable closure
+    bytes exist for those): the scripted fake still produces canonically
+    BOUND receipts through the same admission seam."""
+    info = drive_to_evidence_complete(rt, admitted_result, role=role)
+    runner = runner or ProductionVerifierRunner(rt.sequencer, rt.store)
+    outcome = runner.verify_attempt(info["attempt_id"])
+    if outcome["inconclusive"]:
+        raise RuntimeError(
+            "drive_to_verified hit an INCONCLUSIVE production result; the"
+            " scenario wanted PASS closures")
+    rt.sequencer.conclude_verification(info["attempt_id"], info["fence"])
+    return info
 
 
 def init_git_repo(path):

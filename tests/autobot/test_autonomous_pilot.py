@@ -32,7 +32,7 @@ import support
 from autobot import project_state
 from autobot.models import instant
 from fake_transport import FakeTransport
-from fake_verifier import FakeVerifierRunner, receipt_bytes
+from fake_verifier import FakeVerifierRunner, bound_receipt_bytes
 from intelligence import (
     AgentFactory,
     ChiefEngineerPolicy,
@@ -67,18 +67,25 @@ class ScriptedTransport(FakeTransport):
 
 
 class QueueRunner(FakeVerifierRunner):
-    """Per-assertion outcome queues; PASS once a queue drains."""
+    """Per-assertion outcome queues; PASS once a queue drains. The fake
+    obj-18 names the LIVE interpreter (the compiled contracts' a1
+    constraint, C4-M1), and every receipt is canonically bound."""
 
-    def __init__(self, queues=None):
-        FakeVerifierRunner.__init__(self)
+    def __init__(self, queues=None, sequencer=None):
+        import platform
+        FakeVerifierRunner.__init__(
+            self, sequencer=sequencer,
+            environment_overrides={
+                "implementation": platform.python_implementation().lower(),
+                "version": platform.python_version()})
         self.queues = {k: list(v) for k, v in (queues or {}).items()}
 
     def run_assertion(self, assertion, registration, context):
         queue = self.queues.get(assertion["assertion_id"])
         outcome = queue.pop(0) if queue else "PASS"
-        return outcome, receipt_bytes(
-            assertion["assertion_id"], assertion.get("verifier_id"),
-            outcome, context["attempt_id"])
+        return outcome, bound_receipt_bytes(
+            self.sequencer, context["attempt_id"],
+            assertion["assertion_id"], outcome, context["environment"])
 
 
 def result(artifact=b"engineering notes\n", findings=None):
@@ -297,10 +304,16 @@ class PilotTestCase(unittest.TestCase):
         self.tmp.cleanup()
 
     def _driver(self, policy, runner=None, holder="chief-engineer"):
+        # runner None -> the Taskforce's PRODUCTION verifier runner
+        # (C4-M1): the pilot executes the exact registered live closures.
+        # An injected scripted runner (QueueRunner) gets the live
+        # sequencer bound so its receipts carry the real bindings.
+        if runner is not None and getattr(runner, "sequencer", None) is None:
+            runner.sequencer = self.rt.sequencer
         return ContinuousDriver(
             self.plan, self.rt.registry, self.rt.sequencer, self.rt.store,
             self.env, self.clock, policy, self.transport,
-            runner or FakeVerifierRunner(), self.factory,
+            runner, self.factory,
             self.dir / "autobot.db", repo_path=self.repo,
             repository_context="the pilot repository, branch main",
             holder=holder)
@@ -565,7 +578,8 @@ class MissingResultTests(PilotTestCase):
         from autobot.transport import reconcile_dispatched
         from intelligence import Taskforce, readonly_view
         admitted = self.rt.registry.admit_payload(
-            support.local_record_payload(objective="Missing result arm"),
+            support.local_record_payload(objective="Missing result arm",
+                                         finalization_class="READ_ONLY"),
             submitted_by="autobot_service")
         seq = self.rt.sequencer
         seq.mark_ready(admitted["sequence_id"])
@@ -585,7 +599,7 @@ class MissingResultTests(PilotTestCase):
         try:
             taskforce = Taskforce(
                 self.plan, seq, self.rt.store, self.transport,
-                FakeVerifierRunner(), self.factory, self.clock, ro)
+                FakeVerifierRunner(seq), self.factory, self.clock, ro)
             self.transport.scripts = {"builder": []}  # no terminal result
             before = self.rt.db.conn.execute(
                 "SELECT COUNT(*) AS n FROM transition_journal"

@@ -259,7 +259,13 @@ class AcceptanceGateTests(AcceptanceTestCase):
         remote = self.rt.db.conn.execute(
             "SELECT sequence_id FROM sequences WHERE sequence_id != ?",
             (a_id,)).fetchone()["sequence_id"]
-        info_r = support.drive_to_verified(self.rt, {"sequence_id": remote})
+        # V-A's frozen bindings are chapter-1 identity fixtures with no
+        # executable closure bytes, so this seam-level drive uses the
+        # scripted fake (bound receipts, no execution).
+        from fake_verifier import FakeVerifierRunner
+        info_r = support.drive_to_verified(
+            self.rt, {"sequence_id": remote},
+            runner=FakeVerifierRunner(self.seq))
         with self.rt.db.transaction() as tx:
             tx.execute("UPDATE sequences SET state = 'COMMITTED'"
                        " WHERE sequence_id = ?", (remote,))

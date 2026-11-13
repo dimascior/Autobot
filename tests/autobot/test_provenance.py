@@ -104,8 +104,7 @@ class ProvenanceTestCase(unittest.TestCase):
                                 end["content_address"])
         admitted = self.seq.admit_artifact(info["attempt_id"],
                                            logical_path, artifact)
-        self.seq.freeze_candidate(info["attempt_id"], info["fence"],
-                                  admitted["content_address"])
+        support.mint_and_freeze(self.rt, info["attempt_id"], info["fence"])
         return admitted
 
     def _artifact_rows(self, attempt_id):
@@ -267,10 +266,9 @@ class RawWitnessTests(ProvenanceTestCase):
                                      "agent_clis", b"transcript tail\n")
         self.seq.finish_attempt(info["attempt_id"], "builder", "success",
                                 end["content_address"])
-        art = self.seq.admit_artifact(info["attempt_id"],
-                                      "artifact/out.txt", b"artifact\n")
-        self.seq.freeze_candidate(info["attempt_id"], info["fence"],
-                                  art["content_address"])
+        self.seq.admit_artifact(info["attempt_id"],
+                                "artifact/out.txt", b"artifact\n")
+        support.mint_and_freeze(self.rt, info["attempt_id"], info["fence"])
         outcome = Collector(self.seq, self.rt.store).collect_and_admit(
             info["attempt_id"])
         self.assertEqual(outcome["completeness"], "INCOMPLETE")

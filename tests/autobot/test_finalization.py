@@ -272,8 +272,12 @@ class AuthorityGateTests(FinalizationTestCase):
         remote = self.rt.db.conn.execute(
             "SELECT sequence_id FROM sequences WHERE sequence_id != ?",
             (self.sequence_id,)).fetchone()["sequence_id"]
+        # V-A's frozen bindings are chapter-1 identity fixtures (no
+        # executable closure bytes): the scripted fake drives this seam.
+        from fake_verifier import FakeVerifierRunner
         info = support.drive_to_verified(
-            self.rt, {"sequence_id": remote})
+            self.rt, {"sequence_id": remote},
+            runner=FakeVerifierRunner(self.seq))
         self.seq.grant_permit(remote, permitted_uses=1)
         with self.assertRaises(ConflictError) as caught:
             self.seq.begin_commit(remote, info["attempt_id"], TARGET,

@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 
 import support
-from fake_verifier import environment_bytes, receipt_bytes
+from fake_verifier import bound_receipt_bytes, environment_bytes
 from autobot import Database, Sequencer, Store, journal
 from autobot.git_executor import observe_and_resolve
 from autobot.models import (
@@ -284,11 +284,12 @@ class RestartTests(unittest.TestCase):
         identity = {"sequence_id": snapshot["sequence_id"],
                     "attempt_id": snapshot["attempt_id"],
                     "version": 1, "fence": att["fence"]}
+        environment = environment_bytes(identity)
         seq.register_verifier_result(
             snapshot["attempt_id"], "a1", "PASS", "verifier_runner",
-            receipt_bytes("a1", "registry-checker", "PASS",
-                          snapshot["attempt_id"]),
-            environment=environment_bytes(identity))
+            bound_receipt_bytes(seq, snapshot["attempt_id"], "a1", "PASS",
+                                environment),
+            environment=environment)
         result = seq.conclude_verification(snapshot["attempt_id"],
                                            att["fence"])
         self.assertEqual(result, {"attempt": "VERIFIED",

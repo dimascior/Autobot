@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 import support
-from fake_verifier import FakeVerifierRunner, environment_bytes, receipt_bytes
+from fake_verifier import bound_receipt_bytes, environment_bytes
 from autobot import Sequencer, project_state
 from autobot.models import (
     AdmissionError,
@@ -27,7 +27,6 @@ from contract_library import object_hash
 
 WITNESS_START = b"provider session record\n"
 WITNESS_END = b"transcript: verification suite\n"
-CANDIDATE = b"candidate: tree stand-in\n"
 
 
 def human_record_payload():
@@ -69,7 +68,6 @@ class VerificationTestCase(unittest.TestCase):
         self.seq = self.rt.sequencer
         self.sequence_id = self.admitted["sequence_id"]
         self.projection = self.rt.store.put(b"projection bytes\n")
-        self.runner = FakeVerifierRunner()
 
     def tearDown(self):
         self.rt.db.close()
@@ -108,8 +106,7 @@ class VerificationTestCase(unittest.TestCase):
                                      WITNESS_END)
         self.seq.finish_attempt(self.attempt_id, role, "success",
                                 end["content_address"])
-        self.seq.freeze_candidate(self.attempt_id, self.fence,
-                                  self.rt.store.put(CANDIDATE))
+        support.mint_and_freeze(self.rt, self.attempt_id, self.fence)
         # C3-M1: the registered Collector derives-and-admits obj-15.
         receipt = support.collect_receipt(self.rt, self.attempt_id)
         self.seq.complete_evidence(self.attempt_id, self.fence, receipt)
@@ -119,12 +116,21 @@ class VerificationTestCase(unittest.TestCase):
                 "attempt_id": self.attempt_id,
                 "version": 1, "fence": self.fence}
 
-    def _register(self, assertion_id, outcome, environment=None, by=None):
+    def _register(self, assertion_id, outcome, environment=None, by=None,
+                  **overrides):
+        """One bound result through the admission seam: canonical
+        obj-19/obj-20 bytes carrying the attempt's REAL durable bindings
+        (C4-M1), with the fake obj-18 capture (V-A's a1 constraint wants
+        cpython 3.12.4). ``overrides`` forge payload members for the
+        binding negatives."""
+        env = environment if environment is not None \
+            else environment_bytes(self._identity())
+        receipt = bound_receipt_bytes(self.seq, self.attempt_id,
+                                      assertion_id, outcome, env,
+                                      **overrides)
         return self.seq.register_verifier_result(
             self.attempt_id, assertion_id, outcome,
-            by or "verifier_runner",
-            receipt_bytes(assertion_id, "x", outcome, self.attempt_id),
-            environment=environment)
+            by or "verifier_runner", receipt, environment=env)
 
     def _sequence_state(self, sequence_id=None):
         return self.rt.db.conn.execute(
@@ -180,8 +186,7 @@ class SequenceArcTests(VerificationTestCase):
                                      "agent_clis", WITNESS_END)
         self.seq.finish_attempt(self.attempt_id, "builder", "success",
                                 end["content_address"])
-        self.seq.freeze_candidate(self.attempt_id, self.fence,
-                                  self.rt.store.put(CANDIDATE))
+        support.mint_and_freeze(self.rt, self.attempt_id, self.fence)
         declared = self.rt.store.put(json.dumps(
             {"schema_version": "v1", "kind": "ExecutionReceipt",
              "attempt_id": self.attempt_id,
@@ -285,12 +290,15 @@ class VerificationFlowTests(VerificationTestCase):
 class ResultAdmissionTests(VerificationTestCase):
     def test_admission_gates(self):
         """State, producer, vocabulary and declaration gates on the typed
-        admission seam."""
+        admission seam — each fires before any payload is even parsed, so
+        junk bytes prove the gate, not the schema."""
         self._start()
         dispatched = self.seq.dispatch_attempt(self.attempt_id, "builder",
                                                "fake", self.projection)
         with self.assertRaises(ConflictError):
-            self._register("a2", "PASS")  # DISPATCHED: not EVIDENCE_COMPLETE
+            # DISPATCHED: not EVIDENCE_COMPLETE
+            self.seq.register_verifier_result(
+                self.attempt_id, "a2", "PASS", "verifier_runner", b"junk")
         start = self.seq.admit_witness(
             self.attempt_id, "obj-11", "autoswarm",
             support.session_record_bytes(dispatched["call_id"]))
@@ -302,24 +310,32 @@ class ResultAdmissionTests(VerificationTestCase):
                                      WITNESS_END)
         self.seq.finish_attempt(self.attempt_id, "builder", "success",
                                 end["content_address"])
-        self.seq.freeze_candidate(self.attempt_id, self.fence,
-                                  self.rt.store.put(CANDIDATE))
+        support.mint_and_freeze(self.rt, self.attempt_id, self.fence)
         receipt = support.collect_receipt(self.rt, self.attempt_id)
         self.seq.complete_evidence(self.attempt_id, self.fence, receipt)
         with self.assertRaises(ConflictError):
-            self._register("a2", "PASS", by="you")  # not the obj-19 minter
+            # not the obj-19 minter
+            self.seq.register_verifier_result(
+                self.attempt_id, "a2", "PASS", "you", b"junk")
         with self.assertRaises(ConflictError):
-            self._register("a2", "MAYBE")  # not in the vocabulary
+            # not in the vocabulary
+            self.seq.register_verifier_result(
+                self.attempt_id, "a2", "MAYBE", "verifier_runner", b"junk")
         with self.assertRaises(ConflictError):
-            self._register("a9", "PASS")  # not a declared assertion
+            # not a declared assertion
+            self.seq.register_verifier_result(
+                self.attempt_id, "a9", "PASS", "verifier_runner", b"junk")
 
     def test_environment_binding(self):
         """a1's declared constraint requires a bound, matching obj-18:
         missing capture, wrong-attempt scope and mismatching interpreter
         are each refused; the mismatch routes to t-s12 env_mismatch."""
         self._to_evidence_complete()
-        with self.assertRaises(ConflictError):
-            self._register("a1", "PASS")  # constraint without capture
+        with self.assertRaises(ConflictError) as missing:
+            # no capture supplied and none admitted for the attempt
+            self.seq.register_verifier_result(
+                self.attempt_id, "a1", "PASS", "verifier_runner", b"junk")
+        self.assertIn("obj-18", str(missing.exception))
         wrong_scope = environment_bytes(
             {**self._identity(), "attempt_id": "at_" + "0" * 32})
         with self.assertRaises(ConflictError):
@@ -341,21 +357,25 @@ class ResultAdmissionTests(VerificationTestCase):
         """An identical re-admission is idempotent and journals nothing; a
         conflicting one never overwrites."""
         self._to_evidence_complete()
-        receipt = receipt_bytes("a2", "vector-checker", "PASS",
-                                self.attempt_id)
+        env = environment_bytes(self._identity())
+        receipt = bound_receipt_bytes(self.seq, self.attempt_id, "a2",
+                                      "PASS", env)
         first = self.seq.register_verifier_result(
-            self.attempt_id, "a2", "PASS", "verifier_runner", receipt)
+            self.attempt_id, "a2", "PASS", "verifier_runner", receipt,
+            environment=env)
         before = self._journal_count()
         again = self.seq.register_verifier_result(
-            self.attempt_id, "a2", "PASS", "verifier_runner", receipt)
+            self.attempt_id, "a2", "PASS", "verifier_runner", receipt,
+            environment=env)
         self.assertTrue(again["duplicate"])
         self.assertEqual(again["verification_id"], first["verification_id"])
         self.assertEqual(self._journal_count(), before)
         with self.assertRaises(ConflictError):
             self.seq.register_verifier_result(
                 self.attempt_id, "a2", "FAIL", "verifier_runner",
-                receipt_bytes("a2", "vector-checker", "FAIL",
-                              self.attempt_id))
+                bound_receipt_bytes(self.seq, self.attempt_id, "a2",
+                                    "FAIL", env),
+                environment=env)
         rows = self.rt.db.conn.execute(
             "SELECT COUNT(*) AS n FROM attempt_verifications").fetchone()["n"]
         self.assertEqual(rows, 1)
@@ -468,7 +488,10 @@ class AttestationTests(VerificationTestCase):
             # a3 unresolved: no commit before the attestation is durable.
             self.seq.conclude_verification(self.attempt_id, self.fence)
         with self.assertRaises(ConflictError):
-            self._register("a3", "PASS")  # HUMAN assertion via runner seam
+            # HUMAN assertion via the runner seam (the mode gate fires
+            # before any payload is parsed)
+            self.seq.register_verifier_result(
+                self.attempt_id, "a3", "PASS", "verifier_runner", b"junk")
         with self.assertRaises(ConflictError):
             self.seq.attest_assertion(self.attempt_id, "a2",
                                       self._attestation("a2"))

@@ -27,12 +27,33 @@ nothing.
   a MISMATCH (fail closed), never ignored.
 """
 
+import json
+from pathlib import Path
+
+from contract_library.schema_profile import check_profile
+from contract_library.schema_profile import validate as schema_validate
+
 from .models import ConflictError
 
 # The verifier_runner's registered result vocabulary (obj-19 on PASS,
 # obj-20 on FAIL; INCONCLUSIVE carries its receipt but satisfies nothing —
 # it routes to t-s12's "unknown" arm, never to VERIFIED or REJECTED).
 VERIFIER_OUTCOMES = ("PASS", "FAIL", "INCONCLUSIVE")
+
+# The frozen Chapter 1 obj-18 schema, used without weakening (D-56).
+_ENVIRONMENT_SCHEMA_PATH = (Path(__file__).resolve().parent / "schemas"
+                            / "actual_verification_environment.schema.json")
+_ENVIRONMENT_SCHEMA_CACHE = []
+
+
+def environment_schema():
+    """The frozen obj-18 schema, profile-checked once (D-43)."""
+    if not _ENVIRONMENT_SCHEMA_CACHE:
+        with open(str(_ENVIRONMENT_SCHEMA_PATH), "r", encoding="utf-8") as fh:
+            schema = json.load(fh)
+        check_profile(schema)
+        _ENVIRONMENT_SCHEMA_CACHE.append(schema)
+    return _ENVIRONMENT_SCHEMA_CACHE[0]
 
 # Registered minters (objects.json): obj-19/obj-20 by verifier_runner,
 # obj-18 by environment_probe, obj-37 by you.
@@ -96,40 +117,122 @@ def verifier_eligibility(assertion, registration):
     return None
 
 
+def _membership(section, field, captured_value, allowed):
+    """One D-56 list rule: the captured value must be among the declared
+    exact values. A list that is not a list fails closed."""
+    if not isinstance(allowed, list) or not allowed:
+        return ("%s constraint %r is not a non-empty list: failing closed"
+                % (section, field))
+    if captured_value not in allowed:
+        return ("%s %s %r is not among the declared %r"
+                % (section, field, captured_value, allowed))
+    return None
+
+
 def environment_satisfies(constraint, actual):
-    """obj-17 -> obj-18 binding: every declared constraint section must be
-    satisfied by the captured environment; an unsupported section fails
-    closed. Returns None on satisfaction, else the mismatch text."""
+    """obj-17 -> obj-18 binding, the COMPLETE D-56 vocabulary (C4-M1):
+
+    - ``interpreter``: implementation list, exact version list;
+    - ``platform``: os list, architecture list;
+    - ``tools``: named tool presence, each with an optional exact version
+      list — a tool the capture does not carry is a mismatch;
+    - ``env_vars``: named variable exact values — a variable the capture
+      does not carry is a mismatch.
+
+    Every declared section and every rule key inside it must be understood;
+    an unsupported section or rule key fails CLOSED (never substituted or
+    ignored). A mismatch is a verification-environment authority problem —
+    the registered t-s12 env_mismatch HALT arm — never an ordinary failed
+    assertion. Returns None on satisfaction, else the mismatch text."""
     if not isinstance(constraint, dict):
         return "environment constraint is not a mapping"
     if not isinstance(actual, dict):
         return "captured environment is not a mapping"
-    for section, rule in constraint.items():
-        if section != "interpreter":
+    for section in sorted(constraint):
+        rule = constraint[section]
+        if not isinstance(rule, dict):
+            return ("environment constraint section %r is not a mapping:"
+                    " failing closed" % section)
+        if section == "interpreter":
+            captured = actual.get("interpreter", {})
+            for key in sorted(rule):
+                if key == "implementations":
+                    refusal = _membership("interpreter", "implementation",
+                                          captured.get("implementation"),
+                                          rule[key])
+                elif key == "versions":
+                    refusal = _membership("interpreter", "version",
+                                          captured.get("version"), rule[key])
+                else:
+                    return ("interpreter constraint key %r is not supported"
+                            " by this runtime: failing closed" % key)
+                if refusal is not None:
+                    return refusal
+        elif section == "platform":
+            captured = actual.get("platform", {})
+            for key in sorted(rule):
+                if key == "os":
+                    refusal = _membership("platform", "os",
+                                          captured.get("os"), rule[key])
+                elif key == "architectures":
+                    refusal = _membership("platform", "architecture",
+                                          captured.get("architecture"),
+                                          rule[key])
+                else:
+                    return ("platform constraint key %r is not supported by"
+                            " this runtime: failing closed" % key)
+                if refusal is not None:
+                    return refusal
+        elif section == "tools":
+            captured = actual.get("tools", {})
+            for name in sorted(rule):
+                tool_rule = rule[name]
+                if not isinstance(tool_rule, dict):
+                    return ("tool constraint %r is not a mapping: failing"
+                            " closed" % name)
+                tool = captured.get(name)
+                if not isinstance(tool, dict):
+                    return ("required tool %r was not captured: presence"
+                            " cannot be established" % name)
+                for key in sorted(tool_rule):
+                    if key != "versions":
+                        return ("tool constraint key %r is not supported by"
+                                " this runtime: failing closed" % key)
+                    refusal = _membership("tool %s" % name, "version",
+                                          tool.get("version"),
+                                          tool_rule[key])
+                    if refusal is not None:
+                        return refusal
+        elif section == "env_vars":
+            captured = actual.get("env_vars", {})
+            for name in sorted(rule):
+                expected = rule[name]
+                if not isinstance(expected, str):
+                    return ("env var constraint %r is not an exact string"
+                            " value: failing closed" % name)
+                if name not in captured:
+                    return ("required env var %r was not captured" % name)
+                if captured[name] != expected:
+                    return ("env var %s value does not equal the declared"
+                            " exact value" % name)
+        else:
             return ("environment constraint section %r is not supported by"
                     " this runtime: failing closed (INV-53 discipline, never"
                     " substituted or ignored)" % section)
-        captured = actual.get("interpreter", {})
-        implementations = rule.get("implementations")
-        if implementations is not None and captured.get(
-                "implementation") not in implementations:
-            return ("interpreter implementation %r is not among the declared"
-                    " %r" % (captured.get("implementation"), implementations))
-        versions = rule.get("versions")
-        if versions is not None and captured.get("version") not in versions:
-            return ("interpreter version %r is not among the declared %r"
-                    % (captured.get("version"), versions))
     return None
 
 
 def validate_environment_capture(payload, att):
-    """The obj-18 fields the Sequencer binds (full schema validation is the
-    Chapter 4 runner's conformance duty): kind, version, and the capture's
-    attempt-identity scope binding to THIS attempt."""
-    if not (isinstance(payload, dict)
-            and payload.get("kind") == "ActualVerificationEnvironment"
-            and payload.get("schema_version") == "v1"):
+    """The full obj-18 admission check (C4-M1): the payload must validate
+    against the FROZEN Chapter 1 schema (used without weakening, D-56) and
+    its attempt identity must bind THIS attempt. Returns None when valid,
+    else the refusal text."""
+    if not isinstance(payload, dict):
         return "not a v1 ActualVerificationEnvironment (obj-18)"
+    issues = schema_validate(payload, environment_schema())
+    if issues:
+        return ("obj-18 failed the frozen Chapter 1 schema: %s"
+                % "; ".join(repr(issue) for issue in issues))
     identity = payload.get("attempt", {})
     if (identity.get("attempt_id") != att["attempt_id"]
             or identity.get("sequence_id") != att["sequence_id"]

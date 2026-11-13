@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "autobot/object/CandidateReceipt/v1",
+  "title": "CandidateReceipt (obj-16): the git_adapter's frozen verification subject — attempt-bound, immutable, derived from authoritative repository and ledger facts, never from agent claims, transcripts or mtime",
+  "type": "object",
+  "required": [
+    "schema_version", "kind", "minter",
+    "attempt", "attempt_contract_hash",
+    "record_hash", "requirement_digest", "contract_digest",
+    "finalization_class", "source_state", "artifacts", "captured_utc"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "kind": {"const": "CandidateReceipt"},
+    "minter": {"const": "git_adapter"},
+    "attempt": {
+      "type": "object",
+      "required": ["sequence_id", "attempt_id", "fence"],
+      "additionalProperties": false,
+      "properties": {
+        "sequence_id": {"type": "string", "pattern": "^sq_[0-9a-f]{32}$"},
+        "attempt_id": {"type": "string", "pattern": "^at_[0-9a-f]{32}$"},
+        "fence": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "attempt_contract_hash": {"$ref": "#/$defs/digest"},
+    "record_hash": {"$ref": "#/$defs/digest"},
+    "requirement_digest": {"$ref": "#/$defs/digest"},
+    "contract_digest": {"$ref": "#/$defs/digest"},
+    "finalization_class": {"enum": ["READ_ONLY", "SOURCE_MODIFYING"]},
+    "source_state": {
+      "type": "object",
+      "required": ["record_hash", "repository_id", "authority_location"],
+      "additionalProperties": false,
+      "properties": {
+        "record_hash": {"$ref": "#/$defs/digest"},
+        "repository_id": {"$ref": "#/$defs/name_id"},
+        "authority_location": {"enum": ["LOCAL", "REMOTE"]},
+        "repository_authority_declaration": {"$ref": "#/$defs/digest"},
+        "target_ref": {"type": "string", "pattern": "^refs/\\S+$"}
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["logical_path", "content_sha256", "role"],
+        "additionalProperties": false,
+        "properties": {
+          "logical_path": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"},
+          "content_sha256": {"$ref": "#/$defs/digest"},
+          "role": {"$ref": "#/$defs/name_id"}
+        }
+      }
+    },
+    "candidate_tree": {
+      "type": "object",
+      "required": ["git_tree_sha"],
+      "additionalProperties": false,
+      "properties": {
+        "git_tree_sha": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"}
+      }
+    },
+    "captured_utc": {"$ref": "#/$defs/instant"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "instant": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"},
+    "name_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}
+  }
+}
