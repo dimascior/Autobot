@@ -6,6 +6,7 @@ directories. The fixtures are consumed from the frozen chapter tree —
 Chapter 2 never copies or re-derives them.
 """
 
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -475,6 +476,161 @@ def session_record_bytes(call_id, native_session_id="native-sess-9",
     return _json.dumps(payload, sort_keys=True).encode("utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Command governance (obj-12), one governed command = a DECISION record
+# before the command may run and a RESULT record after it ran (TI-1 WP5).
+# Two constructed families, never real producer bytes:
+#
+# - the RECOGNIZED family (recognized_*_bytes): the spellings
+#   witness_semantics recognizes - what the shared drive path admits, so
+#   every driven test exercises the recognizer's joins and the decided-
+#   execution rule instead of fact-free prose;
+# - the PRODUCER's shape (producer_*_bytes): key sets, key order and byte
+#   framing as the Helios command gate writes them (Windows PowerShell 5.1
+#   ConvertTo-Json - four-space indent, two spaces after each key colon -
+#   then UTF-8 WITH a byte order mark and CRLF line ends). The recognizer
+#   does not read this shape: finding F-TI-5, pinned by test_real_boundary.
+#
+# Every VALUE in both families is synthetic: no real session, command,
+# path, policy or digest is reproduced here.
+
+GOVERNANCE_BOM = b"\xef\xbb\xbf"
+GOVERNANCE_SESSION = "native-sess-9"  # the drive path's bound native session
+GOVERNANCE_COMMAND = "python -m unittest discover -s tests"
+GOVERNANCE_TOOL_USE = "toolu_01Ti1DrivePathCommand001"
+GOVERNANCE_CORRELATION = "20261109-drive-001"
+
+
+def governance_command_sha256(command=GOVERNANCE_COMMAND):
+    """The producer's command identity: the bare lowercase-hex SHA-256 of
+    the command text (a producer spelling, not a D-30 ``sha256:`` digest)."""
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()
+
+
+def recognized_decision_bytes(session_id=GOVERNANCE_SESSION,
+                              tool_use_id=GOVERNANCE_TOOL_USE,
+                              correlation_id=GOVERNANCE_CORRELATION,
+                              command=GOVERNANCE_COMMAND, decision="ALLOW"):
+    """The decision record in the recognized fact family: it names the
+    session, the tool use, the command identity and the decision."""
+    return json.dumps({
+        "session_id": session_id,
+        "tool_use_id": tool_use_id,
+        "correlation_id": correlation_id,
+        "command_sha256": governance_command_sha256(command),
+        "decision": decision,
+        "hook_event": "PreToolUse",
+        "tier": 0,
+    }, sort_keys=True).encode("utf-8")
+
+
+def recognized_result_bytes(session_id=GOVERNANCE_SESSION,
+                            tool_use_id=GOVERNANCE_TOOL_USE,
+                            correlation_id=GOVERNANCE_CORRELATION,
+                            command=GOVERNANCE_COMMAND, success=True):
+    """The result record in the recognized fact family: the proof the
+    command executed. It carries no decision of its own - the decision
+    record for the same tool use does (D-C3-8)."""
+    return json.dumps({
+        "session_id": session_id,
+        "tool_use_id": tool_use_id,
+        "correlation_id": correlation_id,
+        "command": command,
+        "command_sha256": governance_command_sha256(command),
+        "hook_event": "PostToolUse",
+        "executed_utc": "2026-11-09T12:00:02.000Z",
+        "duration_ms": 750,
+        "success": success,
+    }, sort_keys=True).encode("utf-8")
+
+
+def _producer_frame(document, framed):
+    text = json.dumps(document, indent=4, separators=(",", ":  "))
+    data = (text.replace("\n", "\r\n") + "\r\n").encode("utf-8")
+    return (GOVERNANCE_BOM + data) if framed else data
+
+
+def producer_decision_bytes(session_id=GOVERNANCE_SESSION,
+                            tool_use_id=GOVERNANCE_TOOL_USE,
+                            correlation_id=GOVERNANCE_CORRELATION,
+                            command=GOVERNANCE_COMMAND, verdict="ALLOW",
+                            framed=True):
+    """The per-command DECISION record in the producer's shape. The
+    producer spells its decision ``verdict`` (ALLOW, DENY, DENY_FATAL,
+    PASSTHROUGH, UNKNOWN, INTEGRITY_FAILURE). ``framed=False`` drops only
+    the byte order mark - the diagnostic layer of the F-TI-5 tests, never
+    what a producer writes."""
+    return _producer_frame({
+        "correlation_id": correlation_id,
+        "integrity_status": "CLEAN",
+        "verdict": verdict,
+        "session_id": session_id,
+        "command_sha256": governance_command_sha256(command),
+        "timestamp_utc": "2026-11-09T12:00:01.0000000Z",
+        "tier": 0,
+        "reason": None,
+        "tool_use_id": tool_use_id,
+    }, framed)
+
+
+def producer_result_bytes(session_id=GOVERNANCE_SESSION,
+                          tool_use_id=GOVERNANCE_TOOL_USE,
+                          correlation_id=GOVERNANCE_CORRELATION,
+                          command=GOVERNANCE_COMMAND, success=True,
+                          framed=True):
+    """The per-command RESULT record in the producer's shape: the proof
+    the command executed. It carries no decision of its own."""
+    return _producer_frame({
+        "correlation_id": correlation_id,
+        "tool_use_id": tool_use_id,
+        "session_id": session_id,
+        "command": command,
+        "command_sha256": governance_command_sha256(command),
+        "gate_file": "%s-%s.gate.json" % (tool_use_id, correlation_id),
+        "hook_event": "PostToolUse",
+        "executed_utc": "2026-11-09T12:00:02.0000000Z",
+        "duration_ms": 750,
+        "cwd": "C:\\work\\repository",
+        "exit_code": None,
+        "exit_code_source": "unavailable",
+        "interrupted": False,
+        "output_preview": "OK",
+        "output_bytes": 2,
+        "success": success,
+        "fields_found": ["stdout", "stderr", "interrupted"],
+        "fields_missing": ["exitCode"],
+        "detected_tier": 0,
+        "detected_tier_name": "routine",
+        "matched_pattern": None,
+        "capability_escalated": False,
+        "capability_flags": {
+            "dynamic_eval_execution": False,
+            "inline_interpreter_execution": False,
+            "nested_shell_execution": False,
+            "encoded_or_obfuscated_execution": False,
+        },
+        "classifier_reason_codes": [],
+        "write_indicator_matched": False,
+        "policy_hash": "0" * 64,
+        "hook_versions": {"hooks\\pretooluse.ps1": "1" * 64,
+                          "hooks\\evidence_capture.ps1": "2" * 64},
+        "enforcement_surface": "shell-gated",
+        "segments_declared": [command],
+        "segments_detected": [command],
+        "segments_match": True,
+        "watched_path_diffs": None,
+        "settings_integrity_after": {
+            "settings_hash": "3" * 64,
+            "all_hooks_present": True,
+            "pretooluse_present": True,
+            "posttooluse_present": True,
+            "posttoolusefailure_present": True,
+            "settings_exists": True,
+        },
+        "session_continuity_status": "continuous",
+    }, framed)
+
+
 def collect_receipt(rt, attempt_id, window_seconds=None):
     """Derive-and-admit the frozen attempt's obj-15 through the registered
     Collector seat (cap-30); returns the admitted receipt's address."""
@@ -520,8 +676,14 @@ def drive_to_evidence_complete(rt, admitted_result, role="builder",
                                                    prompt=prompt))
     seq.attempt_running(attempt_id, "native-sess-9",
                         start["content_address"])
+    # TI-1 WP5: command governance as constructed records in the
+    # RECOGNIZED fact family - the decision and the result of one governed
+    # command, naming the session bound above. test_real_boundary asserts
+    # the facts the recognizer extracts from exactly these bytes.
     seq.admit_witness(attempt_id, "obj-12", "helios",
-                      b"command governance log\n")
+                      recognized_decision_bytes())
+    seq.admit_witness(attempt_id, "obj-12", "helios",
+                      recognized_result_bytes())
     end = seq.admit_witness(attempt_id, "obj-13", "agent_clis",
                             b"transcript\n")
     if artifact is not None:

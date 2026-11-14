@@ -1,0 +1,119 @@
+{
+  "note": "sha256 identities of provider records retained on the operator's machine; no provider or prompt bytes, names or sizes are committed (TI-1 section 7c)",
+  "prompt_files": [
+    "sha256:0176bf5dd24af3fa7f9bc821aec3771da3dd0f7f565345ec10a4ad43b8054fe8",
+    "sha256:07985ab5b34bfbd55edef9428ff73a2c08aaee6022213f5ba8dd18745b2e77f8",
+    "sha256:0e51568981a0832ff231807af362024991dd331025cb667818257ad7cd76536a",
+    "sha256:603571e3c9bf396443c8319082f1921ca95d27b34e531943540a6c98d3c26348",
+    "sha256:6a1d4978b4992c17679ade9ff4c0fb61b3d6bb8a0e8319022e6a56168e0cff20",
+    "sha256:9d49f4513c8333a0da509ca4f9282a1aaee962078dc66606c964fb872ab6da2d",
+    "sha256:f253eef370dec4641c55323ca156a54d68831b423c5c9934d1bf61abb34ec21c"
+  ],
+  "schema": "autobot-ti1-real-bytes-manifest/v1",
+  "task_records": [
+    {
+      "class": "inline",
+      "prompt_sha256": "sha256:c7eca4745d9a3c00d03e208848780d9ed52ed2faeff6b01f7b461a7d49accf6c",
+      "task_record_sha256": "sha256:03c1d516d3403235c71903c5ea9204fb0aa4376f6f48dc103d911b0be35bb857"
+    },
+    {
+      "class": "file-identical",
+      "input_sha256": "sha256:0176bf5dd24af3fa7f9bc821aec3771da3dd0f7f565345ec10a4ad43b8054fe8",
+      "prompt_sha256": "sha256:0176bf5dd24af3fa7f9bc821aec3771da3dd0f7f565345ec10a4ad43b8054fe8",
+      "task_record_sha256": "sha256:09ca16c756edecaf23a29b034344a947b9765bf07198fad951f22e62b7610c1a"
+    },
+    {
+      "class": "inline",
+      "prompt_sha256": "sha256:244499ad3ce87588dd8b9701e35280aab15d2d21de0acc5bec7177b1d2eafa36",
+      "task_record_sha256": "sha256:209fbd1cc2e5ed78639a48e62f06dd0451e3eaadbd6b781747f0d08c8c6d6395"
+    },
+    {
+      "body_sha256": "sha256:6a1d4978b4992c17679ade9ff4c0fb61b3d6bb8a0e8319022e6a56168e0cff20",
+      "class": "ps51-composed",
+      "prompt_sha256": "sha256:250ffed2ba5c92df1c5c9aa96dba4568afcfcde0e475ad8c211bb7eeff3d7100",
+      "task_record_sha256": "sha256:21a462ba70ae03bdaf16e4699d10bea8cbd3fd599d8a2879904d235ea7b0fd5a"
+    },
+    {
+      "class": "file-identical",
+      "input_sha256": "sha256:603571e3c9bf396443c8319082f1921ca95d27b34e531943540a6c98d3c26348",
+      "prompt_sha256": "sha256:603571e3c9bf396443c8319082f1921ca95d27b34e531943540a6c98d3c26348",
+      "task_record_sha256": "sha256:2db7ecfc02b6eba1db509721532d0650c4e0ead48c9d7090f7b5c7f283135872"
+    },
+    {
+      "body_sha256": "sha256:07985ab5b34bfbd55edef9428ff73a2c08aaee6022213f5ba8dd18745b2e77f8",
+      "class": "ps51-composed",
+      "prompt_sha256": "sha256:1d163d17f9a2cad2c550f0e0f33a189c8539aa1fc6103f6942462a73bd81d6d7",
+      "task_record_sha256": "sha256:302201bfbf9febfc5b478c80178603dfe3f7635c5e6a47f44e6da1fc19c805e3"
+    },
+    {
+      "class": "ps51-composed",
+      "prompt_sha256": "sha256:fb5ad54bcd8c4cd970567d098576b81c0ad76197475534156d204ac2219bc80c",
+      "task_record_sha256": "sha256:6685c80299c1e3365a619d3da33600497cc754f10eae819e6ded6ad24d343bf0"
+    },
+    {
+      "class": "file-identical",
+      "input_sha256": "sha256:0176bf5dd24af3fa7f9bc821aec3771da3dd0f7f565345ec10a4ad43b8054fe8",
+      "prompt_sha256": "sha256:0176bf5dd24af3fa7f9bc821aec3771da3dd0f7f565345ec10a4ad43b8054fe8",
+      "task_record_sha256": "sha256:7bbe39defcbc3d6b493ed438f737af24a0007250814910ae97cc3d4b80803bb0"
+    },
+    {
+      "class": "inline",
+      "prompt_sha256": "sha256:4c000ed10d82983913ebd167639ba79278643a051362f716da45cbcb0475cfc2",
+      "task_record_sha256": "sha256:86f3e859b88972adeb8de57adf411555a327797f74302be34c1b880167fc5175"
+    },
+    {
+      "class": "inline",
+      "prompt_sha256": "sha256:94bd98107255c03a28d91267363b4c7d1f2be07424c4337a88da757b5509b5bf",
+      "task_record_sha256": "sha256:86f68960cab3cc1b65217df8aa810aadbe97f1f9893d85ba4d90444d82f048e2"
+    },
+    {
+      "class": "inline",
+      "prompt_sha256": "sha256:22967e74e68c051882845ef94a220e712ec314e20a4344315fe817986bc74fea",
+      "task_record_sha256": "sha256:8843f59932cd62d969f995b1056ff0c7cdc991bc92bd04468cb8fdf2c502bbbb"
+    },
+    {
+      "class": "file-identical",
+      "input_sha256": "sha256:603571e3c9bf396443c8319082f1921ca95d27b34e531943540a6c98d3c26348",
+      "prompt_sha256": "sha256:603571e3c9bf396443c8319082f1921ca95d27b34e531943540a6c98d3c26348",
+      "task_record_sha256": "sha256:8cab03f96126d9ef516d5a156b2cbe2eb939458631492af49fdc6f2c985b2efa"
+    },
+    {
+      "body_sha256": "sha256:0e51568981a0832ff231807af362024991dd331025cb667818257ad7cd76536a",
+      "class": "ps51-composed",
+      "prompt_sha256": "sha256:d8a1c1b34c79bc7a2a53707fced62a8bfaa27310e302177aaaede8fdb85c49b8",
+      "task_record_sha256": "sha256:a6e7cde2225c1bb2254717ae8e0b681afb02672eb99328a04a754bc158dddd09"
+    },
+    {
+      "class": "inline",
+      "prompt_sha256": "sha256:b99ab9c287ec8e4f625e03e1f79582865b53c8eaf8ac857bd08dd91df1c441cd",
+      "task_record_sha256": "sha256:a83684a3892abed67e10f29ea7e6f86ef0eb240962f51065b2a126df1f586261"
+    },
+    {
+      "body_sha256": "sha256:9d49f4513c8333a0da509ca4f9282a1aaee962078dc66606c964fb872ab6da2d",
+      "class": "ps51-composed",
+      "prompt_sha256": "sha256:5bd304d256fef7f0026bbe7ba6e5cbf2a05dac5feb3b3af4fa92f151cad68c6c",
+      "task_record_sha256": "sha256:a9527cbbf9fc23ffc141acd22019990531265957d9e1f39d834908804b9de8c3"
+    },
+    {
+      "class": "inline",
+      "prompt_sha256": "sha256:ea301314be113a094aff624819cee3cdabbfca276bcae773bf4c48bbf5c83bad",
+      "task_record_sha256": "sha256:ac438977b788638bde3f5f3b250d769b80168414eaea9a1b5e38dc74257d56c5"
+    },
+    {
+      "class": "inline",
+      "prompt_sha256": "sha256:a7085e12e2524a7e9bd9232c95db7cf002bbcfd2bc0bdebc743d1b27f57b0018",
+      "task_record_sha256": "sha256:d73f0c906fb68910c64793ed962fc196763025bb4609287cac8916c92048429d"
+    },
+    {
+      "body_sha256": "sha256:f253eef370dec4641c55323ca156a54d68831b423c5c9934d1bf61abb34ec21c",
+      "class": "ps51-composed",
+      "prompt_sha256": "sha256:c6259e59b3931913e76fe76725890d0652d8ecdd557bcd2b0ccb243cd25fcd21",
+      "task_record_sha256": "sha256:da243587f06a785e3ff9bb4cfbdbfb3984a2073e34f47e22adf99bcf74e4b5d5"
+    },
+    {
+      "class": "inline",
+      "prompt_sha256": "sha256:19b8b7158f521187f6b1c525896c1f95fb946d239685b29fb0a2b5e58ea0ae47",
+      "task_record_sha256": "sha256:ef5be3c7a27967f33478bfcb0bf2571e8df5de3d9910bea86f9c695ece639ced"
+    }
+  ]
+}

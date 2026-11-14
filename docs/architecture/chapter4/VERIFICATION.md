@@ -5,7 +5,9 @@ Every statement here is implemented and proven by the suite
 rewired verification, receipt, provenance, finalization, acceptance,
 recovery and pilot suites). Registry citations are to the frozen
 Chapter 0/1 registers. Sections 1–12 are C4-M1 (amended where C4-M2
-extended them); sections 13–19 are C4-M2.
+extended them); sections 13–19 are C4-M2. The test-independence milestone
+(TI-1) amended sections 4, 17 and 18 for two defects its oracles exposed
+(F-TI-6, F-TI-4); the harness itself is described in `INDEPENDENCE.md`.
 
 ## 1. CandidateReceipt (obj-16)
 
@@ -107,7 +109,8 @@ assertion (SEM-16 at `validate_freeze`) and the runner re-checks
 eligibility as defense in depth.
 
 Execution materializes the script bytes FROM THE CONTENT STORE into a
-fresh run directory (entrypoints containing `..` are refused), materializes
+fresh run directory (an entrypoint outside the closure-path grammar of
+section 17 is refused before anything is written — F-TI-6), materializes
 the subject artifacts by content address, writes a context file (the
 assertion, the obj-16 payload, the obj-18 payload, the registration
 identity, the subject manifest) and invokes the verified interpreter with
@@ -371,9 +374,33 @@ The `packaged`/`manifest_sha256` form EXECUTES: the manifest bytes are a
 PackageManifest v1 naming every entry {path, content_sha256}, the
 entrypoint (one of the entries, and it must AGREE with the
 registration's), and an optional pinned interpreter identity. Every entry
-materializes from the content store at its relative slash path — the
-grammar fails closed on absolute paths, `..`, backslashes and duplicates
-— and only the bound entrypoint executes. The
+materializes from the content store at its relative slash path and only
+the bound entrypoint executes.
+
+**The closure-path grammar (TI-1, F-TI-6).** A closure path must name the
+SAME plain file on every filesystem the runtime materializes into, or the
+bound entrypoint can end up holding bytes the manifest binds to another
+entry. The original grammar (no absolute paths, no `..`, no backslashes,
+no exact duplicates) did not hold on Windows: two entries differing only
+by case, by a trailing dot or space, or by a `::$DATA` stream suffix are
+ONE file there, and a drive-letter segment (`C:tool.py`) resolves outside
+the run directory. The grammar is now, identically on every platform: a
+frozen D-26 RepoPath (relative, slash-separated; no empty, `.` or `..`
+segment; no backslash, NUL or control character; no edge whitespace; NFC)
+whose every segment also carries none of `< > : " | ? *`, no trailing
+dot, no Windows device name (`CON`, `NUL.py`, `nul .txt`, `COM1` …) and
+not the 8.3 short-alias form (`NAME~1.EXT`); no entry whose
+first segment is a name the runner itself writes into the run directory
+(`input.bin`, `output.bin`, `context.json`, `subject`); no two entries
+equal under case folding; no entry that is both a file and a directory of
+another. A manifest outside the grammar is an IntegrityHalt at resolution
+(`t-s12 bound_artifact_unavailable`) — before anything is written or
+executed. `materialize_closure` applies the same grammar to the
+REGISTRATION's entrypoint for python and native closures (the frozen D-26
+grammar a registration is admitted under still accepts `C:tool.py`; the
+seam that writes does not), refuses a python entrypoint named like the
+closure's own `dependency.lock`, and re-checks a package it did not
+parse. The
 `packaged`/`image_digest` form names a container image; no container
 engine is part of this runtime's frozen environment, so it HALTs
 explicitly rather than being approximated. ONE resolver and ONE
@@ -400,6 +427,21 @@ Two halves, explicitly split:
   declared specification input (resolvable forever: recovery re-resolves
   ALL records' inputs and INV-44's chain starts at those exact bytes),
   unlinks the rest, and journals removals (`ch4:reclaim`).
+
+  **TI-1, F-TI-4.** The rule is "never delete what `recover()` resolves",
+  and the first implementation protected less than that: recovery also
+  resolves the finalization receipts the JOURNAL names (the t-s16 commit
+  receipt and observation receipt, the acceptance and release receipts —
+  the last two also `released_edges` columns the column list lacked) and
+  the execution evidence every admitted verifier result binds
+  (`execution.output_sha256`, re-read by the F-C4-1 consistency check).
+  Reclaiming any of them turned a clean ledger into a permanent recovery
+  HALT (D-66). `reclaim` now refuses both families, judged exactly as
+  recovery reads them (one shared constant names the journaled receipt
+  facts). Still reclaimable, by the same rule: evidence the journal
+  merely mentions and recovery never resolves (for example a t-i07
+  attestation's address) — the independent auditor reports those as
+  dangling references, never as findings.
 
 Recovery REPORTS `retention.missing_bound_leaves` for live records whose
 bound leaves do not resolve (D-C4-9) — visibility at restart, while the

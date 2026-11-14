@@ -945,9 +945,7 @@ class Sequencer:
             if entry_payload.get("machine") != "sequence":
                 continue
             entry_facts = entry_payload.get("facts", {})
-            for key in ("commit_receipt_address",
-                        "observation_receipt_address",
-                        "acceptance_sha256", "release_sha256"):
+            for key in self._JOURNALED_RECEIPT_FACTS:
                 address = entry_facts.get(key)
                 if address is not None:
                     self.store.get(address)  # re-hashes (D-66)
@@ -1659,6 +1657,18 @@ class Sequencer:
         ("attempt_verifications", "receipt_sha256"),
         ("attempt_verifications", "environment_sha256"),
         ("attempt_calls", "projection_address"),
+        # F-TI-4: the obj-30/obj-35 references recovery resolves (8e).
+        ("released_edges", "acceptance_sha256"),
+        ("released_edges", "release_sha256"),
+    )
+
+    # Sequence-entry facts naming finalization receipts (obj-26, obj-30,
+    # obj-35) that recovery resolves from the journal (8d). ONE list for
+    # recovery and reclamation: F-TI-4 (TI-1) was reclaim protecting less
+    # than recovery requires.
+    _JOURNALED_RECEIPT_FACTS = (
+        "commit_receipt_address", "observation_receipt_address",
+        "acceptance_sha256", "release_sha256",
     )
 
     def retention_roots(self):
@@ -1731,6 +1741,42 @@ class Sequencer:
                     "name_to_exact_byte_sha256", {})
                 frozen_inputs.update(
                     v for v in inputs.values() if isinstance(v, str))
+            # F-TI-4 (TI-1, exposed by the independent state oracle):
+            # recovery resolves two more reference families that no
+            # ledger COLUMN holds — reclaiming either turned a clean
+            # ledger into a permanent recovery HALT. The journaled
+            # finalization receipts (8d) and the execution evidence every
+            # admitted obj-19/obj-20 binds (8h, F-C4-1) are committed
+            # evidence, judged here exactly as recovery reads them.
+            committed_evidence = {}
+            for entry in journal.entries(cur):
+                if entry.get("machine") != "sequence":
+                    continue
+                entry_facts = entry.get("facts", {})
+                for key in self._JOURNALED_RECEIPT_FACTS:
+                    named = entry_facts.get(key)
+                    if isinstance(named, str):
+                        committed_evidence.setdefault(
+                            named, "journaled finalization receipt"
+                                   " reference (%s %s)"
+                                   % (entry.get("rule"), key))
+            for result_row in cur.execute(
+                    "SELECT receipt_sha256 FROM attempt_verifications"
+                    " WHERE by_principal = ?",
+                    (RESULT_PRODUCER,)).fetchall():
+                try:
+                    result_payload = json.loads(self.store.get(
+                        result_row["receipt_sha256"]).decode("utf-8"))
+                except (IntegrityHalt, UnicodeDecodeError, ValueError):
+                    continue  # recovery HALTs on this; reclaim only judges
+                execution = result_payload.get("execution") \
+                    if isinstance(result_payload, dict) else None
+                evidence = execution.get("output_sha256") \
+                    if isinstance(execution, dict) else None
+                if isinstance(evidence, str):
+                    committed_evidence.setdefault(
+                        evidence, "execution evidence bound by an admitted"
+                                  " verification receipt (F-C4-1)")
             removed = []
             retained = {}
             for address in sorted(set(addresses)):
@@ -1738,6 +1784,9 @@ class Sequencer:
                     retained[address] = (
                         "a frozen record's declared specification input"
                         " (resolvable forever; INV-44/D-66)")
+                    continue
+                if address in committed_evidence:
+                    retained[address] = committed_evidence[address]
                     continue
                 if address in roots:
                     retained[address] = (

@@ -82,8 +82,23 @@ The registered chapter-4 proofs closed in M1: `CH4-llm-output-never-pass`
 - **F-C4-2 fixed (D-C4-12)** — the env-var constraint section is the
   frozen `env` spelling; `env_vars` as a constraint section fails closed.
 
+## Test independence (TI-1) — this tree
+
+The runtime suite (chapters 2–4) is held to chapter 1's D-58 standard:
+second implementations that import nothing from production
+(`preimage2`, `auditor2`, `transform2`), a local-only arm over the
+operator's retained provider records, and a mutation matrix that ties
+every refusal assertion in the suite to an invariant, a planted defect
+and a control. The oracles exposed three production defects, fixed here
+(F-TI-1 record identity at the object-admission seam, F-TI-4 reclaim
+versus recovery, F-TI-6 closure paths on Windows), and one that is
+recorded and left OPEN for the operator (F-TI-5: the obj-12 recognizer
+reads no fact from the governance producer's real records). No authority
+semantics and no schema changed. See `INDEPENDENCE.md` and D-C4-13.
+
 Documents: `VERIFICATION.md` (the architecture, sections 13–19 for M2),
-`registries/decisions.json` (D-C4-1..12), `schemas/` (the obj-16/19/20
+`INDEPENDENCE.md` (the TI-1 harness, findings and limits),
+`registries/decisions.json` (D-C4-1..13), `schemas/` (the obj-16/19/20
 mirrors, byte-identical to `src/autobot/schemas_chapter4/`).
 
 Boundaries kept out of this chapter, per the frozen roadmap: obj-14

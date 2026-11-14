@@ -14,8 +14,11 @@ Closure kinds (D-32, the frozen forms):
   canonical PackageManifest v1 naming every entry {path, content_sha256}
   plus the entrypoint (one of the entries) and an optional pinned
   interpreter identity — all entries materialize from the content store
-  at their relative paths (grammar-checked: no absolute paths, no ``..``,
-  no backslashes), and only the bound entrypoint executes;
+  at their relative paths, and only the bound entrypoint executes. Entry
+  paths obey the closure-path grammar (F-TI-6): a frozen D-26 RepoPath
+  that names the same plain file on every filesystem — no drive letter,
+  stream suffix, trailing dot, device name or runner-reserved name, no
+  two entries one file under case folding, none both file and directory;
 - ``packaged`` with ``image_digest``: NOT executable on this runtime —
   no container engine is part of the frozen environment, so it HALTs with
   an explicit classification rather than being approximated by another
@@ -37,23 +40,107 @@ import subprocess
 import sys
 import tempfile
 
-from contract_library import artifact_root, content_address
+from contract_library import artifact_root, content_address, grammars
 
 from . import environment_probe
 from .models import ConflictError, IntegrityHalt
 
 PACKAGE_MANIFEST_KIND = "PackageManifest"
 
+# F-TI-6 (TI-1, exposed by the Windows filesystem probes): a closure path
+# must name the SAME file on every filesystem this runtime materializes
+# into. Windows resolves a drive-letter segment outside the run directory,
+# and resolves a stream suffix, a trailing dot or space, a device name or
+# a case-fold twin to a file OTHER than the one the manifest names — so
+# the bound entrypoint could execute another entry's bytes (INV-66). The
+# grammar is the same on every platform: identity never depends on which
+# filesystem happens to be underneath.
+_SEGMENT_FORBIDDEN = frozenset('<>:"|?*')
+_DIGITS = frozenset("0123456789")
+_DEVICE_NAMES = frozenset(
+    ["con", "prn", "aux", "nul", "conin$", "conout$"]
+    + ["com%d" % n for n in range(1, 10)]
+    + ["lpt%d" % n for n in range(1, 10)])
+# Names the runners write into the run directory AFTER materialization
+# (execute_transform's input and output; the verifier's context file and
+# subject directory): a closure entry by one of them would be overwritten.
+RUN_DIR_RESERVED = frozenset(
+    ["input.bin", "output.bin", "context.json", "subject"])
+_PYTHON_LOCK_NAME = "dependency.lock"
+
 
 def _safe_relative_path(path):
-    """The packaged-entry path grammar: relative, slash-separated, no
-    empty segments, no ``.``/``..``, no backslash, no leading slash."""
-    if not isinstance(path, str) or not path or "\\" in path \
-            or path.startswith("/"):
+    """The closure-path grammar: a frozen D-26 RepoPath (relative, slash-
+    separated; no empty, ``.`` or ``..`` segment; no backslash, NUL or
+    control character; no edge whitespace; NFC) whose every segment also
+    names a plain file on Windows — none of ``< > : " | ? *`` (so no
+    drive letter and no stream suffix), no trailing dot, no device name
+    (``NUL``, ``nul.py`` and ``nul .txt`` all reach the device), and not
+    the 8.3 short-alias form ``NAME~1.EXT``, which a volume with short
+    names enabled resolves to some LONG name's file."""
+    if not isinstance(path, str) or not grammars.repo_path_ok(path):
         return False
-    segments = path.split("/")
-    return all(segment and segment not in (".", "..")
-               for segment in segments)
+    for segment in path.split("/"):
+        if any(ch in _SEGMENT_FORBIDDEN for ch in segment):
+            return False
+        if segment.endswith("."):
+            return False
+        if segment.split(".")[0].rstrip(" ").casefold() in _DEVICE_NAMES:
+            return False
+        if any(ch == "~" and segment[index + 1:index + 2] in _DIGITS
+               for index, ch in enumerate(segment)):
+            return False
+    return True
+
+
+def _runner_reserved(path):
+    return path.split("/")[0].casefold() in RUN_DIR_RESERVED
+
+
+def check_package_entries(entries, entrypoint):
+    """The PackageManifest entry rules, shared by the parser and by
+    materialization (which re-checks a package it did not parse): every
+    path in the closure-path grammar and none reserved for the runner; no
+    path repeated; no two paths one file under case folding; no path both
+    a file and a directory of another; the entrypoint among them."""
+    paths = set()
+    folded = {}
+    for entry in entries:
+        if not (isinstance(entry, dict)
+                and _safe_relative_path(entry.get("path"))
+                and isinstance(entry.get("content_sha256"), str)):
+            raise IntegrityHalt(
+                "packaged closure manifest entry is malformed (relative"
+                " slash path + content_sha256 required)")
+        path = entry["path"]
+        if _runner_reserved(path):
+            raise IntegrityHalt(
+                "packaged closure manifest entry path %r is reserved for"
+                " the runner's own files in the run directory" % path)
+        if path in paths:
+            raise IntegrityHalt(
+                "packaged closure manifest repeats entry path %r" % path)
+        key = path.casefold()
+        if key in folded:
+            raise IntegrityHalt(
+                "packaged closure manifest entries %r and %r name the same"
+                " file on a case-insensitive filesystem: one would execute"
+                " or overwrite the other's bytes (INV-66)"
+                % (folded[key], path))
+        paths.add(path)
+        folded[key] = path
+    for key in sorted(folded):
+        segments = key.split("/")
+        for depth in range(1, len(segments)):
+            parent = "/".join(segments[:depth])
+            if parent in folded:
+                raise IntegrityHalt(
+                    "packaged closure manifest names %r both as a file and"
+                    " as a directory of %r" % (folded[parent], folded[key]))
+    if not isinstance(entrypoint, str) or entrypoint not in paths:
+        raise IntegrityHalt(
+            "packaged closure entrypoint %r is not among the manifest"
+            " entries" % (entrypoint,))
 
 
 def parse_package_manifest(data):
@@ -75,24 +162,8 @@ def parse_package_manifest(data):
     if not (isinstance(entries, list) and entries):
         raise IntegrityHalt(
             "packaged closure manifest names no entries")
-    paths = set()
-    for entry in entries:
-        if not (isinstance(entry, dict)
-                and _safe_relative_path(entry.get("path"))
-                and isinstance(entry.get("content_sha256"), str)):
-            raise IntegrityHalt(
-                "packaged closure manifest entry is malformed (relative"
-                " slash path + content_sha256 required)")
-        if entry["path"] in paths:
-            raise IntegrityHalt(
-                "packaged closure manifest repeats entry path %r"
-                % entry["path"])
-        paths.add(entry["path"])
     entrypoint = manifest.get("entrypoint")
-    if entrypoint not in paths:
-        raise IntegrityHalt(
-            "packaged closure entrypoint %r is not among the manifest"
-            " entries" % (entrypoint,))
+    check_package_entries(entries, entrypoint)
     interpreter_id = manifest.get("interpreter_id")
     if interpreter_id is not None and not isinstance(interpreter_id, str):
         raise IntegrityHalt(
@@ -173,13 +244,28 @@ def materialize_closure(store, closure, run_dir, entrypoint):
     """Write the resolved closure's exact artifact bytes into ``run_dir``
     and return the argv prefix that executes the bound entry — the ONLY
     thing that runs. ``entrypoint`` is the registration's (python/native)
-    or the package manifest's (packaged)."""
-    if ".." in entrypoint.split("/"):
+    or the package manifest's (packaged). F-TI-6: the entrypoint and
+    every package entry obey the closure-path grammar HERE, at the seam
+    that writes — the frozen D-26 grammar a registration is admitted
+    under still accepts ``C:tool.py``, which Windows resolves outside
+    (or aliased inside) the run directory. Nothing is written before the
+    checks pass."""
+    if not _safe_relative_path(entrypoint) or _runner_reserved(entrypoint):
         raise ConflictError(
-            "registration entrypoint %r escapes its closure" % entrypoint)
+            "registration entrypoint %r is not a closure-relative path"
+            " this runtime can materialize faithfully: it would escape,"
+            " alias or collide inside its closure's run directory (INV-66)"
+            % (entrypoint,))
     kind = closure["kind"]
+    if kind == "python" \
+            and entrypoint.split("/")[0].casefold() == _PYTHON_LOCK_NAME:
+        raise ConflictError(
+            "registration entrypoint %r names the python closure's own"
+            " dependency lock file: the lock would be written over the"
+            " script and executed" % (entrypoint,))
     if kind == "packaged":
         package = closure["package"]
+        check_package_entries(package["entries"], package["entrypoint"])
         entry_path = None
         for entry in package["entries"]:
             target = os.path.join(run_dir, *entry["path"].split("/"))
