@@ -53,6 +53,30 @@ class FakeTransport(Transport):
                            "projection_address": projection_address}}
         return self.sessions[call_id]["native_session_id"]
 
+    def launch_manifest(self, manifest_address, manifest):
+        call_id = manifest["call_id"]
+        provider = manifest["provider_assignment"]["provider"]
+        role = manifest["role"]
+        projection = manifest["projection_address"]
+        self.launch_log.append(
+            {"call_id": call_id, "provider": provider, "role": role,
+             "projection_address": projection,
+             "manifest_address": manifest_address})
+        if call_id in self.launch_errors:
+            raise RuntimeError(self.launch_errors[call_id])
+        if call_id not in self.sessions:
+            self._counter += 1
+            native = "fake-sess-%04d" % self._counter
+            self.sessions[call_id] = {
+                "native_session_id": native,
+                "record": {"schema_version": "v1",
+                           "kind": "FakeSessionRecord",
+                           "call_id": call_id,
+                           "native_session_id": native,
+                           "provider": provider, "role": role,
+                           "projection_address": projection}}
+        return self.sessions[call_id]["native_session_id"]
+
     def find_session(self, call_id):
         if call_id in self.hidden or call_id not in self.sessions:
             return None

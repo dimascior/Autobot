@@ -28,6 +28,7 @@ registered executor and the ref-CAS semantics decide what happened.
 import json
 
 from autobot.collector import Collector
+from autobot.execution_boundary import launch_with_manifest
 from autobot.git_adapter import mint_candidate_receipt
 from autobot.git_executor import execute_local_cas
 from autobot.models import ConflictError
@@ -162,8 +163,9 @@ class Taskforce:
             info["attempt_id"], assignment["role"], assignment["provider"],
             projection)
         call_id = dispatched["call_id"]
-        self.transport.launch(projection, assignment["provider"],
-                              assignment["role"], call_id)
+        launch_with_manifest(
+            self.sequencer, self.transport, info["attempt_id"],
+            assignment, capability)
         seat_id = (authorization or {}).get("seat_id") or \
             "st_" + canonical_json_digest({"call": call_id})[:32]
         with self.plan.transaction() as cur:
