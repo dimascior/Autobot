@@ -89,6 +89,14 @@ class Transport:
         native session id. MUST be idempotent on ``call_id``."""
         raise NotImplementedError
 
+    def launch_manifest(self, manifest_address, manifest):
+        """Start the provider session from a canonical ExecutionManifest.
+        The manifest carries the already-frozen authority binding. Returns
+        the native session id. Implementations MUST override this —
+        the production Taskforce path requires it."""
+        raise NotImplementedError(
+            "launch_manifest is required for Autobot-originated launches")
+
     def find_session(self, call_id):
         """Return ``{"native_session_id": ..., "evidence": bytes}`` when the
         provider session is observable, else ``None``. ``None`` means

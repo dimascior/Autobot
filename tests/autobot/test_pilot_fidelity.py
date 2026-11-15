@@ -89,6 +89,18 @@ class AutoSwarmFixtureTransport(AutoSwarmTransport):
                               "provider": provider, "role": role})
         return sid
 
+    def launch_manifest(self, manifest_address, manifest):
+        """Fixture override: extract prompt from the projection and
+        delegate to the fixture's launch() which creates mock files."""
+        projection_bytes = self._store.get(manifest["projection_address"])
+        projection = json.loads(projection_bytes)
+        prompt = projection["engineering_context"]["guidance"]
+        call_id = manifest["call_id"]
+        provider = manifest["provider_assignment"]["provider"]
+        role = manifest["role"]
+        return self.launch(manifest["projection_address"], provider,
+                           role, call_id)
+
 
 class SingleContractPolicy(ChiefEngineerPolicy):
     """Emits one READ_ONLY INVESTIGATE proposal, then stops."""

@@ -110,6 +110,41 @@ class AutoSwarmTransport(Transport):
             stdin_text=prompt)
         return info.get("native_session_id") or info["call_id"]
 
+    def launch_manifest(self, manifest_address, manifest):
+        """Launch from a canonical ExecutionManifest. Passes the exact
+        manifest bytes to AutoSwarm through --manifest so AutoSwarm
+        owns validation and persistence in its call directory."""
+        import tempfile
+        call_id = manifest["call_id"]
+        provider = manifest["provider_assignment"]["provider"]
+        manifest_bytes = json.dumps(
+            manifest, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        manifest_file = Path(tempfile.mktemp(
+            prefix="manifest-", suffix=".json",
+            dir=str(self._home)))
+        manifest_file.write_bytes(manifest_bytes)
+        try:
+            projection_bytes = self._store.get(
+                manifest["projection_address"])
+            projection = json.loads(projection_bytes)
+            prompt = projection["engineering_context"]["guidance"]
+            info = self._cli([
+                "run",
+                "--agent", provider,
+                "--no-parent",
+                "--background",
+                "--cwd", str(self._workspace),
+                "--call-id", call_id,
+                "--manifest", str(manifest_file),
+                "--input", "-"],
+                stdin_text=prompt)
+        finally:
+            try:
+                manifest_file.unlink()
+            except OSError:
+                pass
+        return info.get("native_session_id") or info["call_id"]
+
     def find_session(self, call_id):
         directory = self._call_dir(call_id)
         task = _read_json(directory / "task.json")

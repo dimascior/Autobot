@@ -1,0 +1,88 @@
+{
+  "type": "object",
+  "required": [
+    "schema_version", "kind",
+    "sequence_id", "attempt_id", "attempt_contract_hash",
+    "call_id",
+    "projection_address",
+    "role", "capability",
+    "provider_assignment",
+    "constraints"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v1"},
+    "kind": {"const": "ExecutionManifest"},
+
+    "sequence_id": {"$ref": "#/$defs/seq_id"},
+    "attempt_id": {"$ref": "#/$defs/att_id"},
+    "attempt_contract_hash": {"$ref": "#/$defs/digest"},
+    "call_id": {"$ref": "#/$defs/call_id"},
+
+    "projection_address": {"$ref": "#/$defs/digest"},
+
+    "role": {"$ref": "#/$defs/name_id"},
+    "capability": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"},
+
+    "provider_assignment": {
+      "type": "object",
+      "required": ["provider", "selected_by"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"},
+        "model": {"type": "string"},
+        "selected_by": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"}
+      }
+    },
+
+    "role_transform": {
+      "type": "object",
+      "required": ["transform_id"],
+      "additionalProperties": false,
+      "properties": {
+        "transform_id": {"$ref": "#/$defs/name_id"},
+        "registration_hash": {"$ref": "#/$defs/digest"}
+      }
+    },
+
+    "constraints": {
+      "type": "object",
+      "required": ["finalization_class", "evidence_requirements"],
+      "additionalProperties": false,
+      "properties": {
+        "finalization_class": {
+          "enum": ["SOURCE_MODIFYING", "READ_ONLY"]
+        },
+        "evidence_requirements": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "EXECUTION_LIFECYCLE",
+              "COMMAND_GOVERNANCE",
+              "SESSION_TRANSCRIPT",
+              "REMOTE_CHECK"
+            ]
+          }
+        }
+      }
+    },
+
+    "parent_execution": {
+      "type": "object",
+      "required": ["parent_call_id"],
+      "additionalProperties": false,
+      "properties": {
+        "parent_call_id": {"$ref": "#/$defs/call_id"},
+        "relationship": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"}
+      }
+    }
+  },
+
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "name_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "seq_id": {"type": "string", "pattern": "^sq_[0-9a-f]{32}$"},
+    "att_id": {"type": "string", "pattern": "^at_[0-9a-f]{32}$"},
+    "call_id": {"type": "string", "pattern": "^call_[0-9a-f]{32}$"}
+  }
+}
