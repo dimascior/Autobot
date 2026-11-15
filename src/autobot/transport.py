@@ -89,11 +89,15 @@ class Transport:
         native session id. MUST be idempotent on ``call_id``."""
         raise NotImplementedError
 
-    def launch_manifest(self, manifest_address, manifest):
+    def launch_manifest(self, manifest_address, manifest, *,
+                        manifest_bytes=None):
         """Start the provider session from a canonical ExecutionManifest.
         The manifest carries the already-frozen authority binding. Returns
-        the native session id. Implementations MUST override this —
-        the production Taskforce path requires it."""
+        the native session id. When ``manifest_bytes`` is provided they are
+        the exact canonical bytes produced by the builder — pass them to
+        AutoSwarm unmodified so the cross-process identity is byte-exact.
+        Implementations MUST override this — the production Taskforce path
+        requires it."""
         raise NotImplementedError(
             "launch_manifest is required for Autobot-originated launches")
 

@@ -20,7 +20,8 @@ def launch_with_manifest(sequencer, transport, attempt_id,
         parent_call_id=parent_call_id)
     import json
     manifest = json.loads(manifest_bytes)
-    native = transport.launch_manifest(manifest_address, manifest)
+    native = transport.launch_manifest(
+        manifest_address, manifest, manifest_bytes=manifest_bytes)
     return {"call_id": manifest["call_id"],
             "manifest_address": manifest_address,
             "native_session_id": native}
