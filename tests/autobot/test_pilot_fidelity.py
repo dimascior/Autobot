@@ -89,7 +89,8 @@ class AutoSwarmFixtureTransport(AutoSwarmTransport):
                               "provider": provider, "role": role})
         return sid
 
-    def launch_manifest(self, manifest_address, manifest):
+    def launch_manifest(self, manifest_address, manifest, *,
+                        manifest_bytes=None):
         """Fixture override: extract prompt from the projection and
         delegate to the fixture's launch() which creates mock files."""
         projection_bytes = self._store.get(manifest["projection_address"])

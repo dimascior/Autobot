@@ -53,7 +53,8 @@ class FakeTransport(Transport):
                            "projection_address": projection_address}}
         return self.sessions[call_id]["native_session_id"]
 
-    def launch_manifest(self, manifest_address, manifest):
+    def launch_manifest(self, manifest_address, manifest, *,
+                        manifest_bytes=None):
         call_id = manifest["call_id"]
         provider = manifest["provider_assignment"]["provider"]
         role = manifest["role"]

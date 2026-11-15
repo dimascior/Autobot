@@ -110,15 +110,20 @@ class AutoSwarmTransport(Transport):
             stdin_text=prompt)
         return info.get("native_session_id") or info["call_id"]
 
-    def launch_manifest(self, manifest_address, manifest):
+    def launch_manifest(self, manifest_address, manifest, *,
+                        manifest_bytes=None):
         """Launch from a canonical ExecutionManifest. Passes the exact
         manifest bytes to AutoSwarm through --manifest so AutoSwarm
-        owns validation and persistence in its call directory."""
+        owns validation and persistence in its call directory.
+        When ``manifest_bytes`` is the canonical bytes from the builder,
+        those exact bytes cross the process boundary."""
         import tempfile
         call_id = manifest["call_id"]
         provider = manifest["provider_assignment"]["provider"]
-        manifest_bytes = json.dumps(
-            manifest, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        if manifest_bytes is None:
+            manifest_bytes = json.dumps(
+                manifest, sort_keys=True,
+                ensure_ascii=False).encode("utf-8")
         manifest_file = Path(tempfile.mktemp(
             prefix="manifest-", suffix=".json",
             dir=str(self._home)))
