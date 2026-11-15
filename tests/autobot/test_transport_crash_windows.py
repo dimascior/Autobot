@@ -208,14 +208,13 @@ class OutcomeNormalizationTests(unittest.TestCase):
     def _call_dir(self, call_id):
         return self.home / "calls" / call_id
 
-    def _result(self, call_id, outcome, content="", **extra):
+    def _result(self, call_id, outcome, **extra):
         _write_json(self._call_dir(call_id) / "result.json",
-                     {"call_id": call_id, "outcome": outcome,
-                      "content": content, **extra})
+                     {"call_id": call_id, "outcome": outcome, **extra})
 
     def test_completed_maps_to_success(self):
         c = "call_" + "a" * 32
-        self._result(c, "completed", "done")
+        self._result(c, "completed")
         self.assertEqual(self.transport.collect(c)["outcome"], "success")
 
     def test_failed_passes_through(self):
@@ -239,20 +238,35 @@ class OutcomeNormalizationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.transport.collect(c)
 
-    def test_empty_content_and_no_stdout_produces_no_transcript(self):
+    def test_no_stdout_produces_no_transcript(self):
         c = "call_" + "f" * 32
-        self._result(c, "failed", content="", error="auth")
+        self._result(c, "failed", error="auth")
         collected = self.transport.collect(c)
         kinds = [wf[0] for wf in collected["witness_files"]]
         self.assertNotIn("obj-13", kinds)
+
+    def test_missing_outcome_defaults_to_failed(self):
+        """A result.json with no outcome field must not produce success."""
+        c = "call_" + "1" * 32
+        _write_json(self._call_dir(c) / "result.json",
+                     {"call_id": c, "error": "process vanished"})
+        collected = self.transport.collect(c)
+        self.assertEqual(collected["outcome"], "failed")
+
+    def test_empty_outcome_defaults_to_failed(self):
+        c = "call_" + "2" * 32
+        _write_json(self._call_dir(c) / "result.json",
+                     {"call_id": c, "outcome": ""})
+        collected = self.transport.collect(c)
+        self.assertNotEqual(collected["outcome"], "success")
 
 
 class EvidenceProvenanceTests(unittest.TestCase):
     """Validate the actual provenance chain for each evidence kind."""
 
-    def test_obj11_evidence_is_autoswarm_produced(self):
-        """obj-11 evidence bytes from find_session must name AutoSwarm
-        as the session owner, not the adapter."""
+    def test_obj11_evidence_is_original_autoswarm_file(self):
+        """obj-11 evidence from find_session must be the byte-identical
+        content of handle.json or result.json — not an adapter envelope."""
         tmpdir = tempfile.TemporaryDirectory()
         home = Path(tmpdir.name)
         store = _MockStore()
@@ -263,63 +277,74 @@ class EvidenceProvenanceTests(unittest.TestCase):
                      {"call_id": call_id, "provider": "codex",
                       "workspace": str(home),
                       "created_at": "2026-01-01T00:00:00Z"})
-        _write_json(d / "handle.json",
-                     {"pid": 1, "native_session_id": "sess-prov",
-                      "started_at": "2026-01-01T00:00:01Z",
-                      "phase": "execution"})
+        handle_data = {"pid": 1, "native_session_id": "sess-prov",
+                       "started_at": "2026-01-01T00:00:01Z",
+                       "phase": "execution"}
+        _write_json(d / "handle.json", handle_data)
         found = transport.find_session(call_id)
-        evidence = json.loads(found["evidence"])
-        self.assertEqual(evidence["kind"], "AutoSwarmSessionRecord")
-        self.assertEqual(evidence["call_id"], call_id)
-        self.assertEqual(evidence["native_session_id"], "sess-prov")
-        self.assertEqual(evidence["provider"], "codex")
+        self.assertEqual(found["evidence"], (d / "handle.json").read_bytes())
         self.assertEqual(transport.producer_id, "autoswarm")
         tmpdir.cleanup()
 
-    def test_obj12_governance_directory_is_not_standard_autoswarm_layout(self):
-        """The adapter's governance/ path does not exist in AutoSwarm's
-        standard call directory layout. This test documents the gap:
-        obj-12 evidence lives in the Helios gate chain, not in the call
-        directory, and requires the specialist's CLI session ID to locate."""
+    def test_obj11_prefers_result_over_handle(self):
+        """When result.json exists, obj-11 evidence is result.json bytes."""
         tmpdir = tempfile.TemporaryDirectory()
         home = Path(tmpdir.name)
-        store = _MockStore()
-        transport = AutoSwarmTransport(store, str(home), str(home))
+        transport = AutoSwarmTransport(_MockStore(), str(home), str(home))
         call_id = "call_" + "2" * 32
         d = home / "calls" / call_id
-        _write_json(d / "result.json",
-                     {"call_id": call_id, "outcome": "completed",
-                      "content": "done"})
-        collected = transport.collect(call_id)
-        obj12_present = any(wf[0] == "obj-12"
-                            for wf in collected["witness_files"])
-        self.assertFalse(obj12_present,
-                         "obj-12 should not be found at <call_dir>/governance/"
-                         " because Helios writes to $GateRoot/evidence/"
-                         "integrity/sessions/$SessionId/commands/")
+        _write_json(d / "task.json", {"call_id": call_id, "provider": "codex",
+                                       "workspace": str(home)})
+        _write_json(d / "handle.json", {"pid": 1, "native_session_id": "s"})
+        _write_json(d / "result.json", {"call_id": call_id, "outcome": "completed",
+                                         "native_session_id": "s"})
+        found = transport.find_session(call_id)
+        self.assertEqual(found["evidence"], (d / "result.json").read_bytes())
         tmpdir.cleanup()
 
-    def test_obj13_content_is_reconstructed_not_original(self):
-        """The adapter wraps result.content in an AgentTranscript envelope.
-        This is a reconstructed representation, not original producer bytes.
-        Document this as a known provenance gap."""
+    def test_obj12_collected_from_helios_evidence_tree(self):
+        """obj-12 governance evidence uses the real Helios path, not
+        <call_dir>/governance/."""
         tmpdir = tempfile.TemporaryDirectory()
         home = Path(tmpdir.name)
-        store = _MockStore()
-        transport = AutoSwarmTransport(store, str(home), str(home))
+        gate_root = Path(tmpdir.name) / "gate"
+        transport = AutoSwarmTransport(
+            _MockStore(), str(home), str(home),
+            gate_root=str(gate_root))
+        session_id = "sess-gov"
         call_id = "call_" + "3" * 32
         d = home / "calls" / call_id
-        _write_json(d / "result.json",
-                     {"call_id": call_id, "outcome": "completed",
-                      "native_session_id": "sess-t",
-                      "content": "investigation output"})
+        _write_json(d / "result.json", {"call_id": call_id,
+                                         "outcome": "completed",
+                                         "native_session_id": session_id})
+        evidence_dir = (gate_root / "evidence" / "integrity"
+                        / "sessions" / session_id / "commands")
+        _write_json(evidence_dir / "toolu_abc.decision.json",
+                     {"verdict": "ALLOW", "tool": "Read",
+                      "session_id": session_id})
+        collected = transport.collect(call_id)
+        obj12 = next(wf for wf in collected["witness_files"]
+                     if wf[0] == "obj-12")
+        records = json.loads(obj12[2])
+        self.assertEqual(records[0]["session_id"], session_id)
+        tmpdir.cleanup()
+
+    def test_obj13_is_raw_stdout_pipe(self):
+        """obj-13 is the raw stdout.log from the provider process —
+        not a reconstructed envelope or result.content wrapper."""
+        tmpdir = tempfile.TemporaryDirectory()
+        home = Path(tmpdir.name)
+        transport = AutoSwarmTransport(_MockStore(), str(home), str(home))
+        call_id = "call_" + "4" * 32
+        d = home / "calls" / call_id
+        _write_json(d / "result.json", {"call_id": call_id,
+                                         "outcome": "completed",
+                                         "native_session_id": "s"})
+        raw_output = b'{"type":"result","content":"done"}\n'
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "stdout.log").write_bytes(raw_output)
         collected = transport.collect(call_id)
         obj13 = next(wf for wf in collected["witness_files"]
                      if wf[0] == "obj-13")
-        transcript = json.loads(obj13[2])
-        self.assertEqual(transcript["kind"], "AgentTranscript")
-        self.assertIn("content", transcript)
-        self.assertNotEqual(transcript["kind"], "NativeProviderExport",
-                            "Evidence is the adapter's envelope, not the"
-                            " provider's native export format")
+        self.assertEqual(obj13[2], raw_output)
         tmpdir.cleanup()

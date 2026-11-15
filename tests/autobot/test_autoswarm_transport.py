@@ -74,40 +74,39 @@ class FindSessionTests(unittest.TestCase):
                       "workspace": str(self.home)})
         self.assertIsNone(self.transport.find_session(call_id))
 
-    def test_running_session_returns_evidence(self):
+    def test_running_session_returns_original_handle_bytes(self):
         call_id = "call_" + "b" * 32
+        handle_data = {"pid": 12345, "native_session_id": "sess-001",
+                       "started_at": "2026-01-01T00:00:01Z",
+                       "phase": "execution"}
         _write_json(self._call_dir(call_id) / "task.json",
                      {"call_id": call_id, "provider": "codex",
                       "workspace": str(self.home),
                       "created_at": "2026-01-01T00:00:00Z"})
-        _write_json(self._call_dir(call_id) / "handle.json",
-                     {"pid": 12345, "native_session_id": "sess-001",
-                      "started_at": "2026-01-01T00:00:01Z",
-                      "phase": "execution"})
+        _write_json(self._call_dir(call_id) / "handle.json", handle_data)
         found = self.transport.find_session(call_id)
         self.assertIsNotNone(found)
         self.assertEqual(found["native_session_id"], "sess-001")
         evidence = json.loads(found["evidence"])
-        self.assertEqual(evidence["kind"], "AutoSwarmSessionRecord")
-        self.assertEqual(evidence["call_id"], call_id)
         self.assertEqual(evidence["native_session_id"], "sess-001")
-        self.assertEqual(evidence["phase"], "execution")
+        self.assertEqual(evidence["pid"], 12345)
 
-    def test_returned_session_returns_evidence_with_outcome(self):
+    def test_returned_session_returns_original_result_bytes(self):
         call_id = "call_" + "c" * 32
+        result_data = {"call_id": call_id, "outcome": "completed",
+                       "native_session_id": "sess-002",
+                       "finished_at": "2026-01-01T01:00:00Z"}
         _write_json(self._call_dir(call_id) / "task.json",
                      {"call_id": call_id, "provider": "codex",
                       "workspace": str(self.home),
                       "created_at": "2026-01-01T00:00:00Z"})
-        _write_json(self._call_dir(call_id) / "result.json",
-                     {"call_id": call_id, "outcome": "completed",
-                      "native_session_id": "sess-002",
-                      "finished_at": "2026-01-01T01:00:00Z"})
+        _write_json(self._call_dir(call_id) / "result.json", result_data)
         found = self.transport.find_session(call_id)
         self.assertIsNotNone(found)
         self.assertEqual(found["native_session_id"], "sess-002")
         evidence = json.loads(found["evidence"])
         self.assertEqual(evidence["outcome"], "completed")
+        self.assertEqual(evidence["call_id"], call_id)
 
     def test_handle_without_session_id_returns_none(self):
         call_id = "call_" + "d" * 32
@@ -185,14 +184,16 @@ class PositiveLaunchFailureTests(unittest.TestCase):
 
 
 class CollectTests(unittest.TestCase):
-    """collect gathers producer-owned evidence from the call directory."""
+    """collect gathers producer-owned evidence from durable sources."""
 
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.home = Path(self.tmpdir.name)
+        self.gate_root = Path(self.tmpdir.name) / "gate"
         self.store = _MockStore()
         self.transport = AutoSwarmTransport(
-            self.store, str(self.home), str(self.home))
+            self.store, str(self.home), str(self.home),
+            gate_root=str(self.gate_root))
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -200,31 +201,34 @@ class CollectTests(unittest.TestCase):
     def _call_dir(self, call_id):
         return self.home / "calls" / call_id
 
-    def test_collect_transcript_from_result_content(self):
+    def test_collect_transcript_from_stdout_log(self):
         call_id = "call_" + "5" * 32
-        _write_json(self._call_dir(call_id) / "result.json",
+        d = self._call_dir(call_id)
+        _write_json(d / "result.json",
                      {"call_id": call_id, "outcome": "completed",
-                      "native_session_id": "sess-x",
-                      "content": "investigation result text"})
+                      "native_session_id": "sess-x"})
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "stdout.log").write_bytes(b"raw provider output\n")
         collected = self.transport.collect(call_id)
         self.assertEqual(collected["outcome"], "success")
-        kinds = [wf[0] for wf in collected["witness_files"]]
-        self.assertIn("obj-13", kinds)
         obj13 = next(wf for wf in collected["witness_files"]
                      if wf[0] == "obj-13")
         self.assertEqual(obj13[1], "agent_clis")
-        transcript = json.loads(obj13[2])
-        self.assertEqual(transcript["content"], "investigation result text")
+        self.assertEqual(obj13[2], b"raw provider output\n")
 
-    def test_collect_governance_from_directory(self):
+    def test_collect_governance_from_helios_evidence_tree(self):
+        """obj-12 is collected from the real Helios path:
+        <gate_root>/evidence/integrity/sessions/<session_id>/commands/"""
+        session_id = "sess-gov-001"
         call_id = "call_" + "6" * 32
         _write_json(self._call_dir(call_id) / "result.json",
                      {"call_id": call_id, "outcome": "completed",
-                      "content": "done"})
-        gov_dir = self._call_dir(call_id) / "governance"
-        _write_json(gov_dir / "gate-001.json",
+                      "native_session_id": session_id})
+        evidence_dir = (self.gate_root / "evidence" / "integrity"
+                        / "sessions" / session_id / "commands")
+        _write_json(evidence_dir / "toolu_001.decision.json",
                      {"verdict": "ALLOW", "tool": "Read"})
-        _write_json(gov_dir / "gate-002.json",
+        _write_json(evidence_dir / "toolu_002.decision.json",
                      {"verdict": "DENY", "tool": "Bash"})
         collected = self.transport.collect(call_id)
         kinds = [wf[0] for wf in collected["witness_files"]]
@@ -235,11 +239,22 @@ class CollectTests(unittest.TestCase):
         records = json.loads(obj12[2])
         self.assertEqual(len(records), 2)
 
-    def test_collect_normalizes_outcome(self):
+    def test_no_governance_without_gate_root(self):
+        transport = AutoSwarmTransport(
+            self.store, str(self.home), str(self.home))
         call_id = "call_" + "7" * 32
         _write_json(self._call_dir(call_id) / "result.json",
                      {"call_id": call_id, "outcome": "completed",
-                      "content": "ok"})
+                      "native_session_id": "sess-x"})
+        collected = transport.collect(call_id)
+        obj12_present = any(wf[0] == "obj-12"
+                            for wf in collected["witness_files"])
+        self.assertFalse(obj12_present)
+
+    def test_collect_normalizes_outcome(self):
+        call_id = "call_" + "7" * 32
+        _write_json(self._call_dir(call_id) / "result.json",
+                     {"call_id": call_id, "outcome": "completed"})
         self.assertEqual(self.transport.collect(call_id)["outcome"],
                          "success")
 
@@ -249,24 +264,11 @@ class CollectTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.transport.collect(call_id)
 
-    def test_collect_stdout_fallback_when_no_content(self):
-        call_id = "call_" + "9" * 32
-        d = self._call_dir(call_id)
-        _write_json(d / "result.json",
-                     {"call_id": call_id, "outcome": "completed",
-                      "content": ""})
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "stdout.log").write_bytes(b"raw provider output\n")
-        collected = self.transport.collect(call_id)
-        obj13 = next(wf for wf in collected["witness_files"]
-                     if wf[0] == "obj-13")
-        self.assertEqual(obj13[2], b"raw provider output\n")
-
-    def test_collect_no_evidence_when_empty(self):
+    def test_collect_no_evidence_when_no_stdout_no_governance(self):
         call_id = "call_" + "0" * 32
         _write_json(self._call_dir(call_id) / "result.json",
                      {"call_id": call_id, "outcome": "failed",
-                      "content": "", "error": "auth"})
+                      "error": "auth"})
         collected = self.transport.collect(call_id)
         self.assertEqual(collected["witness_files"], [])
         self.assertEqual(collected["outcome"], "failed")

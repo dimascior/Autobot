@@ -2,13 +2,14 @@
 
 Launches specialist sessions through the AutoSwarm CLI with the
 Sequencer's call_id as the idempotency key. Evidence is read directly
-from AutoSwarm's durable call records — the adapter never manufactures
-or rewrites provider-owned bytes.
+from AutoSwarm's durable call records and the Helios evidence tree —
+the adapter never manufactures evidence or rewrites provider-owned bytes.
 
-Evidence families:
-    obj-11  AutoSwarm session record (admitted at adoption via find_session)
-    obj-12  Helios governance evidence (collected from the session's gate chain)
-    obj-13  Agent transcript (collected from AutoSwarm's session content)
+Evidence families and their actual locations:
+    obj-11  AutoSwarm's own result.json (producer: autoswarm)
+    obj-12  Helios decision files at
+            <gate_root>/evidence/integrity/sessions/<session_id>/commands/
+    obj-13  AutoSwarm's stdout.log (raw provider pipe capture)
 """
 
 import json
@@ -36,20 +37,23 @@ class AutoSwarmTransport(Transport):
     frozen PromptProjection at launch time).
 
     ``autoswarm_home`` is the AutoSwarm records root ($AUTOSWARM_HOME).
-    The call directory tree under it is the durable state the adapter
-    reads for find_session, positive_launch_failure and collect.
 
     ``workspace`` is the working directory passed to AutoSwarm for
     every specialist session.
+
+    ``gate_root`` is the Helios .command-gate directory whose evidence
+    tree contains the specialist's governance records. When None,
+    obj-12 collection is skipped (the evidence is not available).
 
     ``autoswarm_argv`` is the CLI invocation (default: the uv-tool
     installed autoswarm)."""
 
     def __init__(self, store, autoswarm_home, workspace, *,
-                 autoswarm_argv=None):
+                 gate_root=None, autoswarm_argv=None):
         self._store = store
         self._home = Path(autoswarm_home)
         self._workspace = Path(workspace)
+        self._gate_root = Path(gate_root) if gate_root else None
         self._argv = autoswarm_argv or [
             sys.executable, "-m", "autoswarm"]
 
@@ -108,23 +112,14 @@ class AutoSwarmTransport(Transport):
             session_id = handle.get("native_session_id")
         if session_id is None:
             return None
-        evidence_record = {
-            "schema_version": "v1",
-            "kind": "AutoSwarmSessionRecord",
-            "call_id": call_id,
-            "native_session_id": session_id,
-            "provider": task.get("provider"),
-            "workspace": task.get("workspace"),
-            "created_at": task.get("created_at"),
-        }
-        if handle:
-            evidence_record["started_at"] = handle.get("started_at")
-            evidence_record["phase"] = handle.get("phase")
-        if result:
-            evidence_record["outcome"] = result.get("outcome")
-            evidence_record["finished_at"] = result.get("finished_at")
-        evidence_bytes = json.dumps(
-            evidence_record, sort_keys=True).encode("utf-8")
+        # obj-11 evidence: prefer the original result.json when
+        # available (terminal producer file); fall back to handle.json
+        # (running session record). Both are AutoSwarm-owned files read
+        # byte-identically — the adapter adds nothing.
+        evidence_path = directory / "result.json"
+        if result is None:
+            evidence_path = directory / "handle.json"
+        evidence_bytes = evidence_path.read_bytes()
         return {"native_session_id": session_id,
                 "evidence": evidence_bytes}
 
@@ -149,13 +144,14 @@ class AutoSwarmTransport(Transport):
             raise RuntimeError(
                 "collect(%s): no result.json (session not terminal)"
                 % call_id)
+        session_id = result.get("native_session_id")
         witness_files = []
-        governance_bytes = self._collect_governance(directory)
+        governance_bytes = self._collect_governance(session_id)
         if governance_bytes is not None:
             witness_files.append(
                 ("obj-12", WITNESS_KINDS["obj-12"]["producer"],
                  governance_bytes))
-        transcript_bytes = self._collect_transcript(directory, result)
+        transcript_bytes = self._collect_transcript(directory)
         if transcript_bytes is not None:
             witness_files.append(
                 ("obj-13", WITNESS_KINDS["obj-13"]["producer"],
@@ -166,15 +162,21 @@ class AutoSwarmTransport(Transport):
                 result.get("outcome", "failed")),
         }
 
-    @staticmethod
-    def _collect_governance(directory):
-        """obj-12: Helios governance evidence from the session's gate
-        chain, if present."""
-        gate_dir = directory / "governance"
-        if not gate_dir.is_dir():
+    def _collect_governance(self, session_id):
+        """obj-12: original Helios command-governance decision files from
+        the session's evidence tree at the configured gate root.
+
+        Path: <gate_root>/evidence/integrity/sessions/<session_id>/commands/
+        Each .decision.json is a Helios-owned record written by
+        Write-IntegrityDecision during the specialist's execution."""
+        if self._gate_root is None or not session_id:
+            return None
+        evidence_dir = (self._gate_root / "evidence" / "integrity"
+                        / "sessions" / session_id / "commands")
+        if not evidence_dir.is_dir():
             return None
         records = []
-        for path in sorted(gate_dir.glob("*.json")):
+        for path in sorted(evidence_dir.glob("*.decision.json")):
             record = _read_json(path)
             if record is not None:
                 records.append(record)
@@ -183,21 +185,13 @@ class AutoSwarmTransport(Transport):
         return json.dumps(records, sort_keys=True).encode("utf-8")
 
     @staticmethod
-    def _collect_transcript(directory, result):
-        """obj-13: the agent's session transcript (content from the
-        terminal result, or stdout.log if available)."""
-        content = result.get("content")
-        if content:
-            transcript = {
-                "schema_version": "v1",
-                "kind": "AgentTranscript",
-                "call_id": result.get("call_id"),
-                "native_session_id": result.get("native_session_id"),
-                "content": content,
-            }
-            return json.dumps(
-                transcript, sort_keys=True).encode("utf-8")
+    def _collect_transcript(directory):
+        """obj-13: the original provider stdout pipe capture. This is
+        the raw byte stream AutoSwarm's runner wrote from the provider
+        process — not a reconstructed summary or adapter envelope."""
         stdout_log = directory / "stdout.log"
         if stdout_log.is_file():
-            return stdout_log.read_bytes()
+            data = stdout_log.read_bytes()
+            if data:
+                return data
         return None
