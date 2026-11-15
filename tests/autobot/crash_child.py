@@ -20,6 +20,7 @@ sys.path.insert(0, str(HERE.parents[2] / "src"))
 sys.path.insert(0, str(HERE.parent))
 
 import support  # noqa: E402
+from fake_verifier import bound_receipt_bytes, environment_bytes  # noqa: E402
 
 
 def main():
@@ -28,13 +29,26 @@ def main():
     rt, result = support.admitted_runtime(
         data_dir, clock=support.manual_clock(), holder="crash-child")
     sequence_id = result["sequence_id"]
+    execution_stages = ("executing", "reserved", "mid_transaction",
+                        "intent", "mid_intent_tx", "dispatched", "running",
+                        "verifying")
+    if stage in execution_stages:
+        # C4-M2: concluding verification includes the role-transform
+        # check, whose admission RE-EXECUTES the bound transform closure —
+        # so the execution stages run the LIVE-bound V-A shape (the frozen
+        # fixture record's transform binding has no executable bytes).
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        local = rt.registry.admit_payload(support.local_record_payload(),
+                                          submitted_by="planner")
+        sequence_id = local["sequence_id"]
     snapshot = {"stage": stage, "sequence_id": sequence_id}
 
     if stage != "admitted":
         rt.sequencer.acquire_lease(ttl_seconds=3600)
         rt.sequencer.mark_ready(sequence_id)
-    if stage in ("executing", "reserved", "mid_transaction", "intent",
-                 "mid_intent_tx", "dispatched", "running", "verifying"):
+    if stage in execution_stages:
         info = rt.sequencer.start_execution(sequence_id)
         snapshot["attempt_id"] = info["attempt_id"]
         snapshot["fence"] = info["fence"]
@@ -52,7 +66,8 @@ def main():
         admitted = rt.sequencer.admit_witness(
             snapshot["attempt_id"], "obj-11", "autoswarm",
             support.session_record_bytes(snapshot["call_id"],
-                                         native_session_id="native-crash-1"))
+                                         native_session_id="native-crash-1",
+                                         prompt=support.VA_INPUT))
         snapshot["witness_admission_id"] = admitted["admission_id"]
         rt.sequencer.attempt_running(
             snapshot["attempt_id"], "native-crash-1",
@@ -67,22 +82,25 @@ def main():
         rt.sequencer.finish_attempt(
             snapshot["attempt_id"], "builder", "success",
             transcript["content_address"])
-        rt.sequencer.freeze_candidate(
-            snapshot["attempt_id"], snapshot["fence"],
-            rt.store.put(b"candidate for the crash test\n"))
+        # C4-M1: the REAL obj-16 freeze (git_adapter + admission).
+        candidate = support.mint_and_freeze(
+            rt, snapshot["attempt_id"], snapshot["fence"])
+        snapshot["candidate_address"] = candidate
         # C3-M1: the registered Collector derives-and-admits obj-15; the
         # crash may now also land between the admission and the
         # transition, and recovery converges either way.
         receipt = support.collect_receipt(rt, snapshot["attempt_id"])
         rt.sequencer.complete_evidence(
             snapshot["attempt_id"], snapshot["fence"], receipt)
+        identity = {"sequence_id": sequence_id,
+                    "attempt_id": snapshot["attempt_id"],
+                    "version": 1, "fence": snapshot["fence"]}
+        environment = environment_bytes(identity)
         registered = rt.sequencer.register_verifier_result(
             snapshot["attempt_id"], "a2", "PASS", "verifier_runner",
-            json.dumps({"schema_version": "v1",
-                        "kind": "VerificationReceipt",
-                        "assertion_id": "a2", "outcome": "PASS",
-                        "attempt_id": snapshot["attempt_id"]},
-                       sort_keys=True).encode("utf-8"))
+            bound_receipt_bytes(rt.sequencer, snapshot["attempt_id"],
+                                "a2", "PASS", environment),
+            environment=environment)
         snapshot["verification_id"] = registered["verification_id"]
     if stage in ("intent", "mid_intent_tx"):
         rt.sequencer.grant_permit(sequence_id, permitted_uses=2)

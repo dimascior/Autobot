@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "autobot/object/PromptProjection/v1",
-  "title": "PromptProjection (obj-10): the dispatcher-minted, reproducible dispatch artifact — authority effect none",
+  "title": "PromptProjection (obj-10): the dispatcher-minted, reproducible dispatch artifact — authority effect none; the optional transform_provenance block is the Chapter 4 M2 amendment (INV-44): the dispatcher's claim of the registered role-transform execution it performed over the named specification input — a claim the role-transform check re-derives independently and never trusts",
   "type": "object",
   "required": [
     "schema_version", "kind", "minter", "authority_effect",
@@ -27,6 +27,18 @@
     },
     "role": {"$ref": "#/$defs/name_id"},
     "role_transform": {"$ref": "#/$defs/name_id"},
+    "transform_provenance": {
+      "type": "object",
+      "required": ["transform_id", "registration", "input_name", "input_sha256", "output_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "transform_id": {"$ref": "#/$defs/name_id"},
+        "registration": {"$ref": "#/$defs/digest"},
+        "input_name": {"$ref": "#/$defs/name_id"},
+        "input_sha256": {"$ref": "#/$defs/digest"},
+        "output_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
     "attempt": {
       "type": "object",
       "required": ["sequence_id", "attempt_id", "fence", "attempt_contract_hash"],

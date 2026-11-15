@@ -32,11 +32,13 @@ from .models import (
 from .collector import Collector
 from .project_state import project_state
 from .projection import project_prompt
+from .git_adapter import capture_tree, mint_candidate_receipt
 from .git_executor import execute_local_cas, observe_and_resolve
 from .registry import Registry
 from .sequencer import Sequencer
 from .store import Store
 from .transport import Transport, normalize_outcome, reconcile_dispatched
 from .verification import VerifierRunner
+from .verifier_runner import ProductionVerifierRunner
 
 __all__ = [name for name in dir() if not name.startswith("_")]

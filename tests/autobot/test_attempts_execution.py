@@ -9,12 +9,12 @@ import unittest
 from pathlib import Path
 
 import support
+from autobot import mint_candidate_receipt
 from autobot.models import ConflictError, IntegrityHalt, StaleFenceError
 
 PROJECTION = b"projection: build the thing (bound to the frozen record)\n"
 WITNESS_START = b"witness: session started\n"
 WITNESS_END = b"witness: session finished\n"
-CANDIDATE = b"candidate: tree stand-in\n"
 
 
 class ExecutionTestCase(unittest.TestCase):
@@ -90,10 +90,19 @@ class ExecutionTestCase(unittest.TestCase):
         return self.seq.finish_attempt(self.attempt_id, "builder", outcome,
                                        end["content_address"])
 
+    def _mint_candidate(self):
+        """The REAL obj-16 for this FINISHED attempt (C4-M1): the
+        git_adapter captures the candidate tree from the runtime's
+        candidate repository (V-A is SOURCE_MODIFYING)."""
+        repo, _sha_old, sha_new = support.ensure_candidate_repo(self.rt)
+        return mint_candidate_receipt(
+            self.seq, self.rt.store, self.attempt_id,
+            repo_path=repo, treeish=sha_new)["candidate_address"]
+
     def _to_candidate_frozen(self, governance=True):
         self._run_and_finish(governance=governance)
         self.seq.freeze_candidate(self.attempt_id, self.fence,
-                                  self.rt.store.put(CANDIDATE))
+                                  self._mint_candidate())
 
     def _collect(self, window_seconds=None):
         """Derive-and-admit the obj-15 through the registered Collector."""
@@ -150,7 +159,7 @@ class DispatchTests(ExecutionTestCase):
         self.assertEqual(
             self.seq.finish_attempt(self.attempt_id, "builder", "success",
                                     end["content_address"]), "FINISHED")
-        candidate = self.rt.store.put(CANDIDATE)
+        candidate = self._mint_candidate()
         self.seq.freeze_candidate(self.attempt_id, self.fence, candidate)
         outcome = self._collect()
         self.assertEqual(outcome["completeness"], "COMPLETE")
@@ -162,7 +171,8 @@ class DispatchTests(ExecutionTestCase):
         self.assertEqual(state, "EVIDENCE_COMPLETE")
         rules = self._rules()
         for rule in ("t-a02", "t-a03", "t-a04", "t-a05", "t-a06",
-                     "ch2:admit-witness", "ch3:admit-execution-receipt"):
+                     "ch2:admit-witness", "ch3:admit-execution-receipt",
+                     "ch4:admit-candidate"):
             self.assertIn(rule, rules)
         self.assertEqual(self.seq.recover()["intents_in_doubt"], [])
 
@@ -206,12 +216,19 @@ class DispatchTests(ExecutionTestCase):
 
     def test_freeze_and_evidence_guards(self):
         self._run_and_finish()
-        candidate = self.rt.store.put(CANDIDATE)
+        candidate = self._mint_candidate()
         with self.assertRaises(StaleFenceError):
             self.seq.freeze_candidate(self.attempt_id, self.fence + 1, candidate)
         with self.assertRaises(ConflictError):
             self.seq.freeze_candidate(self.attempt_id, self.fence,
                                       "sha256:" + "0" * 64)
+        with self.assertRaises(ConflictError) as frozen_ctx:
+            # C4-M1: arbitrary bytes are no longer a candidate — the
+            # freeze admission validates the canonical obj-16 shape.
+            self.seq.freeze_candidate(
+                self.attempt_id, self.fence,
+                self.rt.store.put(b"candidate: tree stand-in\n"))
+        self.assertIn("obj-16", str(frozen_ctx.exception))
         self.seq.freeze_candidate(self.attempt_id, self.fence, candidate)
         with self.assertRaises(ConflictError):
             self.seq.complete_evidence(self.attempt_id, self.fence,

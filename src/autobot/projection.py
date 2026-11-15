@@ -65,8 +65,17 @@ _OPTIONAL_CONTEXT = ("context_refs", "predecessor_findings",
 
 
 def project_prompt(store, record_payload, role, attempt_identity,
-                   engineering_context):
-    """Render one prompt projection; returns ``(bytes, content_address)``."""
+                   engineering_context, transform_provenance=None):
+    """Render one prompt projection; returns ``(bytes, content_address)``.
+
+    ``transform_provenance`` (C4-M2, INV-44) is the dispatcher's CLAIM of
+    the registered role-transform execution it performed over the named
+    specification input: {transform_id, registration, input_name,
+    input_sha256, output_sha256}. It is carried, schema-validated, only
+    for a role the frozen record binds to that transform — and it grants
+    nothing: the role-transform check re-derives the expected output from
+    the registered closure itself and refuses an admission whose
+    projection claim disagrees (dispatcher drift dies at the seam)."""
     policies = record_payload.get("completion_policies", {})
     if role not in policies:
         raise ConflictError(
@@ -114,6 +123,20 @@ def project_prompt(store, record_payload, role, attempt_identity,
     transform = record_payload.get("role_transforms", {}).get(role)
     if transform is not None:
         artifact["role_transform"] = transform
+    if transform_provenance is not None:
+        if not isinstance(transform_provenance, dict):
+            raise ConflictError("transform_provenance must be a mapping")
+        if transform is None:
+            raise ConflictError(
+                "transform_provenance is only meaningful for a role the"
+                " frozen record binds to a registered transform (INV-44)")
+        if transform_provenance.get("transform_id") != transform:
+            raise ConflictError(
+                "transform_provenance names transform %r but the frozen"
+                " record's role_transforms[%r] is %r (INV-44)"
+                % (transform_provenance.get("transform_id"), role,
+                   transform))
+        artifact["transform_provenance"] = dict(transform_provenance)
 
     # The approved engineering-context bundle (optional, validated).
     for field in _OPTIONAL_CONTEXT:

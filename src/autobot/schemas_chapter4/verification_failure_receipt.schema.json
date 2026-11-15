@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "autobot/object/VerificationFailureReceipt/v1",
+  "title": "VerificationFailureReceipt (obj-20): the verifier_runner's authoritative non-PASS for one contract part. Two registered arms (C4-M2 amendment, exactly one matches): BY_VERIFIER over a DETERMINISTIC assertion (the C4-M1 shape — a genuine assertion FAIL on the repair path, t-a08/t-s11, or an INCONCLUSIVE execution observation that satisfies nothing and routes to t-s12's unknown arm); BY_VERIFIER over a ROLE_TRANSFORM part (INV-49: a transform_output_mismatch FAIL, a failed transform execution, or missing_producer_evidence when no admitted producer record carries the child's received prompt identity). Same binding authority as obj-19",
+  "type": "object",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "schema_version", "kind", "minter",
+        "attempt", "attempt_contract_hash", "record_hash",
+        "candidate_receipt_sha256", "environment_sha256",
+        "assertion", "registration", "result_source", "outcome",
+        "conclusion_basis", "execution"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"const": "v1"},
+        "kind": {"const": "VerificationFailureReceipt"},
+        "minter": {"const": "verifier_runner"},
+        "attempt": {"$ref": "#/$defs/attempt"},
+        "attempt_contract_hash": {"$ref": "#/$defs/digest"},
+        "record_hash": {"$ref": "#/$defs/digest"},
+        "candidate_receipt_sha256": {"$ref": "#/$defs/digest"},
+        "environment_sha256": {"$ref": "#/$defs/digest"},
+        "assertion": {
+          "type": "object",
+          "required": ["part", "verifier_id", "mode"],
+          "additionalProperties": false,
+          "properties": {
+            "part": {"$ref": "#/$defs/assertion_part"},
+            "verifier_id": {"$ref": "#/$defs/name_id"},
+            "mode": {"const": "DETERMINISTIC"}
+          }
+        },
+        "registration": {"$ref": "#/$defs/registration"},
+        "result_source": {"const": "BY_VERIFIER"},
+        "outcome": {"enum": ["FAIL", "INCONCLUSIVE"]},
+        "conclusion_basis": {"enum": [
+          "verifier_reported_fail",
+          "verifier_execution_failed",
+          "malformed_verifier_result"
+        ]},
+        "execution": {"$ref": "#/$defs/execution"}
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "schema_version", "kind", "minter",
+        "attempt", "attempt_contract_hash", "record_hash",
+        "candidate_receipt_sha256", "environment_sha256",
+        "assertion", "registration", "result_source", "outcome",
+        "conclusion_basis", "execution", "transform_check"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"const": "v1"},
+        "kind": {"const": "VerificationFailureReceipt"},
+        "minter": {"const": "verifier_runner"},
+        "attempt": {"$ref": "#/$defs/attempt"},
+        "attempt_contract_hash": {"$ref": "#/$defs/digest"},
+        "record_hash": {"$ref": "#/$defs/digest"},
+        "candidate_receipt_sha256": {"$ref": "#/$defs/digest"},
+        "environment_sha256": {"$ref": "#/$defs/digest"},
+        "assertion": {
+          "type": "object",
+          "required": ["part", "verifier_id", "mode"],
+          "additionalProperties": false,
+          "properties": {
+            "part": {"$ref": "#/$defs/transform_part"},
+            "verifier_id": {"$ref": "#/$defs/name_id"},
+            "mode": {"const": "DETERMINISTIC"}
+          }
+        },
+        "registration": {"$ref": "#/$defs/registration"},
+        "result_source": {"const": "BY_VERIFIER"},
+        "outcome": {"enum": ["FAIL", "INCONCLUSIVE"]},
+        "conclusion_basis": {"enum": [
+          "transform_output_mismatch",
+          "verifier_execution_failed",
+          "missing_producer_evidence"
+        ]},
+        "execution": {"$ref": "#/$defs/execution"},
+        "transform_check": {
+          "type": "object",
+          "required": ["input_name", "input_sha256"],
+          "additionalProperties": false,
+          "properties": {
+            "input_name": {"$ref": "#/$defs/name_id"},
+            "input_sha256": {"$ref": "#/$defs/digest"},
+            "expected_sha256": {"$ref": "#/$defs/digest"},
+            "observed_sha256": {"$ref": "#/$defs/digest"}
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "name_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "attempt": {
+      "type": "object",
+      "required": ["sequence_id", "attempt_id", "fence"],
+      "additionalProperties": false,
+      "properties": {
+        "sequence_id": {"type": "string", "pattern": "^sq_[0-9a-f]{32}$"},
+        "attempt_id": {"type": "string", "pattern": "^at_[0-9a-f]{32}$"},
+        "fence": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "registration": {
+      "type": "object",
+      "required": ["object_sha256", "registration_id", "artifact_root"],
+      "additionalProperties": false,
+      "properties": {
+        "object_sha256": {"$ref": "#/$defs/digest"},
+        "registration_id": {"type": "string", "pattern": "^rg_[0-9a-f]{32}$"},
+        "artifact_root": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "assertion_part": {
+      "type": "object",
+      "required": ["record", "part_kind", "part_id"],
+      "additionalProperties": false,
+      "properties": {
+        "record": {"$ref": "#/$defs/digest"},
+        "part_kind": {"const": "ASSERTION"},
+        "part_id": {"$ref": "#/$defs/name_id"}
+      }
+    },
+    "transform_part": {
+      "type": "object",
+      "required": ["record", "part_kind", "part_id"],
+      "additionalProperties": false,
+      "properties": {
+        "record": {"$ref": "#/$defs/digest"},
+        "part_kind": {"const": "ROLE_TRANSFORM"},
+        "part_id": {"$ref": "#/$defs/name_id"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": ["closure_kind", "entrypoint", "exit_code", "output_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "closure_kind": {"enum": ["native", "python", "packaged"]},
+        "entrypoint": {"type": "string", "pattern": "^[^\\\\/\\s][^\\\\]*$"},
+        "exit_code": {"type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991},
+        "output_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

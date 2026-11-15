@@ -21,7 +21,14 @@ observation of a fail-open, never an inference from absence alone).
 Enforced DENYs classify nothing: DENY counts stay diagnostic.
 """
 
+import hashlib
 import json
+
+# The Helios producer verdicts that AUTHORIZE execution (the command
+# proceeds). Every other non-empty verdict is a denial: DENY, DENY_FATAL,
+# UNKNOWN, INTEGRITY_FAILURE all block execution at the hook. Fail-closed:
+# an unrecognized verdict is a potential denial, never silent acceptance.
+EXECUTION_AUTHORIZED = frozenset(("ALLOW", "PASSTHROUGH"))
 
 # kind -> recognized fact name -> producer spellings (first present wins).
 _RECOGNIZED = {
@@ -40,7 +47,7 @@ _RECOGNIZED = {
         "tool_use_id": ("tool_use_id",),
         "correlation_id": ("correlation_id",),
         "command_sha256": ("command_sha256",),
-        "decision": ("decision",),
+        "decision": ("decision", "verdict"),
         "hook_event": ("hook_event",),
         "executed_utc": ("executed_utc",),
         "success": ("success",),
@@ -75,7 +82,7 @@ def extract_facts(witness_kind, data):
     if not recognized:
         return {}
     try:
-        payload = json.loads(bytes(data).decode("utf-8"))
+        payload = json.loads(bytes(data).decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError):
         return {}
     if not isinstance(payload, dict):
@@ -89,15 +96,37 @@ def extract_facts(witness_kind, data):
         source = merged
     facts = {}
     for name, spellings in recognized.items():
+        values = []
         for spelling in spellings:
             value = source.get(spelling)
             if isinstance(value, (str, int, bool)) and value != "":
-                facts[name] = value
-                break
+                values.append(value)
+        if not values:
+            continue
+        if len(values) == 1 or len(set(values)) == 1:
+            facts[name] = values[0]
+        elif name == "decision" and witness_kind == "obj-12":
+            denial = [v for v in values
+                      if isinstance(v, str)
+                      and v.upper() not in EXECUTION_AUTHORIZED]
+            facts[name] = denial[0] if denial else values[0]
+        else:
+            facts[name] = values[0]
     if witness_kind == "obj-13" and "native_session_id" not in facts:
         value = source.get("id")
         if isinstance(value, str) and value:
             facts["native_session_id"] = value
+    if witness_kind == "obj-11":
+        # C4-M2 (INV-49): the provider task record's persisted prompt is
+        # the producer evidence of what the child actually received. The
+        # recognized fact is its CONTENT IDENTITY (a derived digest, never
+        # the text itself — the exact bytes stay producer-owned in the
+        # CAS); the role-transform check compares it against the exact
+        # registered transform's recomputed output.
+        prompt = source.get("prompt")
+        if isinstance(prompt, str) and prompt:
+            facts["prompt_sha256"] = "sha256:" + hashlib.sha256(
+                prompt.encode("utf-8")).hexdigest()
     return facts
 
 
@@ -136,6 +165,59 @@ def join_verdict(witness_kind, facts, call_id, native_session_id):
     return "UNJOINED"
 
 
+def spelling_conflicts(witness_kind, data):
+    """Detect contradictory authorization spellings in one witness record.
+
+    When the same recognized fact is present under multiple producer
+    spellings with DIFFERENT values, the record's authorization intent is
+    ambiguous — a potential attempt to hide a denial behind an
+    authorizing spelling. Returns a list of conflict dicts (empty when
+    clean). Only facts with multiple registered spellings are checked;
+    single-spelling facts cannot conflict."""
+    recognized = _RECOGNIZED.get(witness_kind)
+    if not recognized:
+        return []
+    try:
+        payload = json.loads(bytes(data).decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    found = []
+    for name, spellings in recognized.items():
+        if len(spellings) < 2:
+            continue
+        values = {}
+        for spelling in spellings:
+            value = payload.get(spelling)
+            if isinstance(value, (str, int, bool)) and value != "":
+                values[spelling] = value
+        if len(values) > 1 and len(set(values.values())) > 1:
+            found.append({"fact": name,
+                          "spellings": dict(sorted(values.items()))})
+    return found
+
+
+def authorization_direction_conflict(witness_kind, data):
+    """Whether the record's authorization spellings disagree on whether
+    execution is authorized (D-C4-14). Returns a description string when
+    conflicted, else ``None``. Only obj-12 with the ``decision`` fact has
+    authorization significance; same-direction disagreement (DENY vs
+    DENY_FATAL, ALLOW vs PASSTHROUGH) is NOT a conflict."""
+    for conflict in spelling_conflicts(witness_kind, data):
+        if conflict["fact"] != "decision" or witness_kind != "obj-12":
+            continue
+        values = set(conflict["spellings"].values())
+        authorized = set(v for v in values
+                         if isinstance(v, str)
+                         and v.upper() in EXECUTION_AUTHORIZED)
+        if authorized and values - authorized:
+            return ("the record's authorization spellings disagree: %s"
+                    % ", ".join("%s=%s" % (k, v) for k, v in
+                                sorted(conflict["spellings"].items())))
+    return None
+
+
 def deny_then_ran(entries):
     """The U-01 deterministic contradiction (D-C3-6): a governance DENY
     for (command_sha256, session) joined BY CONTENT HASH AND SESSION
@@ -154,7 +236,8 @@ def deny_then_ran(entries):
         if not isinstance(sha, str) or not sha:
             continue
         decision = facts.get("decision")
-        if isinstance(decision, str) and decision.upper() == "DENY":
+        if (isinstance(decision, str) and decision
+                and decision.upper() not in EXECUTION_AUTHORIZED):
             denies.append((sha, facts.get("session_id")))
         if facts.get("hook_event") == "PostToolUse" \
                 or facts.get("success") is True:

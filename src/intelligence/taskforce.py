@@ -28,9 +28,12 @@ registered executor and the ref-CAS semantics decide what happened.
 import json
 
 from autobot.collector import Collector
+from autobot.git_adapter import mint_candidate_receipt
 from autobot.git_executor import execute_local_cas
+from autobot.models import ConflictError
 from autobot.projection import project_prompt
 from autobot.transport import normalize_outcome, reconcile_dispatched
+from autobot.verifier_runner import ProductionVerifierRunner
 
 from .findings import admit_finding
 from .proposals_util import canonical_json_digest
@@ -46,14 +49,19 @@ def _loads(text, default):
 
 
 class Taskforce:
-    def __init__(self, plan, sequencer, store, transport, runner,
-                 agent_factory, clock, ro_conn, repo_path=None,
-                 repository_context=None, collector=None):
+    def __init__(self, plan, sequencer, store, transport, runner=None,
+                 agent_factory=None, clock=None, ro_conn=None,
+                 repo_path=None, repository_context=None, collector=None):
         self.plan = plan
         self.sequencer = sequencer
         self.store = store
         self.transport = transport
-        self.runner = runner
+        # The registered verifier_runner seat (cap-35): the PRODUCTION
+        # runner by default (C4-M1) — it executes exact registered
+        # closures and mints canonical obj-19/obj-20; the Taskforce only
+        # triggers it and applies the registered transitions on the
+        # admitted rows (task_force is on cap-35's forbidden list).
+        self.runner = runner or ProductionVerifierRunner(sequencer, store)
         self.factory = agent_factory
         self.clock = clock
         self.ro = ro_conn
@@ -268,24 +276,51 @@ class Taskforce:
                                       b"no artifact collected\n")
                 # C3-M2 (INV-03): the artifact enters through the
                 # provenance seam — one causal event binding these exact
-                # bytes to THIS attempt — and the frozen candidate
-                # references the admitted address.
+                # bytes to THIS attempt — and the candidate references the
+                # admitted address through the obj-16 artifact set.
                 admitted_artifact = self.sequencer.admit_artifact(
                     att["attempt_id"],
                     result.get("artifact_path", "artifact/engineering-notes"),
                     artifact)
-                candidate = admitted_artifact["content_address"]
-                seq = self.ro.execute(
-                    "SELECT fence FROM sequences WHERE sequence_id = ?",
-                    (att["sequence_id"],)).fetchone()
-                self.sequencer.freeze_candidate(
-                    att["attempt_id"], seq["fence"], candidate)
                 with self.plan.transaction() as cur:
                     cur.execute(
                         "UPDATE seats SET artifact_address = ?, status ="
                         " 'COLLECTED', updated_utc = ? WHERE call_id = ?",
-                        (candidate, now, att["call_id"]))
-                entry["candidate_address"] = candidate
+                        (admitted_artifact["content_address"], now,
+                         att["call_id"]))
+                # C4-M1 (cap-32): the git_adapter mints the REAL obj-16.
+                # SOURCE_MODIFYING work binds the candidate tree — the
+                # tree of the specialist's PROPOSED new value, read from
+                # Git (cap-42), never "whatever the workspace holds";
+                # READ_ONLY work is the artifact/observation set. An SM
+                # attempt with no capturable tree stays FINISHED, a
+                # visible wait for the planner, never a fabricated
+                # candidate.
+                seq = self.ro.execute(
+                    "SELECT fence, record_hash FROM sequences"
+                    " WHERE sequence_id = ?",
+                    (att["sequence_id"],)).fetchone()
+                record = self._record_payload(seq["record_hash"])
+                if record["finalization_class"] == "SOURCE_MODIFYING":
+                    effect = _loads(artifact.decode("utf-8", "replace"),
+                                    {})
+                    treeish = effect.get("new_value") \
+                        if isinstance(effect, dict) else None
+                    if self.repo_path is None or not isinstance(
+                            treeish, str) or not treeish:
+                        entry["candidate"] = "BLOCKED_NO_CANDIDATE_TREE"
+                        collected.append(entry)
+                        continue
+                    minted = mint_candidate_receipt(
+                        self.sequencer, self.store, att["attempt_id"],
+                        repo_path=self.repo_path, treeish=treeish)
+                else:
+                    minted = mint_candidate_receipt(
+                        self.sequencer, self.store, att["attempt_id"])
+                self.sequencer.freeze_candidate(
+                    att["attempt_id"], seq["fence"],
+                    minted["candidate_address"])
+                entry["candidate_address"] = minted["candidate_address"]
             collected.append(entry)
         collected += self.settle_frozen_evidence(now)
         return collected
@@ -333,42 +368,41 @@ class Taskforce:
     # ------------------------------------------------------ verification
 
     def verify_evidence_complete(self):
+        """The production verification trigger (C4-M1): the registered
+        verifier_runner seat executes the exact registered closures and
+        submits canonical obj-19/obj-20 through the admission seam; the
+        Taskforce only applies the registered transitions on the admitted
+        rows. An environment mismatch is a HALT-grade authority problem
+        (t-s12 env_mismatch) — never converted into a failed assertion —
+        and an INCONCLUSIVE member routes to t-s12's unknown arm. An
+        integrity stop (IntegrityHalt: missing closure leaf, forged
+        registration) PROPAGATES: processing stops with no transition
+        committed, and the durable t-s12 bound_artifact_unavailable is the
+        operator-visible integration decision, exactly the M4 seam
+        discipline."""
         verified = []
         for att in self._attempts_in(["EVIDENCE_COMPLETE"]):
             seq = self.ro.execute(
                 "SELECT * FROM sequences WHERE sequence_id = ?",
                 (att["sequence_id"],)).fetchone()
+            if seq["state"] != "VERIFYING":
+                continue  # already halted or moved by another arc
             record = self._record_payload(seq["record_hash"])
             assertions = record.get("acceptance_assertions", {}).get(
                 "ids_and_environment_constraints", [])
             if any(a.get("mode") == "HUMAN_ATTESTED" for a in assertions):
                 continue  # the attestation path is yours (cap-44)
-            identity = {"sequence_id": att["sequence_id"],
-                        "attempt_id": att["attempt_id"],
-                        "version": att["version"], "fence": att["fence"]}
-            inconclusive = False
-            for assertion in assertions:
-                existing = self.ro.execute(
-                    "SELECT outcome FROM attempt_verifications WHERE"
-                    " attempt_id = ? AND assertion_id = ?",
-                    (att["attempt_id"], assertion["assertion_id"])
-                ).fetchone()
-                if existing is not None:
+            try:
+                outcome = self.runner.verify_attempt(att["attempt_id"])
+            except ConflictError as exc:
+                if "env_mismatch" in str(exc):
+                    self.sequencer.halt_verification(
+                        att["sequence_id"], "env_mismatch")
+                    verified.append({"attempt_id": att["attempt_id"],
+                                     "result": "HALTED"})
                     continue
-                environment = None
-                if "environment_constraint" in assertion:
-                    environment = self.runner.capture_environment(identity)
-                outcome, receipt = self.runner.run_assertion(
-                    assertion, None,
-                    {"attempt_id": att["attempt_id"],
-                     "sequence_id": att["sequence_id"],
-                     "identity": identity})
-                self.sequencer.register_verifier_result(
-                    att["attempt_id"], assertion["assertion_id"], outcome,
-                    "verifier_runner", receipt, environment=environment)
-                if outcome == "INCONCLUSIVE":
-                    inconclusive = True
-            if inconclusive:
+                raise
+            if outcome["inconclusive"]:
                 self.sequencer.halt_verification(
                     att["sequence_id"], "unknown")
                 verified.append({"attempt_id": att["attempt_id"],

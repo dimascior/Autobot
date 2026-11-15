@@ -20,6 +20,8 @@ from contract_library import canonicalize, compute_tiers, object_hash
 
 from . import journal
 from . import receipts
+from . import transforms
+from . import verification_receipts
 from . import witness_semantics
 from .effects import EFFECTS, OUTCOME_RULES, RETRYABLE
 from .verification import (
@@ -716,6 +718,9 @@ class Sequencer:
                                      "verification_id"),
             "attempt_receipt": ("attempt_receipts", "admission_id"),
             "attempt_artifact": ("attempt_artifacts", "admission_id"),
+            "attempt_candidate": ("attempt_candidates", "admission_id"),
+            "attempt_environment": ("attempt_environments", "admission_id"),
+            "attempt_attestation": ("attempt_attestations", "admission_id"),
         }
         for (machine, subject) in last:
             mapped = reverse_tables.get(machine)
@@ -775,6 +780,20 @@ class Sequencer:
                 raise IntegrityHalt(
                     "object %s does not recompute" % row["object_hash"])
             referenced.add(row["content_address"])
+            if row["kind"] in ("VerifierRegistration",
+                               "TransformRegistration"):
+                # INV-58: an admitted registration's closure leaves are
+                # committed references — the content store keeps them and
+                # they are never orphans (for a packaged manifest this
+                # covers the manifest AND every entry it names). Their
+                # EXISTENCE is enforced at dispatch (INV-53: a missing
+                # leaf HALTs the runner, never substituted) and reported
+                # for live records by the retention report below, so a
+                # registration whose artifacts were never uploaded does
+                # not wedge recovery.
+                closure = payload.get("closure", {})
+                referenced.update(transforms.closure_leaf_addresses(
+                    self.store, closure))
             objects_checked += 1
 
         for row in cur.execute("SELECT * FROM records").fetchall():
@@ -926,9 +945,7 @@ class Sequencer:
             if entry_payload.get("machine") != "sequence":
                 continue
             entry_facts = entry_payload.get("facts", {})
-            for key in ("commit_receipt_address",
-                        "observation_receipt_address",
-                        "acceptance_sha256", "release_sha256"):
+            for key in self._JOURNALED_RECEIPT_FACTS:
                 address = entry_facts.get(key)
                 if address is not None:
                     self.store.get(address)  # re-hashes (D-66)
@@ -1182,6 +1199,323 @@ class Sequencer:
                         % (wrow["content_sha256"], call_row["attempt_id"],
                            "; ".join(conflicts)))
 
+        # -- 8h. Chapter 4 verification proof objects (C4-M1): both
+        #        directions over obj-16/obj-18 and the strengthened
+        #        obj-19/obj-20 rows.
+        #        attempt_candidates: every row joins an attempt that
+        #        reached CANDIDATE_FROZEN, its bytes resolve, re-hash and
+        #        ARE their own canonical form, the payload re-validates
+        #        against the mirrored obj-16 schema, the row columns agree
+        #        with the payload, every ledger-derivable binding still
+        #        holds (attempt identity and fence, contract hash, record
+        #        tiers, the durable AttemptContract's source_state, the
+        #        admitted artifact triples, the class/tree coupling), and
+        #        the admission is journaled (both directions, via
+        #        reverse_tables above). An attempt in a post-freeze state
+        #        with NO candidate row is forged state and HALTs — the
+        #        candidate and the captured environment are immutable
+        #        proof objects: restart never recaptures them.
+        _POST_FREEZE_STATES = frozenset((
+            "CANDIDATE_FROZEN", "EVIDENCE_COMPLETE", "VERIFIED",
+            "REJECTED"))
+        for row in cur.execute(
+                "SELECT * FROM attempt_candidates").fetchall():
+            att = cur.execute(
+                "SELECT * FROM attempts WHERE attempt_id = ?",
+                (row["attempt_id"],)).fetchone()
+            if att is None or att["state"] in ("DECLARED", "RESERVED",
+                                               "DISPATCHED", "RUNNING"):
+                raise IntegrityHalt(
+                    "candidate %s joins attempt state %r: candidates are"
+                    " admitted at the freeze only"
+                    % (row["admission_id"], att["state"] if att else None))
+            data = self.store.get(row["content_sha256"])  # re-hashes (D-66)
+            referenced.add(row["content_sha256"])
+            candidate_payload = json.loads(data.decode("utf-8"))
+            if verification_receipts.receipt_bytes(candidate_payload) \
+                    != data:
+                raise IntegrityHalt(
+                    "candidate %s bytes are not their own canonical form"
+                    % row["admission_id"])
+            if verification_receipts.validate_candidate(candidate_payload):
+                raise IntegrityHalt(
+                    "candidate %s no longer validates against the obj-16"
+                    " schema" % row["admission_id"])
+            tree = candidate_payload.get("candidate_tree")
+            if (candidate_payload["finalization_class"]
+                    != row["finalization_class"]
+                    or (tree["git_tree_sha"] if tree is not None else None)
+                    != row["candidate_tree"]):
+                raise IntegrityHalt(
+                    "candidate row %s disagrees with its admitted payload"
+                    % row["admission_id"])
+            seq_row = cur.execute(
+                "SELECT * FROM sequences WHERE sequence_id = ?",
+                (att["sequence_id"],)).fetchone()
+            identity = candidate_payload["attempt"]
+            if (identity["sequence_id"] != att["sequence_id"]
+                    or identity["attempt_id"] != att["attempt_id"]
+                    or identity["fence"] != att["fence"]
+                    or candidate_payload["attempt_contract_hash"]
+                    != att["attempt_contract_hash"]
+                    or candidate_payload["record_hash"]
+                    != seq_row["record_hash"]
+                    or candidate_payload["requirement_digest"]
+                    != seq_row["requirement_digest"]
+                    or candidate_payload["contract_digest"]
+                    != seq_row["contract_digest"]):
+                raise IntegrityHalt(
+                    "candidate %s no longer binds its attempt's durable"
+                    " identities (INV-17)" % row["admission_id"])
+            contract_obj = cur.execute(
+                "SELECT content_address FROM objects WHERE object_hash = ?",
+                (att["attempt_contract_hash"],)).fetchone()
+            contract_payload = json.loads(self.store.get(
+                contract_obj["content_address"]).decode("utf-8"))
+            if candidate_payload["source_state"] != \
+                    contract_payload["source_state"]:
+                raise IntegrityHalt(
+                    "candidate %s source_state diverges from the durable"
+                    " AttemptContract (INV-02)" % row["admission_id"])
+            triples = sorted(
+                ({"logical_path": a["logical_path"],
+                  "content_sha256": a["content_sha256"], "role": a["role"]}
+                 for a in cur.execute(
+                     "SELECT logical_path, content_sha256, role"
+                     " FROM attempt_artifacts WHERE attempt_id = ?"
+                     " ORDER BY rowid",
+                     (row["attempt_id"],)).fetchall()),
+                key=lambda a: (a["logical_path"], a["content_sha256"]))
+            if candidate_payload["artifacts"] != triples:
+                raise IntegrityHalt(
+                    "candidate %s artifact set diverges from the admitted"
+                    " provenance events (INV-03)" % row["admission_id"])
+            if candidate_payload["finalization_class"] == \
+                    "SOURCE_MODIFYING":
+                if tree is None:
+                    raise IntegrityHalt(
+                        "candidate %s is SOURCE_MODIFYING with no bound"
+                        " candidate tree" % row["admission_id"])
+            elif tree is not None:
+                raise IntegrityHalt(
+                    "candidate %s is READ_ONLY with an invented candidate"
+                    " tree" % row["admission_id"])
+            entry = last.get(("attempt_candidate", row["admission_id"]))
+            if entry is None or entry.get("to_state") != "ADMITTED":
+                raise IntegrityHalt(
+                    "candidate %s has no journaled admission (D-68"
+                    " pairing)" % row["admission_id"])
+        for row in cur.execute(
+                "SELECT attempt_id, state FROM attempts").fetchall():
+            if row["state"] not in _POST_FREEZE_STATES:
+                continue
+            if cur.execute(
+                    "SELECT 1 FROM attempt_candidates WHERE attempt_id = ?",
+                    (row["attempt_id"],)).fetchone() is None:
+                raise IntegrityHalt(
+                    "attempt %s is %s with no admitted obj-16 candidate"
+                    " (t-a05/t-s07 require it)"
+                    % (row["attempt_id"], row["state"]))
+        for row in cur.execute(
+                "SELECT * FROM attempt_environments").fetchall():
+            att = cur.execute(
+                "SELECT * FROM attempts WHERE attempt_id = ?",
+                (row["attempt_id"],)).fetchone()
+            if att is None:
+                raise IntegrityHalt(
+                    "environment %s joins no attempt" % row["admission_id"])
+            data = self.store.get(row["content_sha256"])  # re-hashes
+            referenced.add(row["content_sha256"])
+            env_payload = json.loads(data.decode("utf-8"))
+            refusal = validate_environment_capture(env_payload, att)
+            if refusal is not None:
+                raise IntegrityHalt(
+                    "environment %s no longer validates or binds its"
+                    " attempt: %s" % (row["admission_id"], refusal))
+            entry = last.get(("attempt_environment", row["admission_id"]))
+            if entry is None or entry.get("to_state") != "ADMITTED":
+                raise IntegrityHalt(
+                    "environment %s has no journaled admission (D-68"
+                    " pairing)" % row["admission_id"])
+        for row in cur.execute(
+                "SELECT * FROM attempt_verifications"
+                " WHERE by_principal = ?",
+                (RESULT_PRODUCER,)).fetchall():
+            att = cur.execute(
+                "SELECT * FROM attempts WHERE attempt_id = ?",
+                (row["attempt_id"],)).fetchone()
+            seq_row = cur.execute(
+                "SELECT * FROM sequences WHERE sequence_id = ?",
+                (att["sequence_id"],)).fetchone()
+            result_bytes = self.store.get(row["receipt_sha256"])
+            result_payload = json.loads(result_bytes.decode("utf-8"))
+            if verification_receipts.receipt_bytes(result_payload) != \
+                    result_bytes:
+                raise IntegrityHalt(
+                    "verification %s receipt bytes are not canonical"
+                    % row["verification_id"])
+            if verification_receipts.validate_result_receipt(
+                    result_payload):
+                raise IntegrityHalt(
+                    "verification %s no longer validates against the"
+                    " obj-19/obj-20 schema" % row["verification_id"])
+            candidate = cur.execute(
+                "SELECT content_sha256 FROM attempt_candidates"
+                " WHERE attempt_id = ?", (row["attempt_id"],)).fetchone()
+            environment = cur.execute(
+                "SELECT content_sha256 FROM attempt_environments"
+                " WHERE attempt_id = ?", (row["attempt_id"],)).fetchone()
+            identity = result_payload["attempt"]
+            part = result_payload["assertion"]["part"]
+            # D-47 part-kind-aware row-key mapping (C4-M2): an ASSERTION
+            # part's row key is the assertion id; a ROLE_TRANSFORM part's
+            # is "role-transform/<role>".
+            if part.get("part_kind") == "ROLE_TRANSFORM":
+                expected_row_key = "role-transform/%s" % part["part_id"]
+            else:
+                expected_row_key = part["part_id"]
+            if (identity["attempt_id"] != att["attempt_id"]
+                    or identity["sequence_id"] != att["sequence_id"]
+                    or identity["fence"] != att["fence"]
+                    or result_payload["attempt_contract_hash"]
+                    != att["attempt_contract_hash"]
+                    or result_payload["record_hash"]
+                    != seq_row["record_hash"]
+                    or result_payload["outcome"] != row["outcome"]
+                    or expected_row_key != row["assertion_id"]
+                    or part["record"] != seq_row["record_hash"]
+                    or candidate is None
+                    or result_payload["candidate_receipt_sha256"]
+                    != candidate["content_sha256"]
+                    or environment is None
+                    or result_payload["environment_sha256"]
+                    != environment["content_sha256"]
+                    or row["environment_sha256"]
+                    != environment["content_sha256"]):
+                raise IntegrityHalt(
+                    "verification %s no longer binds its durable candidate,"
+                    " environment, assertion and attempt (INV-17)"
+                    % row["verification_id"])
+            output_bytes = self.store.get(
+                result_payload["execution"]["output_sha256"])
+            referenced.add(result_payload["execution"]["output_sha256"])
+            if verification_receipts.outcome_consistency(
+                    result_payload, output_bytes) is not None:
+                raise IntegrityHalt(
+                    "verification %s outcome no longer agrees with its"
+                    " durable execution evidence (F-C4-1)"
+                    % row["verification_id"])
+        # -- 8e-2. attestation admissions (C4-M2, D-52/D-53): every
+        #          admitted obj-37 resolves to its exact bytes, is its own
+        #          canonical form, still validates with FULL bindings
+        #          (attempt, contract, candidate, D-47 part) and has its
+        #          journaled admission; every ATTESTED verification row
+        #          pairs with its admitted attestation and its canonical
+        #          obj-19 BY_ATTESTATION receipt.
+        for row in cur.execute(
+                "SELECT * FROM attempt_attestations").fetchall():
+            att = cur.execute(
+                "SELECT * FROM attempts WHERE attempt_id = ?",
+                (row["attempt_id"],)).fetchone()
+            if att is None:
+                raise IntegrityHalt(
+                    "attestation %s joins no attempt" % row["admission_id"])
+            seq_row = cur.execute(
+                "SELECT * FROM sequences WHERE sequence_id = ?",
+                (att["sequence_id"],)).fetchone()
+            candidate = cur.execute(
+                "SELECT content_sha256 FROM attempt_candidates"
+                " WHERE attempt_id = ?", (row["attempt_id"],)).fetchone()
+            data = self.store.get(row["content_sha256"])  # re-hashes
+            referenced.add(row["content_sha256"])
+            attestation_payload = json.loads(data.decode("utf-8"))
+            if canonicalize(attestation_payload) != data:
+                raise IntegrityHalt(
+                    "attestation %s bytes are not canonical (D-31)"
+                    % row["admission_id"])
+            refusal = validate_assertion_attestation(
+                attestation_payload, att, row["assertion_id"],
+                candidate["content_sha256"] if candidate else None,
+                seq_row["record_hash"])
+            if refusal is not None:
+                raise IntegrityHalt(
+                    "attestation %s no longer validates or binds its"
+                    " attempt: %s" % (row["admission_id"], refusal))
+            entry = last.get(("attempt_attestation", row["admission_id"]))
+            if entry is None or entry.get("to_state") != "ADMITTED":
+                raise IntegrityHalt(
+                    "attestation %s has no journaled admission (D-68"
+                    " pairing)" % row["admission_id"])
+        for row in cur.execute(
+                "SELECT * FROM attempt_verifications"
+                " WHERE outcome = 'ATTESTED'").fetchall():
+            att = cur.execute(
+                "SELECT * FROM attempts WHERE attempt_id = ?",
+                (row["attempt_id"],)).fetchone()
+            seq_row = cur.execute(
+                "SELECT * FROM sequences WHERE sequence_id = ?",
+                (att["sequence_id"],)).fetchone()
+            result_bytes = self.store.get(row["receipt_sha256"])
+            result_payload = json.loads(result_bytes.decode("utf-8"))
+            if verification_receipts.receipt_bytes(result_payload) != \
+                    result_bytes:
+                raise IntegrityHalt(
+                    "attested verification %s receipt bytes are not"
+                    " canonical" % row["verification_id"])
+            if verification_receipts.validate_result_receipt(
+                    result_payload):
+                raise IntegrityHalt(
+                    "attested verification %s no longer validates against"
+                    " the obj-19 schema" % row["verification_id"])
+            attestation_row = cur.execute(
+                "SELECT content_sha256 FROM attempt_attestations"
+                " WHERE attempt_id = ? AND assertion_id = ?",
+                (row["attempt_id"], row["assertion_id"])).fetchone()
+            candidate = cur.execute(
+                "SELECT content_sha256 FROM attempt_candidates"
+                " WHERE attempt_id = ?", (row["attempt_id"],)).fetchone()
+            identity = result_payload["attempt"]
+            part = result_payload["assertion"]["part"]
+            if (result_payload.get("result_source") != "BY_ATTESTATION"
+                    or identity["attempt_id"] != att["attempt_id"]
+                    or identity["sequence_id"] != att["sequence_id"]
+                    or identity["fence"] != att["fence"]
+                    or result_payload["attempt_contract_hash"]
+                    != att["attempt_contract_hash"]
+                    or result_payload["record_hash"]
+                    != seq_row["record_hash"]
+                    or part["part_id"] != row["assertion_id"]
+                    or part["record"] != seq_row["record_hash"]
+                    or candidate is None
+                    or result_payload["candidate_receipt_sha256"]
+                    != candidate["content_sha256"]
+                    or row["environment_sha256"] is not None
+                    or row["by_principal"] != ATTESTATION_PRODUCER
+                    or attestation_row is None
+                    or result_payload["attestation_sha256"]
+                    != attestation_row["content_sha256"]):
+                raise IntegrityHalt(
+                    "attested verification %s no longer binds its durable"
+                    " attestation, candidate, assertion and attempt"
+                    " (D-52/D-53/INV-17)" % row["verification_id"])
+        for row in cur.execute(
+                "SELECT attempt_id, state FROM attempts"
+                " WHERE state IN ('VERIFIED','REJECTED')").fetchall():
+            outcomes = [r["outcome"] for r in cur.execute(
+                "SELECT outcome FROM attempt_verifications"
+                " WHERE attempt_id = ?", (row["attempt_id"],)).fetchall()]
+            if row["state"] == "VERIFIED" and any(
+                    o not in ("PASS", "ATTESTED") for o in outcomes):
+                raise IntegrityHalt(
+                    "attempt %s is VERIFIED with a non-passing admitted"
+                    " result (t-a07 requires authoritative obj-19)"
+                    % row["attempt_id"])
+            if row["state"] == "REJECTED" and "FAIL" not in outcomes:
+                raise IntegrityHalt(
+                    "attempt %s is REJECTED with no admitted FAIL result"
+                    " (t-a08 requires authoritative obj-20)"
+                    % row["attempt_id"])
+
         # -- resumable view + fence coherence
         current = []
         for row in cur.execute(
@@ -1243,13 +1577,246 @@ class Sequencer:
                     "superseded intent %s has %d successors; t-i06 mints exactly"
                     " one" % (row["intent_id"], n))
 
+        # -- 8f. INV-58 retention report (C4-M2): every closure leaf a
+        #        LIVE (non-terminal) sequence's bound registrations still
+        #        bind must resolve. REPORTED, never a halt: the fail-closed
+        #        act stays dispatch-time INV-53 (resolve_closure HALTs over
+        #        a missing leaf, never substitutes), and recovery reporting
+        #        keeps a runtime whose fixture registrations carry no
+        #        executable bytes recoverable (D-C4-9) while making every
+        #        gap visible the moment restart runs.
+        missing_bound_leaves = []
+        for seq_row in cur.execute(
+                "SELECT sequence_id, record_hash, state FROM sequences"
+        ).fetchall():
+            if seq_row["state"] in SEQUENCE_TERMINAL:
+                continue
+            record_row = cur.execute(
+                "SELECT content_address FROM records WHERE record_hash = ?",
+                (seq_row["record_hash"],)).fetchone()
+            record = json.loads(
+                self.store.get(record_row["content_address"]).decode(
+                    "utf-8"))
+            bindings = record.get("resolved_bindings", {})
+            for registration_hash in (
+                    list(bindings.get("verifier_registrations", []))
+                    + list(bindings.get("transform_registrations", []))):
+                obj_row = cur.execute(
+                    "SELECT content_address FROM objects"
+                    " WHERE object_hash = ?", (registration_hash,)
+                ).fetchone()
+                if obj_row is None or not self.store.has(
+                        obj_row["content_address"]):
+                    missing_bound_leaves.append(
+                        {"sequence_id": seq_row["sequence_id"],
+                         "registration": registration_hash,
+                         "leaf": registration_hash})
+                    continue
+                registration = json.loads(self.store.get(
+                    obj_row["content_address"]).decode("utf-8"))
+                for leaf in transforms.closure_leaf_addresses(
+                        self.store, registration.get("closure", {})):
+                    if not self.store.has(leaf):
+                        missing_bound_leaves.append(
+                            {"sequence_id": seq_row["sequence_id"],
+                             "registration": registration_hash,
+                             "leaf": leaf})
+
         # -- 6. harmless leftovers, reported and ignored
         orphans = self.store.orphans(referenced)
 
         return {"journal_entries": len(payloads),
                 "objects_verified": objects_checked,
                 "sequences": current, "orphans": orphans,
-                "intents_in_doubt": intents_in_doubt}
+                "intents_in_doubt": intents_in_doubt,
+                "retention": {
+                    "missing_bound_leaves": missing_bound_leaves}}
+
+    # ---------------------------------------------------------- retention
+    #
+    # INV-58's two halves, explicitly split (C4-M2): the content store
+    # keeps every leaf a LIVE registration closure binds (retention_roots),
+    # and reclamation is an explicit, re-derived act (reclaim) — never a
+    # sweeper, never a dispatch-time substitute for INV-53 (a missing leaf
+    # at dispatch still HALTs; retention exists so that case stays
+    # impossible while any non-terminal sequence can still dispatch).
+
+    # Ledger columns whose values are content addresses: anything they
+    # name is committed evidence, never reclaimable through this seam.
+    _LEDGER_ADDRESS_COLUMNS = (
+        ("objects", "content_address"),
+        ("records", "content_address"),
+        ("admissions", "payload_content_address"),
+        ("duplicate_admissions", "payload_content_address"),
+        ("attempt_witnesses", "content_sha256"),
+        ("attempt_receipts", "content_sha256"),
+        ("attempt_artifacts", "content_sha256"),
+        ("attempt_candidates", "content_sha256"),
+        ("attempt_environments", "content_sha256"),
+        ("attempt_attestations", "content_sha256"),
+        ("attempt_verifications", "receipt_sha256"),
+        ("attempt_verifications", "environment_sha256"),
+        ("attempt_calls", "projection_address"),
+        # F-TI-4: the obj-30/obj-35 references recovery resolves (8e).
+        ("released_edges", "acceptance_sha256"),
+        ("released_edges", "release_sha256"),
+    )
+
+    # Sequence-entry facts naming finalization receipts (obj-26, obj-30,
+    # obj-35) that recovery resolves from the journal (8d). ONE list for
+    # recovery and reclamation: F-TI-4 (TI-1) was reclaim protecting less
+    # than recovery requires.
+    _JOURNALED_RECEIPT_FACTS = (
+        "commit_receipt_address", "observation_receipt_address",
+        "acceptance_sha256", "release_sha256",
+    )
+
+    def retention_roots(self):
+        """The live retention map (INV-58): content address -> sorted
+        sequence ids that still bind it. A leaf is LIVE while ANY
+        non-terminal sequence's frozen record binds its registration
+        (resolved_bindings, verifier and transform alike); registration
+        REPLACEMENT frees nothing until every sequence bound to the old
+        registration is terminal. Recomputed from durable rows on every
+        call — there is no cached list a restart or a new admission could
+        leave stale."""
+        cur = self.db.conn.cursor()
+        roots = {}
+        for seq_row in cur.execute(
+                "SELECT sequence_id, record_hash, state FROM sequences"
+        ).fetchall():
+            if seq_row["state"] in SEQUENCE_TERMINAL:
+                continue
+            record_row = cur.execute(
+                "SELECT content_address FROM records WHERE record_hash = ?",
+                (seq_row["record_hash"],)).fetchone()
+            if record_row is None or not self.store.has(
+                    record_row["content_address"]):
+                continue  # recovery HALTs on this; retention stays a map
+            record = json.loads(self.store.get(
+                record_row["content_address"]).decode("utf-8"))
+            bindings = record.get("resolved_bindings", {})
+            for registration_hash in (
+                    list(bindings.get("verifier_registrations", []))
+                    + list(bindings.get("transform_registrations", []))):
+                obj_row = cur.execute(
+                    "SELECT content_address FROM objects"
+                    " WHERE object_hash = ?", (registration_hash,)
+                ).fetchone()
+                if obj_row is None or not self.store.has(
+                        obj_row["content_address"]):
+                    continue  # reported by recovery's retention report
+                registration = json.loads(self.store.get(
+                    obj_row["content_address"]).decode("utf-8"))
+                for leaf in transforms.closure_leaf_addresses(
+                        self.store, registration.get("closure", {})):
+                    roots.setdefault(leaf, set()).add(
+                        seq_row["sequence_id"])
+        return {leaf: sorted(ids) for leaf, ids in roots.items()}
+
+    def reclaim(self, addresses):
+        """Explicit reclamation of NAMED content addresses (C4-M2,
+        INV-58): recompute the live retention roots INSIDE this call (a
+        list computed before a restart, a new admission or a registration
+        replacement is stale and protects nothing), refuse every address a
+        live closure still binds or any ledger column references, and
+        unlink the rest. Returns {"removed": [...], "retained": {address:
+        reason}}; a removal is journaled as an audit event. NOT a garbage
+        collector: nothing is scanned for, only the named candidates are
+        judged — and judged at the moment of deletion."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            roots = self.retention_roots()
+            # A frozen record's declared specification inputs are committed
+            # references FOREVER (recovery resolves every record's inputs,
+            # terminal or not, and INV-44's chain starts at those exact
+            # bytes) — never reclaimable, whatever the sequence states.
+            frozen_inputs = set()
+            for record_row in cur.execute(
+                    "SELECT content_address FROM records").fetchall():
+                record = json.loads(self.store.get(
+                    record_row["content_address"]).decode("utf-8"))
+                inputs = record.get("specification_inputs", {}).get(
+                    "name_to_exact_byte_sha256", {})
+                frozen_inputs.update(
+                    v for v in inputs.values() if isinstance(v, str))
+            # F-TI-4 (TI-1, exposed by the independent state oracle):
+            # recovery resolves two more reference families that no
+            # ledger COLUMN holds — reclaiming either turned a clean
+            # ledger into a permanent recovery HALT. The journaled
+            # finalization receipts (8d) and the execution evidence every
+            # admitted obj-19/obj-20 binds (8h, F-C4-1) are committed
+            # evidence, judged here exactly as recovery reads them.
+            committed_evidence = {}
+            for entry in journal.entries(cur):
+                if entry.get("machine") != "sequence":
+                    continue
+                entry_facts = entry.get("facts", {})
+                for key in self._JOURNALED_RECEIPT_FACTS:
+                    named = entry_facts.get(key)
+                    if isinstance(named, str):
+                        committed_evidence.setdefault(
+                            named, "journaled finalization receipt"
+                                   " reference (%s %s)"
+                                   % (entry.get("rule"), key))
+            for result_row in cur.execute(
+                    "SELECT receipt_sha256 FROM attempt_verifications"
+                    " WHERE by_principal = ?",
+                    (RESULT_PRODUCER,)).fetchall():
+                try:
+                    result_payload = json.loads(self.store.get(
+                        result_row["receipt_sha256"]).decode("utf-8"))
+                except (IntegrityHalt, UnicodeDecodeError, ValueError):
+                    continue  # recovery HALTs on this; reclaim only judges
+                execution = result_payload.get("execution") \
+                    if isinstance(result_payload, dict) else None
+                evidence = execution.get("output_sha256") \
+                    if isinstance(execution, dict) else None
+                if isinstance(evidence, str):
+                    committed_evidence.setdefault(
+                        evidence, "execution evidence bound by an admitted"
+                                  " verification receipt (F-C4-1)")
+            removed = []
+            retained = {}
+            for address in sorted(set(addresses)):
+                if address in frozen_inputs:
+                    retained[address] = (
+                        "a frozen record's declared specification input"
+                        " (resolvable forever; INV-44/D-66)")
+                    continue
+                if address in committed_evidence:
+                    retained[address] = committed_evidence[address]
+                    continue
+                if address in roots:
+                    retained[address] = (
+                        "live registration closure leaf, bound by %s"
+                        % ", ".join(roots[address]))
+                    continue
+                referenced_by = None
+                for table, column in self._LEDGER_ADDRESS_COLUMNS:
+                    if cur.execute(
+                            "SELECT 1 FROM %s WHERE %s = ?"
+                            % (table, column), (address,)
+                    ).fetchone() is not None:
+                        referenced_by = "%s.%s" % (table, column)
+                        break
+                if referenced_by is not None:
+                    retained[address] = (
+                        "referenced by ledger column %s" % referenced_by)
+                    continue
+                if self.store.remove(address):
+                    removed.append(address)
+                else:
+                    retained[address] = "no bytes at this address"
+            if removed:
+                journal.append(cur, journal.transition_record(
+                    machine="content_store", subject_id=mint_id("rc"),
+                    rule="ch4:reclaim", to_state="RECLAIMED",
+                    recorded_utc=now,
+                    facts={"removed": removed,
+                           "retained_count": len(retained)}))
+            return {"removed": removed, "retained": retained}
 
     # ------------------------------------------------ attempt execution
     #
@@ -1469,6 +2036,12 @@ class Sequencer:
                 raise ConflictError(
                     "witness admission refused (cross-execution identity,"
                     " D-C3-5): %s" % "; ".join(conflicts))
+            auth_conflict = witness_semantics.authorization_direction_conflict(
+                witness_kind, data)
+            if auth_conflict:
+                raise ConflictError(
+                    "witness admission refused (contradictory authorization,"
+                    " D-C4-14): %s" % auth_conflict)
             address = self.store.put(data)
             existing = cur.execute(
                 "SELECT admission_id FROM attempt_witnesses WHERE attempt_id = ?"
@@ -1767,13 +2340,82 @@ class Sequencer:
                 recorded_utc=now, facts=facts))
             return to_state
 
+    def _attempt_contract_payload(self, cur, att):
+        """The durable obj-09 AttemptContract payload for one attempt (its
+        content reference must resolve; D-66 on the read)."""
+        row = cur.execute(
+            "SELECT content_address FROM objects WHERE object_hash = ?",
+            (att["attempt_contract_hash"],)).fetchone()
+        if row is None:
+            raise IntegrityHalt(
+                "attempt %s names AttemptContract %s that is not in the"
+                " ledger" % (att["attempt_id"],
+                             att["attempt_contract_hash"]))
+        return json.loads(
+            self.store.get(row["content_address"]).decode("utf-8"))
+
+    def _artifact_triples(self, cur, attempt_id):
+        """The attempt's admitted artifact provenance events as sorted
+        identity triples — the obj-16 ``artifacts`` binding's ledger
+        side."""
+        rows = cur.execute(
+            "SELECT logical_path, content_sha256, role"
+            " FROM attempt_artifacts WHERE attempt_id = ?"
+            " ORDER BY rowid", (attempt_id,)).fetchall()
+        return sorted(
+            ({"logical_path": r["logical_path"],
+              "content_sha256": r["content_sha256"], "role": r["role"]}
+             for r in rows),
+            key=lambda a: (a["logical_path"], a["content_sha256"]))
+
+    def candidate_state(self, attempt_id):
+        """The git_adapter's public read surface (cap-31/cap-32): one
+        FINISHED attempt's identities, frozen record facts, durable
+        AttemptContract source state and admitted artifact provenance —
+        everything obj-16 binds that the ledger holds. The adapter adds
+        only what Git owns (the candidate tree, cap-42)."""
+        cur = self.db.conn.cursor()
+        att = self._attempt(cur, attempt_id)
+        if att["state"] != "FINISHED":
+            raise ConflictError(
+                "candidate capture is defined at FINISHED only, found %s"
+                % att["state"])
+        seq = self._sequence(cur, att["sequence_id"])
+        payload = self._verified_record(cur, seq["record_hash"])
+        contract = self._attempt_contract_payload(cur, att)
+        return {"attempt_id": att["attempt_id"],
+                "sequence_id": att["sequence_id"],
+                "fence": att["fence"],
+                "attempt_contract_hash": att["attempt_contract_hash"],
+                "record_hash": seq["record_hash"],
+                "requirement_digest": seq["requirement_digest"],
+                "contract_digest": seq["contract_digest"],
+                "finalization_class": payload["finalization_class"],
+                "source_state": dict(contract["source_state"]),
+                "artifacts": self._artifact_triples(cur, attempt_id)}
+
+    def _candidate_row(self, cur, attempt_id):
+        """The attempt's ONE admitted obj-16 row (freeze admission's
+        durable half); its absence past CANDIDATE_FROZEN is forged state."""
+        return cur.execute(
+            "SELECT * FROM attempt_candidates WHERE attempt_id = ?",
+            (attempt_id,)).fetchone()
+
     def freeze_candidate(self, attempt_id, expected_fence, candidate_address):
-        """t-a05 FINISHED→CANDIDATE_FROZEN plus t-s07 (M4): the Sequence
-        follows its attempt into CANDIDATE_FROZEN in the same transaction —
-        both registered rows share the trigger (the attempt finished per its
-        completion policy, obj-16 by reference) and fence_matches, so the
-        presented fence, each row's fence and the owning Sequence's fence
-        are conditions of the mutating SQL."""
+        """t-a05 FINISHED→CANDIDATE_FROZEN plus t-s07, now carrying the
+        FULL obj-16 admission (C4-M1): both registered rows REQUIRE the
+        CandidateReceipt, so the presented bytes must BE their own
+        canonical form, validate against the mirrored obj-16 schema (kind,
+        minter git_adapter, shape), and bind this exact attempt on every
+        ledger-derivable member — attempt identity and CURRENT fence,
+        attempt_contract_hash, record/requirement/contract digests, the
+        frozen record's finalization_class, the durable AttemptContract's
+        source_state, and the admitted artifact provenance triples. The
+        class/tree coupling is enforced here (SOURCE_MODIFYING binds a
+        candidate Git tree; READ_ONLY must not invent one). A validated
+        receipt commits its ``attempt_candidates`` row — ONE per attempt,
+        the immutability anchor every obj-19/obj-20 then binds — in the
+        same transaction as t-a05/t-s07, journaled."""
         now = instant(self.clock.now())
         with self.db.transaction() as cur:
             self._assert_lease(cur)
@@ -1794,6 +2436,100 @@ class Sequencer:
                 raise ConflictError(
                     "candidate %s does not resolve (t-a05 requires obj-16)"
                     % candidate_address)
+            data = self.store.get(candidate_address)
+            try:
+                payload = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                raise ConflictError(
+                    "candidate bytes are not UTF-8 JSON (obj-16)")
+            if not isinstance(payload, dict) or \
+                    verification_receipts.receipt_bytes(payload) != data:
+                raise ConflictError(
+                    "candidate bytes are not their own canonical form: the"
+                    " admitted address must be the payload's identity")
+            issues = verification_receipts.validate_candidate(payload)
+            if issues:
+                raise ConflictError(
+                    "candidate failed obj-16 schema validation: %s"
+                    % "; ".join(repr(issue) for issue in issues))
+            identity = payload["attempt"]
+            if (identity["sequence_id"] != att["sequence_id"]
+                    or identity["attempt_id"] != att["attempt_id"]
+                    or identity["fence"] != seq["fence"]):
+                raise ConflictError(
+                    "obj-16 attempt identity %r does not bind this attempt"
+                    " at its current fence (INV-13)" % (identity,))
+            if payload["attempt_contract_hash"] != \
+                    att["attempt_contract_hash"]:
+                raise ConflictError(
+                    "obj-16 attempt_contract_hash must match the durable"
+                    " contract")
+            if (payload["record_hash"] != seq["record_hash"]
+                    or payload["requirement_digest"]
+                    != seq["requirement_digest"]
+                    or payload["contract_digest"]
+                    != seq["contract_digest"]):
+                raise ConflictError(
+                    "obj-16 frozen record identities do not match the"
+                    " Sequence's durable tiers")
+            record_payload = self._verified_record(cur, seq["record_hash"])
+            if payload["finalization_class"] != \
+                    record_payload["finalization_class"]:
+                raise ConflictError(
+                    "obj-16 finalization_class %r is not the frozen"
+                    " record's %r" % (payload["finalization_class"],
+                                      record_payload["finalization_class"]))
+            contract = self._attempt_contract_payload(cur, att)
+            if payload["source_state"] != contract["source_state"]:
+                raise ConflictError(
+                    "obj-16 source_state does not equal the durable"
+                    " AttemptContract's frozen source state (INV-02)")
+            if payload["artifacts"] != self._artifact_triples(cur,
+                                                              attempt_id):
+                raise ConflictError(
+                    "obj-16 artifacts do not equal the admitted artifact"
+                    " provenance events (INV-03: the candidate's artifact"
+                    " set is the ledger's, never a caller claim)")
+            tree = payload.get("candidate_tree")
+            if payload["finalization_class"] == "SOURCE_MODIFYING":
+                if tree is None:
+                    raise ConflictError(
+                        "SOURCE_MODIFYING work binds the candidate Git"
+                        " tree identity (obj-16)")
+            elif tree is not None:
+                raise ConflictError(
+                    "READ_ONLY work gains no invented candidate tree"
+                    " (obj-16)")
+            existing = self._candidate_row(cur, attempt_id)
+            if existing is not None:
+                # The unique index is candidate immutability's durable
+                # half; an identical re-freeze is unreachable (state gate),
+                # so any row here is a conflicting second candidate.
+                raise ConflictError(
+                    "attempt %s already has an admitted candidate %s:"
+                    " candidates are immutable, one per attempt"
+                    % (attempt_id, existing["content_sha256"]))
+            admission_id = mint_id("cnd")
+            cur.execute(
+                "INSERT INTO attempt_candidates (admission_id, attempt_id,"
+                " content_sha256, finalization_class, candidate_tree,"
+                " admitted_utc) VALUES (?, ?, ?, ?, ?, ?)",
+                (admission_id, attempt_id, candidate_address,
+                 payload["finalization_class"],
+                 tree["git_tree_sha"] if tree is not None else None, now))
+            admission_facts = {"attempt_id": attempt_id,
+                               "sequence_id": att["sequence_id"],
+                               "content_sha256": candidate_address,
+                               "finalization_class":
+                                   payload["finalization_class"],
+                               "minter": payload["minter"],
+                               "fence": seq["fence"]}
+            if tree is not None:  # D-37
+                admission_facts["candidate_tree"] = tree["git_tree_sha"]
+            journal.append(cur, journal.transition_record(
+                machine="attempt_candidate", subject_id=admission_id,
+                rule="ch4:admit-candidate", to_state="ADMITTED",
+                recorded_utc=now, facts=admission_facts))
             self._cas_attempt(cur, att, "CANDIDATE_FROZEN", now,
                               require_sequence_fence=True)
             facts = self._quadruple(att)
@@ -2070,11 +2806,66 @@ class Sequencer:
                 self.store.get(row["content_address"]).decode("utf-8"))
             if (registration.get("kind") == "VerifierRegistration"
                     and registration.get("verifier_id") == verifier_id):
-                return registration
+                return registration, registration_hash
         raise IntegrityHalt(
             "assertion verifier %r has no bound registration in the frozen"
             " record (SEM-07 was enforced at freeze; the record is"
             " self-inconsistent)" % verifier_id)
+
+    def _bound_transform_registration(self, cur, payload, transform_id):
+        """Resolve a declared role transform to its bound
+        TransformRegistration (SEM-06/K-2 at freeze). INV-53 exactly as
+        for verifiers: a bound registration that no longer resolves — the
+        ledger row or its exact bytes — HALTs and is never substituted."""
+        for registration_hash in payload.get("resolved_bindings", {}).get(
+                "transform_registrations", []):
+            row = cur.execute(
+                "SELECT content_address FROM objects WHERE object_hash = ?",
+                (registration_hash,)).fetchone()
+            if row is None:
+                raise IntegrityHalt(
+                    "bound transform registration %s is not in the ledger"
+                    " (INV-53: never substituted)" % registration_hash)
+            if not self.store.has(row["content_address"]):
+                raise IntegrityHalt(
+                    "bound transform registration %s has lost its bytes"
+                    " (INV-53/D-66 HALT)" % registration_hash)
+            registration = json.loads(
+                self.store.get(row["content_address"]).decode("utf-8"))
+            if (registration.get("kind") == "TransformRegistration"
+                    and registration.get("transform_id") == transform_id):
+                return registration, registration_hash
+        raise IntegrityHalt(
+            "role transform %r has no bound registration in the frozen"
+            " record (SEM-06/K-2 was enforced at freeze; the record is"
+            " self-inconsistent)" % transform_id)
+
+    def _observed_prompt_identity(self, cur, attempt_id):
+        """INV-49's OBSERVED side: the child's received-prompt identity,
+        derived only from admitted obj-11 producer bytes (the provider's
+        persisted task record carries the prompt the child was actually
+        given; witness_semantics derives its content identity). A runner
+        or child CLAIM is never evidence. Returns the one identity, or
+        None when no admitted producer record carries one; DISTINCT
+        identities across the admitted set are an ambiguity refusal, never
+        chosen from."""
+        digests = set()
+        for row in cur.execute(
+                "SELECT content_sha256 FROM attempt_witnesses"
+                " WHERE attempt_id = ? AND witness_kind = 'obj-11'",
+                (attempt_id,)).fetchall():
+            facts = witness_semantics.extract_facts(
+                "obj-11", self.store.get(row["content_sha256"]))
+            value = facts.get("prompt_sha256")
+            if isinstance(value, str) and value:
+                digests.add(value)
+        if len(digests) > 1:
+            raise ConflictError(
+                "admitted obj-11 evidence carries %d DISTINCT received-"
+                "prompt identities for attempt %s: ambiguous producer"
+                " evidence is refused (INV-49), never chosen from"
+                % (len(digests), attempt_id))
+        return digests.pop() if digests else None
 
     def _verification_context(self, cur, attempt_id, expected_fence=None):
         """The shared M4 gates: the attempt holds EVIDENCE_COMPLETE, its
@@ -2120,17 +2911,176 @@ class Sequencer:
             " attempt (duplicate result admissions never overwrite)"
             % assertion_id)
 
+    def _environment_row(self, cur, attempt_id):
+        return cur.execute(
+            "SELECT * FROM attempt_environments WHERE attempt_id = ?",
+            (attempt_id,)).fetchone()
+
+    def _bind_environment(self, cur, att, environment, now):
+        """The obj-18 admission half (C4-M1): ONE captured environment per
+        attempt, immutable. Supplied bytes are validated against the frozen
+        Chapter 1 schema and this attempt's identity, then admitted (first
+        capture) or matched byte-identically against the already-admitted
+        capture — a different capture is refused, so restart or retry can
+        never recapture its way to a more favorable environment. Returns
+        the bound environment's content address (or None when the attempt
+        has none yet and none was supplied)."""
+        row = self._environment_row(cur, att["attempt_id"])
+        if environment is None:
+            return row["content_sha256"] if row is not None else None
+        environment = bytes(environment)
+        try:
+            env_payload = json.loads(environment.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise ConflictError(
+                "environment bytes are not UTF-8 JSON (obj-18)")
+        refusal = validate_environment_capture(env_payload, att)
+        if refusal is not None:
+            raise ConflictError(refusal)
+        address = self.store.put(environment)
+        if row is not None:
+            if row["content_sha256"] != address:
+                raise ConflictError(
+                    "attempt %s already has its admitted obj-18 capture %s:"
+                    " the environment is captured once and never replaced"
+                    % (att["attempt_id"], row["content_sha256"]))
+            return address
+        admission_id = mint_id("env")
+        cur.execute(
+            "INSERT INTO attempt_environments (admission_id, attempt_id,"
+            " content_sha256, admitted_utc) VALUES (?, ?, ?, ?)",
+            (admission_id, att["attempt_id"], address, now))
+        journal.append(cur, journal.transition_record(
+            machine="attempt_environment", subject_id=admission_id,
+            rule="ch4:admit-environment", to_state="ADMITTED",
+            recorded_utc=now,
+            facts={"attempt_id": att["attempt_id"],
+                   "sequence_id": att["sequence_id"],
+                   "content_sha256": address,
+                   "minter": "environment_probe",
+                   "fence": att["fence"]}))
+        return address
+
+    def admit_environment_capture(self, attempt_id, data):
+        """The obj-18 admission seam (cap-33's durable half, C4-M1): admit
+        the probe's capture for an EVIDENCE_COMPLETE attempt BEFORE any
+        verifier launch, so the captured environment is an immutable
+        durable proof object — restart resumes from it and never
+        recaptures its way to a more favorable environment (the crash
+        matrix's capture-before-launch point). Idempotent on identical
+        bytes; a different capture for the same attempt is refused."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            att, _seq = self._verification_context(cur, attempt_id)
+            before = self._environment_row(cur, attempt_id)
+            address = self._bind_environment(cur, att, bytes(data), now)
+            return {"environment_address": address,
+                    "duplicate": before is not None}
+
+    def verification_state(self, attempt_id):
+        """The verifier_runner's public read surface (cap-35 consuming
+        cap-30/cap-32/cap-33): one EVIDENCE_COMPLETE attempt's identities,
+        frozen record payload, declared assertions, the admitted obj-16
+        candidate (address and payload) and the admitted obj-18
+        environment address when one exists."""
+        cur = self.db.conn.cursor()
+        att = self._attempt(cur, attempt_id)
+        seq = self._sequence(cur, att["sequence_id"])
+        if att["state"] != "EVIDENCE_COMPLETE":
+            raise ConflictError(
+                "verification is defined at EVIDENCE_COMPLETE only,"
+                " found %s" % att["state"])
+        record_payload = self._verified_record(cur, seq["record_hash"])
+        candidate = self._candidate_row(cur, attempt_id)
+        if candidate is None:
+            raise IntegrityHalt(
+                "attempt %s is past CANDIDATE_FROZEN with no admitted"
+                " obj-16 candidate (forged state)" % attempt_id)
+        env_row = self._environment_row(cur, attempt_id)
+        assertions = record_payload.get(
+            "acceptance_assertions", {}).get(
+            "ids_and_environment_constraints", [])
+        registrations = {}
+        for entry in assertions:
+            if entry.get("mode") != "DETERMINISTIC":
+                continue
+            verifier_id = entry.get("verifier_id")
+            if verifier_id in registrations:
+                continue
+            registration, registration_hash = \
+                self._bound_verifier_registration(cur, record_payload,
+                                                  verifier_id)
+            registrations[verifier_id] = {
+                "payload": registration,
+                "object_sha256": registration_hash}
+        state = {"attempt_id": att["attempt_id"],
+                 "sequence_id": att["sequence_id"],
+                 "fence": att["fence"],
+                 "version": att["version"],
+                 "attempt_contract_hash": att["attempt_contract_hash"],
+                 "record_hash": seq["record_hash"],
+                 "record_payload": record_payload,
+                 "assertions": assertions,
+                 "registrations": registrations,
+                 "candidate_receipt_sha256": candidate["content_sha256"],
+                 "candidate_payload": json.loads(self.store.get(
+                     candidate["content_sha256"]).decode("utf-8"))}
+        if env_row is not None:
+            state["environment_sha256"] = env_row["content_sha256"]
+        # C4-M2: the dispatched role, its declared transform binding (when
+        # the frozen record names one) and the admitted attestations — the
+        # runner's read surface for the role-transform check and the
+        # BY_ATTESTATION incorporation. D-37: absent facts are omitted.
+        call_row = cur.execute(
+            "SELECT * FROM attempt_calls WHERE attempt_id = ?",
+            (attempt_id,)).fetchone()
+        if call_row is not None:
+            state["role"] = call_row["role"]
+            state["projection_address"] = call_row["projection_address"]
+            transform_id = record_payload.get(
+                "role_transforms", {}).get(call_row["role"])
+            if transform_id is not None:
+                registration, registration_hash = \
+                    self._bound_transform_registration(
+                        cur, record_payload, transform_id)
+                state["role_transform"] = {
+                    "role": call_row["role"],
+                    "transform_id": transform_id,
+                    "payload": registration,
+                    "object_sha256": registration_hash,
+                }
+        attestations = {row["assertion_id"]: row["content_sha256"]
+                        for row in cur.execute(
+                            "SELECT assertion_id, content_sha256"
+                            " FROM attempt_attestations"
+                            " WHERE attempt_id = ?",
+                            (attempt_id,)).fetchall()}
+        if attestations:
+            state["attestations"] = attestations
+        return state
+
     def register_verifier_result(self, attempt_id, assertion_id, outcome,
                                  by, receipt, environment=None):
-        """Admit one verifier-runner result for a DETERMINISTIC assertion
-        (the typed interface's write side): outcome PASS/FAIL/INCONCLUSIVE
-        with the runner's exact receipt bytes (obj-19 on PASS, obj-20 on
-        FAIL), eligibility re-evaluated from the registered requirements
-        (SEM-16/D-57), the bound registration resolved or HALT (INV-53),
-        and — when the assertion declares an environment constraint — the
-        obj-18 capture bound to this exact attempt and matched against the
-        declaration (a mismatch is refused; t-s12's env_mismatch arm is the
-        sequence-level HALT the caller then applies)."""
+        """Admit one verifier-runner result for a DETERMINISTIC assertion —
+        since C4-M1 the FULL canonical obj-19/obj-20 admission: outcome
+        PASS/FAIL/INCONCLUSIVE with the runner's exact receipt bytes, which
+        must BE their own canonical form, validate against the mirrored
+        Chapter 4 schema for their kind, agree with the declared outcome,
+        and bind — by equality against durable ledger facts — the exact
+        Attempt (identity and CURRENT fence), the frozen record
+        (attempt_contract_hash, record_hash, the D-47 assertion part
+        reference), the admitted obj-16 candidate, the attempt's ONE
+        admitted obj-18 environment, and the exact bound registration
+        (object hash, registration_id, artifact_root). Eligibility is
+        re-evaluated from the registered requirements (SEM-16/D-57), the
+        bound registration resolves or HALTs (INV-53), and a declared
+        environment constraint is matched against the bound capture (a
+        mismatch is refused; t-s12's env_mismatch arm is the sequence-level
+        HALT the caller then applies). INV-17's binding is therefore
+        enforced at this seam: a receipt for another candidate, another
+        environment, another registration, another assertion or another
+        attempt dies here (CH4-verification-binding)."""
         if outcome not in VERIFIER_OUTCOMES:
             raise ConflictError(
                 "outcome %r is not in the verifier vocabulary %r"
@@ -2151,33 +3101,136 @@ class Sequencer:
                     "assertion %r is %s: it passes only by your attestation"
                     " (D-52), never by a verifier result"
                     % (assertion_id, assertion.get("mode")))
-            registration = self._bound_verifier_registration(
-                cur, payload, assertion.get("verifier_id"))
+            registration, registration_hash = \
+                self._bound_verifier_registration(
+                    cur, payload, assertion.get("verifier_id"))
             refusal = verifier_eligibility(assertion, registration)
             if refusal is not None:
                 raise ConflictError(refusal)
-            env_address = None
+            candidate = self._candidate_row(cur, attempt_id)
+            if candidate is None:
+                raise IntegrityHalt(
+                    "attempt %s is past CANDIDATE_FROZEN with no admitted"
+                    " obj-16 candidate (forged state)" % attempt_id)
+            env_address = self._bind_environment(cur, att, environment, now)
             constraint = assertion.get("environment_constraint")
-            if constraint is not None and environment is None:
+            if env_address is None:
                 raise ConflictError(
-                    "assertion %r declares an environment constraint:"
-                    " the obj-18 capture is required" % assertion_id)
-            if environment is not None:
-                # Supplied evidence is never silently dropped (review
-                # finding): it is scope-validated and stored whether or not
-                # a constraint binds it.
-                environment = bytes(environment)
-                env_payload = json.loads(environment.decode("utf-8"))
-                refusal = validate_environment_capture(env_payload, att)
+                    "no obj-18 capture is bound to attempt %s: every"
+                    " verification receipt binds the attempt's admitted"
+                    " environment (D-56/INV-17)" % attempt_id)
+            if constraint is not None:
+                env_payload = json.loads(
+                    self.store.get(env_address).decode("utf-8"))
+                refusal = environment_satisfies(constraint, env_payload)
                 if refusal is not None:
-                    raise ConflictError(refusal)
-                if constraint is not None:
-                    refusal = environment_satisfies(constraint, env_payload)
-                    if refusal is not None:
-                        raise ConflictError(
-                            "environment mismatch (t-s12 env_mismatch): %s"
-                            % refusal)
-                env_address = self.store.put(environment)
+                    raise ConflictError(
+                        "environment mismatch (t-s12 env_mismatch): %s"
+                        % refusal)
+            try:
+                receipt_payload = json.loads(receipt.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                raise ConflictError(
+                    "receipt bytes are not UTF-8 JSON (obj-19/obj-20)")
+            if not isinstance(receipt_payload, dict) or \
+                    verification_receipts.receipt_bytes(receipt_payload) \
+                    != receipt:
+                raise ConflictError(
+                    "receipt bytes are not their own canonical form: the"
+                    " admitted address must be the payload's identity")
+            issues = verification_receipts.validate_result_receipt(
+                receipt_payload)
+            if issues:
+                raise ConflictError(
+                    "receipt failed obj-19/obj-20 schema validation: %s"
+                    % "; ".join(repr(issue) for issue in issues))
+            expected_kind = verification_receipts.RESULT_KINDS[outcome]
+            if receipt_payload["kind"] != expected_kind:
+                raise ConflictError(
+                    "outcome %s must carry %s bytes, not %r"
+                    % (outcome, expected_kind, receipt_payload["kind"]))
+            if receipt_payload["outcome"] != outcome:
+                raise ConflictError(
+                    "receipt outcome %r does not agree with the declared"
+                    " outcome %s" % (receipt_payload["outcome"], outcome))
+            if receipt_payload["kind"] == "VerificationFailureReceipt":
+                allowed = verification_receipts.CONCLUSION_BASES[outcome]
+                if receipt_payload["conclusion_basis"] not in allowed:
+                    raise ConflictError(
+                        "conclusion_basis %r is not registered for outcome"
+                        " %s (authority uncertainty is never an ordinary"
+                        " FAIL)" % (receipt_payload["conclusion_basis"],
+                                    outcome))
+            identity = receipt_payload["attempt"]
+            if (identity["sequence_id"] != att["sequence_id"]
+                    or identity["attempt_id"] != att["attempt_id"]
+                    or identity["fence"] != seq["fence"]):
+                raise ConflictError(
+                    "receipt attempt identity %r does not bind this attempt"
+                    " at its current fence (INV-13/INV-18: a stale or"
+                    " foreign receipt has no authority)" % (identity,))
+            if receipt_payload["attempt_contract_hash"] != \
+                    att["attempt_contract_hash"]:
+                raise ConflictError(
+                    "receipt attempt_contract_hash must match the durable"
+                    " contract (INV-17)")
+            if receipt_payload["record_hash"] != seq["record_hash"]:
+                raise ConflictError(
+                    "receipt record_hash must match the Sequence's frozen"
+                    " record (INV-17)")
+            if receipt_payload["candidate_receipt_sha256"] != \
+                    candidate["content_sha256"]:
+                raise ConflictError(
+                    "receipt binds candidate %r, not the attempt's admitted"
+                    " obj-16 %s (INV-17: the verified subject is the frozen"
+                    " candidate)" % (
+                        receipt_payload["candidate_receipt_sha256"],
+                        candidate["content_sha256"]))
+            if receipt_payload["environment_sha256"] != env_address:
+                raise ConflictError(
+                    "receipt binds environment %r, not the attempt's"
+                    " admitted obj-18 %s (INV-17)"
+                    % (receipt_payload["environment_sha256"], env_address))
+            part = receipt_payload["assertion"]["part"]
+            if (part["record"] != seq["record_hash"]
+                    or part["part_id"] != assertion_id):
+                raise ConflictError(
+                    "receipt assertion part reference %r does not name"
+                    " assertion %r of the frozen record (D-47)"
+                    % (part, assertion_id))
+            if receipt_payload["assertion"]["verifier_id"] != \
+                    assertion.get("verifier_id"):
+                raise ConflictError(
+                    "receipt verifier_id %r is not the assertion's declared"
+                    " verifier %r" % (
+                        receipt_payload["assertion"]["verifier_id"],
+                        assertion.get("verifier_id")))
+            bound_registration = receipt_payload["registration"]
+            if (bound_registration["object_sha256"] != registration_hash
+                    or bound_registration["registration_id"]
+                    != registration["registration_id"]
+                    or bound_registration["artifact_root"]
+                    != registration["artifact_root"]):
+                raise ConflictError(
+                    "receipt registration %r is not the frozen record's"
+                    " bound registration %s (INV-52/INV-53: only the exact"
+                    " registered verifier produces results)"
+                    % (bound_registration, registration_hash))
+            # F-C4-1: the claimed outcome must agree with the durable
+            # execution evidence — the exact output bytes must resolve and
+            # support it under the registered result protocol.
+            output_address = receipt_payload["execution"]["output_sha256"]
+            if not self.store.has(output_address):
+                raise ConflictError(
+                    "the receipt's execution output evidence %s does not"
+                    " resolve in the content store (F-C4-1: an outcome"
+                    " without evidence has no authority)" % output_address)
+            refusal = verification_receipts.outcome_consistency(
+                receipt_payload, self.store.get(output_address))
+            if refusal is not None:
+                raise ConflictError(
+                    "receipt outcome disagrees with its execution evidence"
+                    " (F-C4-1): %s" % refusal)
             receipt_address = self.store.put(receipt)
             existing = self._existing_verification(
                 cur, attempt_id, assertion_id, outcome, receipt_address,
@@ -2210,13 +3263,320 @@ class Sequencer:
             return {"verification_id": verification_id,
                     "receipt_address": receipt_address, "duplicate": False}
 
-    def attest_assertion(self, attempt_id, assertion_id, attestation):
-        """D-52: your ManualAttestation.ASSERTION satisfies one
-        HUMAN_ATTESTED assertion — durable identity (minted by you),
-        provenance (the attested verdict, preserved by exact bytes and
-        journaled) and scope binding (this attempt, this assertion, this
-        contract hash). Recorded BEFORE conclude_verification can commit
-        t-s10 (attestation_before_commit_if_source_human_required)."""
+    def register_transform_check(self, attempt_id, role, outcome, by,
+                                 receipt, environment=None):
+        """Admit one role-transform check result (C4-M2, INV-44/INV-49):
+        the after-the-fact proof that the child dispatched for ``role``
+        RECEIVED exactly the declared registered transform's output over
+        the frozen record's declared specification input.
+
+        The ledger row key is ``role-transform/<role>`` (the name_id
+        grammar forbids ``/``, so no assertion id can collide); outcome
+        PASS/FAIL/INCONCLUSIVE with the runner's canonical obj-19/obj-20
+        bytes on the ROLE_TRANSFORM arm, under the same INV-17 binding
+        authority as assertion results.
+
+        D-C3-2-grade admission: for any completed-transform claim (exit 0)
+        this seam RE-EXECUTES the bound transform closure over the exact
+        declared input bytes and refuses a receipt whose expected output
+        identity is not the one it just re-derived. The OBSERVED identity
+        comes only from admitted obj-11 producer bytes (exactly one
+        distinct recorded prompt identity; zero admits only INCONCLUSIVE
+        missing_producer_evidence; several distinct are an ambiguity
+        refusal) — a child claiming "this is the prompt I received" is not
+        enough, and neither is the runner (INV-49). When the attempt's
+        projection carries transform_provenance, the dispatcher's claim
+        must agree with the re-derivation (INV-44: dispatcher drift dies
+        at this seam too)."""
+        if outcome not in VERIFIER_OUTCOMES:
+            raise ConflictError(
+                "outcome %r is not in the verifier vocabulary %r"
+                % (outcome, VERIFIER_OUTCOMES))
+        if by != RESULT_PRODUCER:
+            raise ConflictError(
+                "%r is not the registered obj-19/obj-20 minter %r"
+                % (by, RESULT_PRODUCER))
+        receipt = bytes(receipt)
+        row_key = "role-transform/%s" % role
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            att, seq = self._verification_context(cur, attempt_id)
+            payload = self._verified_record(cur, seq["record_hash"])
+            transform_id = payload.get("role_transforms", {}).get(role)
+            if transform_id is None:
+                raise ConflictError(
+                    "the frozen record declares no transform for role %r"
+                    " (INV-49 checks declared role transforms only)"
+                    % (role,))
+            call = self._attempt_call(cur, attempt_id)
+            if call["role"] != role:
+                raise ConflictError(
+                    "attempt %s dispatched role %r, not %r: the role-"
+                    "transform check verifies the child that actually ran"
+                    % (attempt_id, call["role"], role))
+            registration, registration_hash = \
+                self._bound_transform_registration(cur, payload,
+                                                   transform_id)
+            candidate = self._candidate_row(cur, attempt_id)
+            if candidate is None:
+                raise IntegrityHalt(
+                    "attempt %s is past CANDIDATE_FROZEN with no admitted"
+                    " obj-16 candidate (forged state)" % attempt_id)
+            env_address = self._bind_environment(cur, att, environment, now)
+            if env_address is None:
+                raise ConflictError(
+                    "no obj-18 capture is bound to attempt %s: every"
+                    " BY_VERIFIER receipt binds the attempt's admitted"
+                    " environment (D-56/INV-17)" % attempt_id)
+            inputs = payload.get("specification_inputs", {}).get(
+                "name_to_exact_byte_sha256", {})
+            if len(inputs) != 1:
+                raise ConflictError(
+                    "the frozen record declares %d specification inputs;"
+                    " the v1 role-transform binding is defined over exactly"
+                    " ONE (the child's prompt is the declared transform's"
+                    " output over the record's single specification input)"
+                    % len(inputs))
+            input_name = sorted(inputs)[0]
+            input_address = inputs[input_name]
+            if not self.store.has(input_address):
+                raise IntegrityHalt(
+                    "declared specification input %r (%s) has lost its"
+                    " bytes (INV-53/D-66 HALT)"
+                    % (input_name, input_address))
+            try:
+                receipt_payload = json.loads(receipt.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                raise ConflictError(
+                    "receipt bytes are not UTF-8 JSON (obj-19/obj-20)")
+            if not isinstance(receipt_payload, dict) or \
+                    verification_receipts.receipt_bytes(receipt_payload) \
+                    != receipt:
+                raise ConflictError(
+                    "receipt bytes are not their own canonical form: the"
+                    " admitted address must be the payload's identity")
+            issues = verification_receipts.validate_result_receipt(
+                receipt_payload)
+            if issues:
+                raise ConflictError(
+                    "receipt failed obj-19/obj-20 schema validation: %s"
+                    % "; ".join(repr(issue) for issue in issues))
+            part = receipt_payload["assertion"]["part"]
+            if part.get("part_kind") != "ROLE_TRANSFORM":
+                raise ConflictError(
+                    "this seam admits ROLE_TRANSFORM results only; the"
+                    " receipt names part_kind %r (D-47: a result for one"
+                    " part kind never satisfies another)"
+                    % (part.get("part_kind"),))
+            expected_kind = verification_receipts.RESULT_KINDS[outcome]
+            if receipt_payload["kind"] != expected_kind:
+                raise ConflictError(
+                    "outcome %s must carry %s bytes, not %r"
+                    % (outcome, expected_kind, receipt_payload["kind"]))
+            if receipt_payload["outcome"] != outcome:
+                raise ConflictError(
+                    "receipt outcome %r does not agree with the declared"
+                    " outcome %s" % (receipt_payload["outcome"], outcome))
+            if receipt_payload["kind"] == "VerificationFailureReceipt":
+                allowed = verification_receipts.TRANSFORM_CONCLUSION_BASES[
+                    outcome]
+                if receipt_payload["conclusion_basis"] not in allowed:
+                    raise ConflictError(
+                        "conclusion_basis %r is not registered for a"
+                        " ROLE_TRANSFORM %s (allowed: %s)"
+                        % (receipt_payload["conclusion_basis"], outcome,
+                           ", ".join(allowed)))
+            identity = receipt_payload["attempt"]
+            if (identity["sequence_id"] != att["sequence_id"]
+                    or identity["attempt_id"] != att["attempt_id"]
+                    or identity["fence"] != seq["fence"]):
+                raise ConflictError(
+                    "receipt attempt identity %r does not bind this attempt"
+                    " at its current fence (INV-13/INV-18)" % (identity,))
+            if receipt_payload["attempt_contract_hash"] != \
+                    att["attempt_contract_hash"]:
+                raise ConflictError(
+                    "receipt attempt_contract_hash must match the durable"
+                    " contract (INV-17)")
+            if receipt_payload["record_hash"] != seq["record_hash"]:
+                raise ConflictError(
+                    "receipt record_hash must match the Sequence's frozen"
+                    " record (INV-17)")
+            if receipt_payload["candidate_receipt_sha256"] != \
+                    candidate["content_sha256"]:
+                raise ConflictError(
+                    "receipt binds candidate %r, not the attempt's admitted"
+                    " obj-16 %s (INV-17)" % (
+                        receipt_payload["candidate_receipt_sha256"],
+                        candidate["content_sha256"]))
+            if receipt_payload["environment_sha256"] != env_address:
+                raise ConflictError(
+                    "receipt binds environment %r, not the attempt's"
+                    " admitted obj-18 %s (INV-17)"
+                    % (receipt_payload["environment_sha256"], env_address))
+            if part["record"] != seq["record_hash"] or \
+                    part["part_id"] != role:
+                raise ConflictError(
+                    "receipt part reference %r does not name the frozen"
+                    " record's role-transform binding for %r (D-47)"
+                    % (part, role))
+            if receipt_payload["assertion"]["verifier_id"] != transform_id:
+                raise ConflictError(
+                    "receipt verifier_id %r is not the declared transform"
+                    " %r (INV-44)" % (
+                        receipt_payload["assertion"]["verifier_id"],
+                        transform_id))
+            bound_registration = receipt_payload["registration"]
+            if (bound_registration["object_sha256"] != registration_hash
+                    or bound_registration["registration_id"]
+                    != registration["registration_id"]
+                    or bound_registration["artifact_root"]
+                    != registration["artifact_root"]):
+                raise ConflictError(
+                    "receipt registration %r is not the frozen record's"
+                    " bound transform registration %s (INV-52/INV-53: only"
+                    " the exact registered transform is the A1 authority)"
+                    % (bound_registration, registration_hash))
+            check = receipt_payload["transform_check"]
+            if check["input_name"] != input_name or \
+                    check["input_sha256"] != input_address:
+                raise ConflictError(
+                    "receipt transform_check names input %r (%s); the"
+                    " frozen record's declared specification input is %r"
+                    " (%s) (INV-44: specification identity is exact bytes)"
+                    % (check["input_name"], check["input_sha256"],
+                       input_name, input_address))
+            output_address = receipt_payload["execution"]["output_sha256"]
+            if not self.store.has(output_address):
+                raise ConflictError(
+                    "the receipt's execution output evidence %s does not"
+                    " resolve in the content store (F-C4-1)"
+                    % output_address)
+            refusal = verification_receipts.outcome_consistency(
+                receipt_payload, self.store.get(output_address))
+            if refusal is not None:
+                raise ConflictError(
+                    "receipt outcome disagrees with its evidence (F-C4-1):"
+                    " %s" % refusal)
+            # INV-49's observed side: admitted producer bytes ONLY — the
+            # receipt may carry exactly what the admitted evidence derives,
+            # nothing else.
+            observed = self._observed_prompt_identity(cur, attempt_id)
+            claimed_observed = check.get("observed_sha256")
+            if observed is None and claimed_observed is not None:
+                raise ConflictError(
+                    "the receipt claims an observed prompt identity but no"
+                    " admitted obj-11 producer record carries one (INV-49:"
+                    " a claim is not producer evidence)")
+            if observed is not None and claimed_observed != observed:
+                raise ConflictError(
+                    "the receipt's observed prompt identity %r is not the"
+                    " admitted producer evidence %s (INV-49: observed is"
+                    " derived from admitted bytes, never claimed)"
+                    % (claimed_observed, observed))
+            # D-C3-2-grade re-derivation for completed-transform claims:
+            # the expected identity must be the one THIS admission just
+            # recomputed by executing the exact bound closure over the
+            # exact declared input bytes.
+            if receipt_payload["execution"]["exit_code"] == 0:
+                output_bytes, execution = transforms.execute_transform(
+                    self.store, registration,
+                    self.store.get(input_address))
+                if output_bytes is None:
+                    raise ConflictError(
+                        "the bound transform does not complete over the"
+                        " declared input (exit %r): the receipt's"
+                        " completed-transform claim does not re-derive"
+                        % (execution["exit_code"],))
+                derived = execution["output_sha256"]
+                if check.get("expected_sha256") != derived:
+                    raise ConflictError(
+                        "the receipt's expected output identity %r is not"
+                        " the admission's re-derived transform output %s"
+                        " (D-C3-2: full re-derivation, never trust)"
+                        % (check.get("expected_sha256"), derived))
+            # INV-44: the dispatcher's projected claim, when present, must
+            # agree with the re-derivation — never the other way round.
+            # The ledger only requires the projection address to RESOLVE
+            # (obj-10's canonical form arrived with chapter 3; older flows
+            # bind plain bytes), so a projection that is not a JSON object
+            # simply carries no claim — tolerance here grants nothing,
+            # because the check's authority is the re-derivation above.
+            provenance = None
+            try:
+                projection = json.loads(self.store.get(
+                    call["projection_address"]).decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                projection = None
+            if isinstance(projection, dict):
+                provenance = projection.get("transform_provenance")
+            if provenance is not None:
+                if (provenance.get("transform_id") != transform_id
+                        or provenance.get("registration")
+                        != registration_hash
+                        or provenance.get("input_name") != input_name
+                        or provenance.get("input_sha256") != input_address):
+                    raise ConflictError(
+                        "the projection's transform_provenance does not"
+                        " bind the frozen record's declared transform chain"
+                        " (INV-44: dispatcher drift)")
+                if (receipt_payload["execution"]["exit_code"] == 0
+                        and provenance.get("output_sha256")
+                        != check.get("expected_sha256")):
+                    raise ConflictError(
+                        "the projection claims transform output %r but the"
+                        " admission re-derived %s (INV-44: the dispatcher's"
+                        " claim never overrides the registered transform)"
+                        % (provenance.get("output_sha256"),
+                           check.get("expected_sha256")))
+            receipt_address = self.store.put(receipt)
+            existing = self._existing_verification(
+                cur, attempt_id, row_key, outcome, receipt_address,
+                env_address)
+            if existing is not None:
+                return existing
+            verification_id = mint_id("vr")
+            cur.execute(
+                "INSERT INTO attempt_verifications (verification_id,"
+                " attempt_id, assertion_id, mode, verifier_id, outcome,"
+                " by_principal, receipt_sha256, environment_sha256,"
+                " recorded_utc) VALUES (?, ?, ?, 'DETERMINISTIC', ?, ?, ?,"
+                " ?, ?, ?)",
+                (verification_id, attempt_id, row_key, transform_id,
+                 outcome, by, receipt_address, env_address, now))
+            journal.append(cur, journal.transition_record(
+                machine="attempt_verification", subject_id=verification_id,
+                rule="ch4:register-transform-check", to_state="RECORDED",
+                recorded_utc=now,
+                facts={"attempt_id": attempt_id,
+                       "sequence_id": att["sequence_id"],
+                       "role": role, "transform_id": transform_id,
+                       "outcome": outcome, "by": by,
+                       "receipt_sha256": receipt_address,
+                       "environment_sha256": env_address,
+                       "fence": att["fence"]}))
+            return {"verification_id": verification_id,
+                    "receipt_address": receipt_address, "duplicate": False}
+
+    def register_attested_result(self, attempt_id, assertion_id, by,
+                                 receipt):
+        """Admit the runner's canonical obj-19 BY_ATTESTATION result for
+        one HUMAN_ATTESTED assertion (C4-M2, D-52/D-53): the receipt bytes
+        must be their own canonical form, validate against the obj-19
+        schema's BY_ATTESTATION arm, and bind — by equality against
+        durable ledger facts — the exact Attempt at its CURRENT fence, the
+        frozen record, the admitted obj-16 candidate, the D-47 ASSERTION
+        part and the attempt's ADMITTED obj-37 attestation bytes. No
+        registration, no execution, no environment: an attestation is a
+        human act, and nothing here may dress it up as an execution. The
+        row's authority principal is YOU (the attester), not the
+        incorporating runner."""
+        if by != RESULT_PRODUCER:
+            raise ConflictError(
+                "%r is not the registered obj-19 minter %r"
+                % (by, RESULT_PRODUCER))
+        receipt = bytes(receipt)
         now = instant(self.clock.now())
         with self.db.transaction() as cur:
             self._assert_lease(cur)
@@ -2225,19 +3585,88 @@ class Sequencer:
             assertion = self._assertion(payload, assertion_id)
             if assertion.get("mode") != "HUMAN_ATTESTED":
                 raise ConflictError(
-                    "assertion %r is %s: DETERMINISTIC assertions are"
-                    " verified by the runner, never attested (D-52)"
+                    "assertion %r is %s: BY_ATTESTATION results exist only"
+                    " for HUMAN_ATTESTED assertions (D-52)"
                     % (assertion_id, assertion.get("mode")))
-            refusal = validate_assertion_attestation(
-                attestation, att, assertion_id)
-            if refusal is not None:
-                raise AdmissionError(refusal)
-            # The D-29 kind-grammar finding on t-i07 applies identically:
-            # obj-37's dotted kind has no object hash under Chapter 1 as
-            # frozen, so the attestation is preserved by exact bytes (D-31).
-            address = self.store.put(canonicalize(attestation))
+            candidate = self._candidate_row(cur, attempt_id)
+            if candidate is None:
+                raise IntegrityHalt(
+                    "attempt %s is past CANDIDATE_FROZEN with no admitted"
+                    " obj-16 candidate (forged state)" % attempt_id)
+            attestation_row = cur.execute(
+                "SELECT * FROM attempt_attestations WHERE attempt_id = ?"
+                " AND assertion_id = ?",
+                (attempt_id, assertion_id)).fetchone()
+            if attestation_row is None:
+                raise ConflictError(
+                    "no admitted obj-37 attestation exists for assertion %r"
+                    " of attempt %s: a BY_ATTESTATION result INCORPORATES"
+                    " an admitted attestation, never asserts one"
+                    % (assertion_id, attempt_id))
+            try:
+                receipt_payload = json.loads(receipt.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                raise ConflictError(
+                    "receipt bytes are not UTF-8 JSON (obj-19)")
+            if not isinstance(receipt_payload, dict) or \
+                    verification_receipts.receipt_bytes(receipt_payload) \
+                    != receipt:
+                raise ConflictError(
+                    "receipt bytes are not their own canonical form: the"
+                    " admitted address must be the payload's identity")
+            issues = verification_receipts.validate_result_receipt(
+                receipt_payload)
+            if issues:
+                raise ConflictError(
+                    "receipt failed obj-19 schema validation: %s"
+                    % "; ".join(repr(issue) for issue in issues))
+            if receipt_payload.get("result_source") != "BY_ATTESTATION":
+                raise ConflictError(
+                    "this seam admits the BY_ATTESTATION arm only; the"
+                    " receipt declares result_source %r"
+                    % (receipt_payload.get("result_source"),))
+            identity = receipt_payload["attempt"]
+            if (identity["sequence_id"] != att["sequence_id"]
+                    or identity["attempt_id"] != att["attempt_id"]
+                    or identity["fence"] != seq["fence"]):
+                raise ConflictError(
+                    "receipt attempt identity %r does not bind this attempt"
+                    " at its current fence (INV-13/INV-18)" % (identity,))
+            if receipt_payload["attempt_contract_hash"] != \
+                    att["attempt_contract_hash"]:
+                raise ConflictError(
+                    "receipt attempt_contract_hash must match the durable"
+                    " contract (INV-17)")
+            if receipt_payload["record_hash"] != seq["record_hash"]:
+                raise ConflictError(
+                    "receipt record_hash must match the Sequence's frozen"
+                    " record (INV-17)")
+            if receipt_payload["candidate_receipt_sha256"] != \
+                    candidate["content_sha256"]:
+                raise ConflictError(
+                    "receipt binds candidate %r, not the attempt's admitted"
+                    " obj-16 %s (D-53: the attested verdict is about THIS"
+                    " frozen candidate)" % (
+                        receipt_payload["candidate_receipt_sha256"],
+                        candidate["content_sha256"]))
+            part = receipt_payload["assertion"]["part"]
+            if (part["record"] != seq["record_hash"]
+                    or part["part_id"] != assertion_id):
+                raise ConflictError(
+                    "receipt part reference %r does not name assertion %r"
+                    " of the frozen record (D-47)" % (part, assertion_id))
+            if receipt_payload["attestation_sha256"] != \
+                    attestation_row["content_sha256"]:
+                raise ConflictError(
+                    "receipt binds attestation %r, not the admitted obj-37"
+                    " %s (D-53: the result incorporates the exact admitted"
+                    " attestation bytes)" % (
+                        receipt_payload["attestation_sha256"],
+                        attestation_row["content_sha256"]))
+            receipt_address = self.store.put(receipt)
             existing = self._existing_verification(
-                cur, attempt_id, assertion_id, "ATTESTED", address, None)
+                cur, attempt_id, assertion_id, "ATTESTED", receipt_address,
+                None)
             if existing is not None:
                 return existing
             verification_id = mint_id("vr")
@@ -2249,20 +3678,98 @@ class Sequencer:
                 " 'ATTESTED', ?, ?, NULL, ?)",
                 (verification_id, attempt_id, assertion_id,
                  assertion.get("verifier_id"), ATTESTATION_PRODUCER,
-                 address, now))
+                 receipt_address, now))
             journal.append(cur, journal.transition_record(
                 machine="attempt_verification", subject_id=verification_id,
-                rule="ch2:attest-assertion", to_state="RECORDED",
+                rule="ch4:register-attested-result", to_state="RECORDED",
                 recorded_utc=now,
                 facts={"attempt_id": attempt_id,
                        "sequence_id": att["sequence_id"],
                        "assertion_id": assertion_id,
                        "mode": "HUMAN_ATTESTED", "outcome": "ATTESTED",
                        "by": ATTESTATION_PRODUCER,
-                       "receipt_sha256": address, "attests": "PASS",
+                       "incorporated_by": by,
+                       "receipt_sha256": receipt_address,
+                       "attestation_sha256":
+                           attestation_row["content_sha256"],
                        "fence": att["fence"]}))
             return {"verification_id": verification_id,
-                    "receipt_address": address, "duplicate": False}
+                    "receipt_address": receipt_address, "duplicate": False}
+
+    def attest_assertion(self, attempt_id, assertion_id, attestation):
+        """D-52/D-53 (reshaped in C4-M2): ADMIT your
+        ManualAttestation.ASSERTION for one HUMAN_ATTESTED assertion —
+        durable identity (minted by you), provenance (the attested
+        verdict, preserved by exact bytes and journaled) and FULL scope
+        binding: this attempt, this contract hash, the admitted obj-16
+        candidate the verdict is about, and the D-47 typed part reference.
+        The admission stores the exact bytes and writes the
+        attempt_attestations row; the VERIFICATION row is written only
+        when the verifier runner incorporates the admitted attestation
+        into a canonical obj-19 BY_ATTESTATION result
+        (``register_attested_result``) — so attestation remains durably
+        recorded BEFORE conclude_verification can commit t-s10
+        (attestation_before_commit_if_source_human_required), and the
+        attestation itself never doubles as a result receipt."""
+        now = instant(self.clock.now())
+        with self.db.transaction() as cur:
+            self._assert_lease(cur)
+            att, seq = self._verification_context(cur, attempt_id)
+            payload = self._verified_record(cur, seq["record_hash"])
+            assertion = self._assertion(payload, assertion_id)
+            if assertion.get("mode") != "HUMAN_ATTESTED":
+                raise ConflictError(
+                    "assertion %r is %s: DETERMINISTIC assertions are"
+                    " verified by the runner, never attested (D-52)"
+                    % (assertion_id, assertion.get("mode")))
+            candidate = self._candidate_row(cur, attempt_id)
+            if candidate is None:
+                raise IntegrityHalt(
+                    "attempt %s is past CANDIDATE_FROZEN with no admitted"
+                    " obj-16 candidate (forged state)" % attempt_id)
+            refusal = validate_assertion_attestation(
+                attestation, att, assertion_id,
+                candidate["content_sha256"], seq["record_hash"])
+            if refusal is not None:
+                raise AdmissionError(refusal)
+            # The D-29 kind-grammar finding on t-i07 applies identically:
+            # obj-37's dotted kind has no object hash under Chapter 1 as
+            # frozen, so the attestation is preserved by exact bytes (D-31).
+            address = self.store.put(canonicalize(attestation))
+            existing = cur.execute(
+                "SELECT * FROM attempt_attestations WHERE attempt_id = ?"
+                " AND assertion_id = ?",
+                (attempt_id, assertion_id)).fetchone()
+            if existing is not None:
+                if existing["content_sha256"] == address:
+                    return {"admission_id": existing["admission_id"],
+                            "attestation_address": address,
+                            "duplicate": True}
+                raise ConflictError(
+                    "assertion %r already has a different admitted"
+                    " attestation for this attempt (admissions never"
+                    " overwrite)" % (assertion_id,))
+            admission_id = mint_id("ma")
+            cur.execute(
+                "INSERT INTO attempt_attestations (admission_id,"
+                " attempt_id, assertion_id, content_sha256, admitted_utc)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (admission_id, attempt_id, assertion_id, address, now))
+            journal.append(cur, journal.transition_record(
+                machine="attempt_attestation", subject_id=admission_id,
+                rule="ch4:admit-attestation", to_state="ADMITTED",
+                recorded_utc=now,
+                facts={"attempt_id": attempt_id,
+                       "sequence_id": att["sequence_id"],
+                       "assertion_id": assertion_id,
+                       "content_sha256": address,
+                       "candidate_receipt_sha256":
+                           candidate["content_sha256"],
+                       "attested_by": ATTESTATION_PRODUCER,
+                       "attests": "PASS",
+                       "fence": att["fence"]}))
+            return {"admission_id": admission_id,
+                    "attestation_address": address, "duplicate": False}
 
     def conclude_verification(self, attempt_id, expected_fence):
         """The registered verification outcomes, from admitted rows only.
@@ -2294,6 +3801,24 @@ class Sequencer:
                     "unresolved assertions: %s (every declared assertion"
                     " needs an admitted result before conclusion)"
                     % ", ".join(sorted(missing)))
+            # INV-49 (C4-M2): when the frozen record declares a transform
+            # for the DISPATCHED role, an admitted role-transform check is
+            # part of verification — NO conclusion exists without it (its
+            # FAIL drives t-a08/t-s11 like any row; its INCONCLUSIVE blocks
+            # to t-s12's unknown arm like any row).
+            role_transforms = payload.get("role_transforms", {})
+            if role_transforms:
+                call = self._attempt_call(cur, attempt_id)
+                if call["role"] in role_transforms:
+                    transform_key = "role-transform/%s" % call["role"]
+                    if transform_key not in rows:
+                        raise ConflictError(
+                            "the frozen record declares a role transform"
+                            " for the dispatched role %r and no admitted"
+                            " role-transform check exists (INV-49: child"
+                            " prompts are checked after the fact;"
+                            " conclusion is impossible without the check)"
+                            % (call["role"],))
             inconclusive = sorted(
                 a_id for a_id, row in rows.items()
                 if row["outcome"] == "INCONCLUSIVE")
@@ -2356,6 +3881,8 @@ class Sequencer:
                 return {"attempt": "REJECTED", "sequence": sequence_state}
             pass_receipts = [rows[a["assertion_id"]]["receipt_sha256"]
                              for a in declared]
+            transform_rows = sorted(a_id for a_id in rows
+                                    if a_id.startswith("role-transform/"))
             self._cas_attempt(cur, att, "VERIFIED", now,
                               require_sequence_fence=True)
             facts = self._quadruple(att)
@@ -2364,6 +3891,10 @@ class Sequencer:
                           "verification_receipts": pass_receipts})
             if attested:  # D-37
                 facts["attested_assertion_ids"] = attested
+            if transform_rows:  # C4-M2 (INV-49): the check is journaled
+                facts["role_transform_checks"] = {
+                    a_id: rows[a_id]["receipt_sha256"]
+                    for a_id in transform_rows}
             journal.append(cur, journal.transition_record(
                 machine="attempt", subject_id=attempt_id, rule="t-a07",
                 from_state="EVIDENCE_COMPLETE", to_state="VERIFIED",
@@ -2375,6 +3906,10 @@ class Sequencer:
                          "verification_receipts": pass_receipts}
             if attested:  # attestation_before_commit_if_source_human_required
                 seq_facts["attested_assertion_ids"] = attested
+            if transform_rows:  # C4-M2 (INV-49)
+                seq_facts["role_transform_checks"] = {
+                    a_id: rows[a_id]["receipt_sha256"]
+                    for a_id in transform_rows}
             journal.append(cur, journal.transition_record(
                 machine="sequence", subject_id=att["sequence_id"],
                 rule="t-s10", from_state="VERIFYING", to_state="VERIFIED",

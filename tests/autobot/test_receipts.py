@@ -58,8 +58,7 @@ class ReceiptTestCase(unittest.TestCase):
                                      "agent_clis", b"transcript\n")
         self.seq.finish_attempt(self.attempt_id, "builder", "success",
                                 end["content_address"])
-        self.seq.freeze_candidate(self.attempt_id, self.fence,
-                                  self.rt.store.put(b"candidate\n"))
+        support.mint_and_freeze(self.rt, self.attempt_id, self.fence)
 
     def _journal_count(self):
         return self.rt.db.conn.execute(

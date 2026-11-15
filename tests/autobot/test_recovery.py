@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 
 import support
-from fake_verifier import environment_bytes, receipt_bytes
+from fake_verifier import bound_receipt_bytes, environment_bytes
 from autobot import Database, Sequencer, Store, journal
 from autobot.git_executor import observe_and_resolve
 from autobot.models import (
@@ -238,7 +238,8 @@ class RestartTests(unittest.TestCase):
         self.assertEqual(
             store.get(wrow["content_sha256"]),
             support.session_record_bytes(
-                crow["call_id"], native_session_id="native-crash-1"))
+                crow["call_id"], native_session_id="native-crash-1",
+                prompt=support.VA_INPUT))
 
         seq.acquire_lease(ttl_seconds=3600)
         resumed = seq.admit_witness(
@@ -284,11 +285,21 @@ class RestartTests(unittest.TestCase):
         identity = {"sequence_id": snapshot["sequence_id"],
                     "attempt_id": snapshot["attempt_id"],
                     "version": 1, "fence": att["fence"]}
+        environment = environment_bytes(identity)
         seq.register_verifier_result(
             snapshot["attempt_id"], "a1", "PASS", "verifier_runner",
-            receipt_bytes("a1", "registry-checker", "PASS",
-                          snapshot["attempt_id"]),
-            environment=environment_bytes(identity))
+            bound_receipt_bytes(seq, snapshot["attempt_id"], "a1", "PASS",
+                                environment),
+            environment=environment)
+        # C4-M2: the dispatched role declares a transform, so conclusion
+        # also needs the admitted role-transform check (the admission
+        # re-executes the live identity closure from the recovered store).
+        from fake_verifier import transform_receipt_bytes
+        seq.register_transform_check(
+            snapshot["attempt_id"], "builder", "PASS", "verifier_runner",
+            transform_receipt_bytes(seq, snapshot["attempt_id"],
+                                    environment),
+            environment=environment)
         result = seq.conclude_verification(snapshot["attempt_id"],
                                            att["fence"])
         self.assertEqual(result, {"attempt": "VERIFIED",

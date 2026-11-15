@@ -209,8 +209,14 @@ class AcceptanceScenario(AcceptanceBase):
             seq.finish_attempt(self.attempt_id, "builder",
                                collected["outcome"], last_address),
             "FINISHED")
-        candidate = store.put(b"candidate: tree stand-in\n")
-        seq.freeze_candidate(self.attempt_id, self.fence, candidate)
+        # C4-M1: the REAL obj-16 freeze (the runtime handle was reopened,
+        # so bind the adapter to the live sequencer and store).
+        repo, _sha_old, sha_new = support.ensure_candidate_repo(self.rt)
+        from autobot import mint_candidate_receipt
+        minted = mint_candidate_receipt(seq, store, self.attempt_id,
+                                        repo_path=repo, treeish=sha_new)
+        seq.freeze_candidate(self.attempt_id, self.fence,
+                             minted["candidate_address"])
         # C3-M1: the registered Collector derives the obj-15 classification
         # from the frozen record's evidence_requirements over the admitted
         # rows (COMPLETE here: obj-11 + obj-12 present), mints the
@@ -345,8 +351,7 @@ class AcceptanceFailureArms(AcceptanceBase):
             self.attempt_id, "obj-13", "agent_clis", TRANSCRIPT)
         self.seq.finish_attempt(self.attempt_id, "builder", "success",
                                 finished["content_address"])
-        self.seq.freeze_candidate(self.attempt_id, self.fence,
-                                  self.rt.store.put(b"candidate\n"))
+        support.mint_and_freeze(self.rt, self.attempt_id, self.fence)
         good_entry = {"witness_kind": "obj-13", "producer": "agent_clis",
                       "content_sha256": finished["content_address"]}
         phantom = {"witness_kind": "obj-12", "producer": "helios",

@@ -6,6 +6,7 @@ directories. The fixtures are consumed from the frozen chapter tree —
 Chapter 2 never copies or re-derives them.
 """
 
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -22,11 +23,18 @@ from autobot import (  # noqa: E402
     Collector,
     Database,
     ManualClock,
+    ProductionVerifierRunner,
     Registry,
     Sequencer,
     Store,
+    mint_candidate_receipt,
 )
-from contract_library import content_address  # noqa: E402
+from autobot.environment_probe import interpreter_identity  # noqa: E402
+from contract_library import (  # noqa: E402
+    artifact_root,
+    content_address,
+    object_hash,
+)
 
 CH1 = REPO / "docs" / "architecture" / "chapter1"
 FIXTURES = CH1 / "vectors" / "fixtures"
@@ -47,6 +55,175 @@ SEED_OBJECTS = (
     "verifier_vector_v1",
     "transform_identity_v1",
 )
+
+# ---------------------------------------------------------------------------
+# The LIVE verification plane (C4-M1): registrations whose closures are REAL
+# seedable script bytes under the interpreter actually running this suite,
+# so the production verifier runner executes the exact registered closure.
+# The frozen Chapter 1 fixture registrations stay untouched (their closure
+# digests are identity vectors, not executable artifacts) — records that
+# must EXECUTE verification bind these instead.
+
+# A real verifier honoring the registered result protocol: it re-hashes
+# every subject artifact against its content address (the candidate's exact
+# bytes — drift means FAIL), then concludes PASS.
+LIVE_PASS_SCRIPT = b'''import hashlib
+import json
+import sys
+
+
+def main():
+    with open(sys.argv[1], "r", encoding="utf-8") as fh:
+        context = json.load(fh)
+    for artifact in context["subject"]["artifacts"]:
+        with open(artifact["file"], "rb") as fh:
+            digest = "sha256:" + hashlib.sha256(fh.read()).hexdigest()
+        if digest != artifact["content_sha256"]:
+            print(json.dumps({"autobot_verifier_result": {
+                "conclusion": "FAIL",
+                "detail": "subject artifact drifted: %s"
+                          % artifact["logical_path"]}}))
+            return 0
+    print(json.dumps({"autobot_verifier_result": {
+        "conclusion": "PASS",
+        "detail": "subject bytes verified against their content"
+                  " addresses"}}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+LIVE_FAIL_SCRIPT = b'''import json
+import sys
+
+print(json.dumps({"autobot_verifier_result": {
+    "conclusion": "FAIL", "detail": "registered assertion unmet"}}))
+sys.exit(0)
+'''
+
+# Exits without a typed conclusion: the production runner translates this
+# to INCONCLUSIVE (verifier_execution_failed) — never FAIL, never PASS.
+LIVE_CRASH_SCRIPT = b'''import sys
+sys.exit(3)
+'''
+
+# Exit 0 with prose instead of the result protocol: INCONCLUSIVE
+# (malformed_verifier_result) — a model-style "tests passed" is not a
+# receipt (CH4-llm-output-never-pass).
+LIVE_PROSE_SCRIPT = b'''print("All tests passed! Everything looks great.")
+'''
+
+LIVE_LOCK = b"# autobot live verifier dependency lock: stdlib only\\n"
+
+# (verifier_id, behavior) -> (registration_id suffix, script bytes).
+LIVE_SPECS = {
+    ("registry-checker", "PASS"): ("c1", LIVE_PASS_SCRIPT),
+    ("vector-checker", "PASS"): ("c2", LIVE_PASS_SCRIPT),
+    ("vector-checker", "FAIL"): ("c3", LIVE_FAIL_SCRIPT),
+    ("vector-checker", "CRASH"): ("c4", LIVE_CRASH_SCRIPT),
+    ("vector-checker", "PROSE"): ("c5", LIVE_PROSE_SCRIPT),
+}
+
+# ---------------------------------------------------------------------------
+# The LIVE transform plane (C4-M2, INV-44/INV-49): registered transforms
+# whose closures are REAL executable scripts, so the role-transform check's
+# admission-time re-execution runs the exact registered closure. The frozen
+# fixture transform (transform_identity_v1) stays the admission corpus; any
+# record that must CONCLUDE verification binds these instead.
+
+# identity-projection: output bytes == input bytes (the runtime's declared
+# role transform; matches the v13/v14 evidence where prompt files were
+# already LF-only with no BOM).
+LIVE_IDENTITY_TRANSFORM_SCRIPT = b'''import sys
+
+with open(sys.argv[1], "rb") as fh:
+    data = fh.read()
+with open(sys.argv[2], "wb") as fh:
+    fh.write(data)
+sys.exit(0)
+'''
+
+# autoswarm-input-v1: the U-12-calibrated A1 ingestion transform — strict
+# UTF-8 (non-UTF-8 input is an execution failure, exit 3, never a guess),
+# BOM KEPT as U+FEFF, universal newlines (\\r\\n and \\r -> \\n), nothing
+# appended or stripped. Calibrated against the installed AutoSwarM
+# cli.prompt_from/stdin ingestion (Path.read_text/TextIOWrapper semantics).
+LIVE_AUTOSWARM_TRANSFORM_SCRIPT = b'''import sys
+
+with open(sys.argv[1], "rb") as fh:
+    raw = fh.read()
+try:
+    text = raw.decode("utf-8")
+except UnicodeDecodeError:
+    sys.exit(3)
+text = text.replace("\\r\\n", "\\n").replace("\\r", "\\n")
+with open(sys.argv[2], "wb") as fh:
+    fh.write(text.encode("utf-8"))
+sys.exit(0)
+'''
+
+# transform_id -> (registration_id suffix, script bytes).
+LIVE_TRANSFORM_SPECS = {
+    "identity-projection": ("d1", LIVE_IDENTITY_TRANSFORM_SCRIPT),
+    "autoswarm-input-v1": ("d2", LIVE_AUTOSWARM_TRANSFORM_SCRIPT),
+}
+
+
+def live_transform_registration(transform_id):
+    """The live TransformRegistration payload for one registered transform:
+    a reproducibly pinned python closure over the live interpreter, argv
+    protocol ``transform.py <input> <output>``."""
+    suffix, script = LIVE_TRANSFORM_SPECS[transform_id]
+    closure = {"kind": "python",
+               "script_sha256": content_address(script),
+               "interpreter_id": interpreter_identity(),
+               "dependency_lock_sha256": content_address(LIVE_LOCK)}
+    return {"schema_version": "v1", "kind": "TransformRegistration",
+            "registration_id": "rg_" + suffix.rjust(32, "0"),
+            "transform_id": transform_id, "version": "1.0.0",
+            "closure": closure, "artifact_root": artifact_root(closure),
+            "entrypoint": "transform.py", "execution_requirements": [],
+            "registered_by": "you",
+            "registered_utc": "2026-11-13T00:00:00.000Z"}
+
+
+def live_transform_hash(transform_id):
+    return object_hash("TransformRegistration",
+                       live_transform_registration(transform_id))
+
+
+def live_registration(verifier_id, behavior="PASS"):
+    """The live VerifierRegistration payload for one (verifier, behavior):
+    a reproducibly pinned python closure over the live interpreter
+    identity, its artifact_root recomputed per D-32."""
+    suffix, script = LIVE_SPECS[(verifier_id, behavior)]
+    closure = {"kind": "python",
+               "script_sha256": content_address(script),
+               "interpreter_id": interpreter_identity(),
+               "dependency_lock_sha256": content_address(LIVE_LOCK)}
+    return {"schema_version": "v1", "kind": "VerifierRegistration",
+            "registration_id": "rg_" + suffix.rjust(32, "0"),
+            "verifier_id": verifier_id, "version": "1.0.0",
+            "closure": closure, "artifact_root": artifact_root(closure),
+            "entrypoint": "verify.py", "execution_requirements": [],
+            "registered_by": "you",
+            "registered_utc": "2026-11-12T00:00:00.000Z"}
+
+
+def live_registration_hash(verifier_id, behavior="PASS"):
+    return object_hash("VerifierRegistration",
+                       live_registration(verifier_id, behavior))
+
+
+def live_environment_constraint():
+    """An obj-17 constraint the live interpreter satisfies (the a1
+    constraint of every live-bound record)."""
+    import platform
+    return {"interpreter": {
+        "implementations": [platform.python_implementation().lower()],
+        "versions": [platform.python_version()]}}
 
 
 def load_json(path):
@@ -80,10 +257,22 @@ def make_runtime(data_dir, clock, holder="test-instance"):
 
 
 def seed_bound_objects(rt, names=SEED_OBJECTS):
-    """Admit the bound graph objects and the specification input bytes."""
+    """Admit the bound graph objects, the LIVE verifier registrations with
+    their executable closure bytes, and the specification input bytes."""
     graph = load_fixture("graph.json")
     for name in names:
         rt.registry.admit_object(graph[name], submitted_by="you")
+    for verifier_id, behavior in sorted(LIVE_SPECS):
+        _suffix, script = LIVE_SPECS[(verifier_id, behavior)]
+        rt.store.put(script)
+        rt.registry.admit_object(live_registration(verifier_id, behavior),
+                                 submitted_by="you")
+    for transform_id in sorted(LIVE_TRANSFORM_SPECS):
+        _suffix, script = LIVE_TRANSFORM_SPECS[transform_id]
+        rt.store.put(script)
+        rt.registry.admit_object(live_transform_registration(transform_id),
+                                 submitted_by="you")
+    rt.store.put(LIVE_LOCK)
     record = load_fixture("va_record.json")
     listed = record["specification_inputs"]["name_to_exact_byte_sha256"][
         "chapter1-brief.md"]
@@ -94,6 +283,35 @@ def seed_bound_objects(rt, names=SEED_OBJECTS):
             " address — fixture drift, fix the constant"
         )
     rt.store.put(data)
+
+
+def ensure_candidate_repo(rt):
+    """A lazily created real Git repository per runtime, for candidate
+    tree capture (cap-42): branch main at commit A, commit B reachable.
+    Returns (repo_path, sha_old, sha_new)."""
+    if not hasattr(rt, "candidate_repo"):
+        repo = rt.data_dir / "candidate-repo"
+        sha_old, sha_new = init_git_repo(repo)
+        rt.candidate_repo = (repo, sha_old, sha_new)
+    return rt.candidate_repo
+
+
+def mint_and_freeze(rt, attempt_id, fence, treeish=None):
+    """Mint the REAL obj-16 through the git_adapter (SOURCE_MODIFYING work
+    captures the candidate tree from the runtime's candidate repository;
+    READ_ONLY work takes no tree) and freeze it (t-a05/t-s07). Returns the
+    admitted candidate address."""
+    state = rt.sequencer.candidate_state(attempt_id)
+    if state["finalization_class"] == "SOURCE_MODIFYING":
+        repo, _sha_old, sha_new = ensure_candidate_repo(rt)
+        minted = mint_candidate_receipt(rt.sequencer, rt.store, attempt_id,
+                                        repo_path=repo,
+                                        treeish=treeish or sha_new)
+    else:
+        minted = mint_candidate_receipt(rt.sequencer, rt.store, attempt_id)
+    rt.sequencer.freeze_candidate(attempt_id, fence,
+                                  minted["candidate_address"])
+    return minted["candidate_address"]
 
 
 def admitted_runtime(data_dir, clock=None, holder="test-instance"):
@@ -110,11 +328,16 @@ def local_record_payload(task_contract_id=None, predecessors=None,
                          finalization_class=None,
                          finalization_requirements=None, objective=None,
                          completion_policies=None,
-                         evidence_requirements=None):
+                         evidence_requirements=None,
+                         vector_behavior="PASS"):
     """The M5/M6 SL-path contract family: V-A re-targeted to the LOCAL
     authority declaration (SOURCE_MODIFYING + authority_location LOCAL,
-    finalization requirement LOCAL_CANONICAL_COMMIT by default). The
-    keyword overrides mint sibling contracts for the dependency-release
+    finalization requirement LOCAL_CANONICAL_COMMIT by default), bound —
+    since C4-M1 — to the LIVE verifier registrations so the production
+    runner executes real registered closures (a1 keeps its environment
+    constraint, now satisfied by the live interpreter; a2's verifier
+    behavior is selectable: PASS, FAIL, CRASH or PROSE). The keyword
+    overrides mint sibling contracts for the dependency-release
     scenarios: a distinct ``objective`` changes the requirement tier
     (``task_contract_id`` alone is record-tier only, so admission
     deduplicates it on the shared contract_digest), ``predecessors`` are
@@ -122,7 +345,6 @@ def local_record_payload(task_contract_id=None, predecessors=None,
     per D-54 (no target_ref; the delegation's registered floor for
     (autobot, READ_ONLY) is empty; SEM-05 derives requirements [])."""
     import json as _json
-    from contract_library import object_hash
     payload = _json.loads(_json.dumps(load_fixture("va_record.json")))
     graph = load_fixture("graph.json")
     payload["task_contract_id"] = task_contract_id or ("tc_" + "face" * 8)
@@ -133,6 +355,19 @@ def local_record_payload(task_contract_id=None, predecessors=None,
         object_hash("RepositoryAuthorityDeclaration",
                     graph["declaration_local"]))
     payload.pop("remote_verification_mode", None)
+    # The live verification plane: the assertions keep their frozen ids and
+    # verifier names; the BINDINGS name the executable live registrations.
+    payload["acceptance_assertions"]["ids_and_environment_constraints"][0][
+        "environment_constraint"] = live_environment_constraint()
+    payload["resolved_bindings"]["verifier_registrations"] = sorted((
+        live_registration_hash("registry-checker", "PASS"),
+        live_registration_hash("vector-checker", vector_behavior),
+    ))
+    # C4-M2: role_transforms stays the frozen {builder: identity-projection}
+    # but the BINDING is the live, executable transform registration, so
+    # the role-transform check's admission re-execution runs a real closure.
+    payload["resolved_bindings"]["transform_registrations"] = [
+        live_transform_hash("identity-projection")]
     if objective is not None:
         payload["objective"] = objective
     if predecessors is not None:
@@ -154,17 +389,49 @@ def local_record_payload(task_contract_id=None, predecessors=None,
     return payload
 
 
+def remote_record_payload(task_contract_id=None, objective=None,
+                          vector_behavior="PASS"):
+    """V-A's REMOTE shape re-bound to the LIVE verification plane (C4-M2):
+    the frozen fixture's source_domain and finalization requirements with
+    executable live verifier AND transform registrations, so every seam —
+    including the role-transform check's admission re-execution — operates
+    over real closures. The remote finalization/acceptance drives use THIS
+    record; the untouched chapter-1 fixture record remains the admission
+    corpus."""
+    import json as _json
+    payload = _json.loads(_json.dumps(load_fixture("va_record.json")))
+    payload["task_contract_id"] = task_contract_id or ("tc_" + "feed" * 8)
+    payload["acceptance_assertions"]["ids_and_environment_constraints"][0][
+        "environment_constraint"] = live_environment_constraint()
+    payload["resolved_bindings"]["verifier_registrations"] = sorted((
+        live_registration_hash("registry-checker", "PASS"),
+        live_registration_hash("vector-checker", vector_behavior),
+    ))
+    payload["resolved_bindings"]["transform_registrations"] = [
+        live_transform_hash("identity-projection")]
+    if objective is not None:
+        payload["objective"] = objective
+    return payload
+
+
 def intelligence_environment():
     """The compiler's bound authority context over the frozen Chapter 1
     graph: the LOCAL declaration, delegation A, the two registered
     verifiers and the identity transform, with the V-A engineering
     profile as defaults. Everything here is an object the tests also
     admit through the Registry, so compiled candidates freeze cleanly."""
+    import json as _json
     from intelligence import RepositoryEnvironment
     graph = load_fixture("graph.json")
     record = load_fixture("va_record.json")
+    # C4-M1: compiled contracts bind the LIVE registrations, so the
+    # production runner executes their closures; a1's constraint names the
+    # live interpreter.
+    assertions = _json.loads(_json.dumps(record["acceptance_assertions"]))
+    assertions["ids_and_environment_constraints"][0][
+        "environment_constraint"] = live_environment_constraint()
     defaults = {
-        "acceptance_assertions": record["acceptance_assertions"],
+        "acceptance_assertions": assertions,
         "allowed_scope": record["allowed_scope"],
         "capability_requirements": record["capability_requirements"],
         "evidence_requirements": record["evidence_requirements"],
@@ -174,26 +441,194 @@ def intelligence_environment():
         "effect_policy": {"effect_intent_ttl_seconds": 300,
                           "effect_hard_timeout_seconds": 240},
         "role_transform_id": "identity-projection",
+        # C4-M2: compiled records declare the V-A specification input, so
+        # the role-transform check has its exact input bytes (INV-44).
+        "specification_inputs": record["specification_inputs"],
     }
     return RepositoryEnvironment(
         declaration=graph["declaration_local"],
         delegation=graph["delegation_a"],
-        verifier_registrations=[graph["verifier_checker_v1"],
-                                graph["verifier_vector_v1"]],
-        transform_registrations=[graph["transform_identity_v1"]],
+        verifier_registrations=[
+            live_registration("registry-checker", "PASS"),
+            live_registration("vector-checker", "PASS")],
+        # C4-M2: compiled contracts bind the LIVE identity transform, so
+        # the role-transform check's admission re-execution runs its real
+        # closure (the fixture transform has no executable bytes).
+        transform_registrations=[
+            live_transform_registration("identity-projection")],
         defaults=defaults)
 
 
 def session_record_bytes(call_id, native_session_id="native-sess-9",
-                         controller_id=None, **extra):
+                         controller_id=None, prompt=None, **extra):
     """Producer-shaped obj-11 bytes (the provider task/handle record
-    family): recognized facts join the witness to the bound call."""
+    family): recognized facts join the witness to the bound call. Since
+    C4-M2 the record may carry ``prompt`` — the provider-persisted prompt
+    the child actually received (task.json's field), whose derived content
+    identity is INV-49's observed side."""
     import json as _json
     payload = {"call_id": call_id,
                "native_session_id": native_session_id,
                "controller_id": controller_id or ("main_" + "0" * 32)}
+    if prompt is not None:
+        payload["prompt"] = prompt
     payload.update(extra)
     return _json.dumps(payload, sort_keys=True).encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Command governance (obj-12), one governed command = a DECISION record
+# before the command may run and a RESULT record after it ran (TI-1 WP5).
+# Two constructed families, never real producer bytes:
+#
+# - the RECOGNIZED family (recognized_*_bytes): the spellings
+#   witness_semantics recognizes - what the shared drive path admits, so
+#   every driven test exercises the recognizer's joins and the decided-
+#   execution rule instead of fact-free prose;
+# - the PRODUCER's shape (producer_*_bytes): key sets, key order and byte
+#   framing as the Helios command gate writes them (Windows PowerShell 5.1
+#   ConvertTo-Json - four-space indent, two spaces after each key colon -
+#   then UTF-8 WITH a byte order mark and CRLF line ends). The recognizer
+#   does not read this shape: finding F-TI-5, pinned by test_real_boundary.
+#
+# Every VALUE in both families is synthetic: no real session, command,
+# path, policy or digest is reproduced here.
+
+GOVERNANCE_BOM = b"\xef\xbb\xbf"
+GOVERNANCE_SESSION = "native-sess-9"  # the drive path's bound native session
+GOVERNANCE_COMMAND = "python -m unittest discover -s tests"
+GOVERNANCE_TOOL_USE = "toolu_01Ti1DrivePathCommand001"
+GOVERNANCE_CORRELATION = "20261109-drive-001"
+
+
+def governance_command_sha256(command=GOVERNANCE_COMMAND):
+    """The producer's command identity: the bare lowercase-hex SHA-256 of
+    the command text (a producer spelling, not a D-30 ``sha256:`` digest)."""
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()
+
+
+def recognized_decision_bytes(session_id=GOVERNANCE_SESSION,
+                              tool_use_id=GOVERNANCE_TOOL_USE,
+                              correlation_id=GOVERNANCE_CORRELATION,
+                              command=GOVERNANCE_COMMAND, decision="ALLOW"):
+    """The decision record in the recognized fact family: it names the
+    session, the tool use, the command identity and the decision."""
+    return json.dumps({
+        "session_id": session_id,
+        "tool_use_id": tool_use_id,
+        "correlation_id": correlation_id,
+        "command_sha256": governance_command_sha256(command),
+        "decision": decision,
+        "hook_event": "PreToolUse",
+        "tier": 0,
+    }, sort_keys=True).encode("utf-8")
+
+
+def recognized_result_bytes(session_id=GOVERNANCE_SESSION,
+                            tool_use_id=GOVERNANCE_TOOL_USE,
+                            correlation_id=GOVERNANCE_CORRELATION,
+                            command=GOVERNANCE_COMMAND, success=True):
+    """The result record in the recognized fact family: the proof the
+    command executed. It carries no decision of its own - the decision
+    record for the same tool use does (D-C3-8)."""
+    return json.dumps({
+        "session_id": session_id,
+        "tool_use_id": tool_use_id,
+        "correlation_id": correlation_id,
+        "command": command,
+        "command_sha256": governance_command_sha256(command),
+        "hook_event": "PostToolUse",
+        "executed_utc": "2026-11-09T12:00:02.000Z",
+        "duration_ms": 750,
+        "success": success,
+    }, sort_keys=True).encode("utf-8")
+
+
+def _producer_frame(document, framed):
+    text = json.dumps(document, indent=4, separators=(",", ":  "))
+    data = (text.replace("\n", "\r\n") + "\r\n").encode("utf-8")
+    return (GOVERNANCE_BOM + data) if framed else data
+
+
+def producer_decision_bytes(session_id=GOVERNANCE_SESSION,
+                            tool_use_id=GOVERNANCE_TOOL_USE,
+                            correlation_id=GOVERNANCE_CORRELATION,
+                            command=GOVERNANCE_COMMAND, verdict="ALLOW",
+                            framed=True):
+    """The per-command DECISION record in the producer's shape. The
+    producer spells its decision ``verdict`` (ALLOW, DENY, DENY_FATAL,
+    PASSTHROUGH, UNKNOWN, INTEGRITY_FAILURE). ``framed=False`` drops only
+    the byte order mark - the diagnostic layer of the F-TI-5 tests, never
+    what a producer writes."""
+    return _producer_frame({
+        "correlation_id": correlation_id,
+        "integrity_status": "CLEAN",
+        "verdict": verdict,
+        "session_id": session_id,
+        "command_sha256": governance_command_sha256(command),
+        "timestamp_utc": "2026-11-09T12:00:01.0000000Z",
+        "tier": 0,
+        "reason": None,
+        "tool_use_id": tool_use_id,
+    }, framed)
+
+
+def producer_result_bytes(session_id=GOVERNANCE_SESSION,
+                          tool_use_id=GOVERNANCE_TOOL_USE,
+                          correlation_id=GOVERNANCE_CORRELATION,
+                          command=GOVERNANCE_COMMAND, success=True,
+                          framed=True):
+    """The per-command RESULT record in the producer's shape: the proof
+    the command executed. It carries no decision of its own."""
+    return _producer_frame({
+        "correlation_id": correlation_id,
+        "tool_use_id": tool_use_id,
+        "session_id": session_id,
+        "command": command,
+        "command_sha256": governance_command_sha256(command),
+        "gate_file": "%s-%s.gate.json" % (tool_use_id, correlation_id),
+        "hook_event": "PostToolUse",
+        "executed_utc": "2026-11-09T12:00:02.0000000Z",
+        "duration_ms": 750,
+        "cwd": "C:\\work\\repository",
+        "exit_code": None,
+        "exit_code_source": "unavailable",
+        "interrupted": False,
+        "output_preview": "OK",
+        "output_bytes": 2,
+        "success": success,
+        "fields_found": ["stdout", "stderr", "interrupted"],
+        "fields_missing": ["exitCode"],
+        "detected_tier": 0,
+        "detected_tier_name": "routine",
+        "matched_pattern": None,
+        "capability_escalated": False,
+        "capability_flags": {
+            "dynamic_eval_execution": False,
+            "inline_interpreter_execution": False,
+            "nested_shell_execution": False,
+            "encoded_or_obfuscated_execution": False,
+        },
+        "classifier_reason_codes": [],
+        "write_indicator_matched": False,
+        "policy_hash": "0" * 64,
+        "hook_versions": {"hooks\\pretooluse.ps1": "1" * 64,
+                          "hooks\\evidence_capture.ps1": "2" * 64},
+        "enforcement_surface": "shell-gated",
+        "segments_declared": [command],
+        "segments_detected": [command],
+        "segments_match": True,
+        "watched_path_diffs": None,
+        "settings_integrity_after": {
+            "settings_hash": "3" * 64,
+            "all_hooks_present": True,
+            "pretooluse_present": True,
+            "posttooluse_present": True,
+            "posttoolusefailure_present": True,
+            "settings_exists": True,
+        },
+        "session_continuity_status": "continuous",
+    }, framed)
 
 
 def collect_receipt(rt, attempt_id, window_seconds=None):
@@ -206,11 +641,17 @@ def collect_receipt(rt, attempt_id, window_seconds=None):
     return collector.collect_and_admit(attempt_id)["receipt_address"]
 
 
-def drive_to_verified(rt, admitted_result, role="builder"):
-    """Drive one admitted sequence through the full M2–M4 lifecycle to
-    sequence VERIFIED / attempt VERIFIED (shared by the finalization tests
-    and the crash driver). The caller holds the instance lease."""
-    import json as _json
+def drive_to_evidence_complete(rt, admitted_result, role="builder",
+                               artifact=b"engineering artifact bytes\n",
+                               prompt=VA_INPUT, projection=None):
+    """Drive one admitted sequence to attempt EVIDENCE_COMPLETE / sequence
+    VERIFYING through the full production evidence plane: dispatch,
+    witnesses, finish, the REAL git_adapter-minted obj-16 freeze, the
+    registered Collector's obj-15, complete_evidence. ``prompt`` is the
+    provider-persisted prompt the obj-11 witness carries (None omits it —
+    the missing-producer-evidence scenarios); ``projection`` overrides the
+    dispatched projection bytes (e.g. a REAL obj-10 with
+    transform_provenance)."""
     seq = rt.sequencer
     sequence_id = admitted_result["sequence_id"]
     state = rt.db.conn.execute(
@@ -221,49 +662,66 @@ def drive_to_verified(rt, admitted_result, role="builder"):
     info = seq.start_execution(sequence_id)
     attempt_id, fence = info["attempt_id"], info["fence"]
     seq.reserve_attempt(attempt_id, expected_fence=fence)
-    projection = rt.store.put(b"projection bytes for finalization\n")
+    projection = rt.store.put(
+        projection if projection is not None
+        else b"projection bytes for finalization\n")
     dispatched = seq.dispatch_attempt(attempt_id, role, "fake", projection)
     # The provider's own session record (C3-M2): recognized facts join it
-    # to the Sequencer-minted call — the causal chain's first link.
+    # to the Sequencer-minted call — the causal chain's first link. Since
+    # C4-M2 it carries the provider-persisted prompt: the identity
+    # transform over the record's one specification input means the child
+    # received exactly those bytes (INV-49's observed == expected).
     start = seq.admit_witness(attempt_id, "obj-11", "autoswarm",
-                              session_record_bytes(dispatched["call_id"]))
+                              session_record_bytes(dispatched["call_id"],
+                                                   prompt=prompt))
     seq.attempt_running(attempt_id, "native-sess-9",
                         start["content_address"])
+    # TI-1 WP5: command governance as constructed records in the
+    # RECOGNIZED fact family - the decision and the result of one governed
+    # command, naming the session bound above. test_real_boundary asserts
+    # the facts the recognizer extracts from exactly these bytes.
     seq.admit_witness(attempt_id, "obj-12", "helios",
-                      b"command governance log\n")
+                      recognized_decision_bytes())
+    seq.admit_witness(attempt_id, "obj-12", "helios",
+                      recognized_result_bytes())
     end = seq.admit_witness(attempt_id, "obj-13", "agent_clis",
                             b"transcript\n")
+    if artifact is not None:
+        seq.admit_artifact(attempt_id, "artifact/engineering-notes",
+                           artifact)
     seq.finish_attempt(attempt_id, role, "success", end["content_address"])
-    seq.freeze_candidate(attempt_id, fence,
-                         rt.store.put(b"candidate tree stand-in\n"))
+    # C4-M1: the REAL obj-16 — the git_adapter captures the candidate (the
+    # tree for SOURCE_MODIFYING work) and the freeze admission validates
+    # every ledger-derivable binding.
+    mint_and_freeze(rt, attempt_id, fence)
     # The registered Collector derives COMPLETE from the frozen record's
     # evidence_requirements (COMMAND_GOVERNANCE + EXECUTION_LIFECYCLE)
     # over the admitted rows, mints obj-15 and admits it (C3-M1).
     receipt = collect_receipt(rt, attempt_id)
     seq.complete_evidence(attempt_id, fence, receipt)
-    environment = _json.dumps(
-        {"schema_version": "v1", "kind": "ActualVerificationEnvironment",
-         "environment_id": "ve_" + "0" * 32,
-         "attempt": {"sequence_id": sequence_id, "attempt_id": attempt_id,
-                     "version": 1, "fence": fence},
-         "probed_utc": "2026-11-09T12:00:00.000Z",
-         "interpreter": {"implementation": "cpython", "version": "3.12.4",
-                         "executable_sha256": "sha256:" + "0" * 64},
-         "platform": {"os": "windows", "os_version": "10",
-                      "architecture": "x86_64"},
-         "env_vars": {}, "tools": {}}, sort_keys=True).encode("utf-8")
-    for assertion_id, env in (("a1", environment), ("a2", None)):
-        seq.register_verifier_result(
-            attempt_id, assertion_id, "PASS", "verifier_runner",
-            _json.dumps({"schema_version": "v1",
-                         "kind": "VerificationReceipt",
-                         "assertion_id": assertion_id, "outcome": "PASS",
-                         "attempt_id": attempt_id},
-                        sort_keys=True).encode("utf-8"),
-            environment=env)
-    seq.conclude_verification(attempt_id, fence)
     return {"attempt_id": attempt_id, "fence": fence,
             "attempt_contract_hash": info["attempt_contract_hash"]}
+
+
+def drive_to_verified(rt, admitted_result, role="builder", runner=None):
+    """Drive one admitted sequence through the full M2–C4 lifecycle to
+    sequence VERIFIED / attempt VERIFIED (shared by the finalization tests
+    and the crash driver): the production evidence plane, then the
+    PRODUCTION verifier runner executing the exact registered live
+    closures, then conclusion. The caller holds the instance lease.
+    ``runner`` overrides the production runner for records whose frozen
+    bindings are the chapter-1 identity fixtures (no executable closure
+    bytes exist for those): the scripted fake still produces canonically
+    BOUND receipts through the same admission seam."""
+    info = drive_to_evidence_complete(rt, admitted_result, role=role)
+    runner = runner or ProductionVerifierRunner(rt.sequencer, rt.store)
+    outcome = runner.verify_attempt(info["attempt_id"])
+    if outcome["inconclusive"]:
+        raise RuntimeError(
+            "drive_to_verified hit an INCONCLUSIVE production result; the"
+            " scenario wanted PASS closures")
+    rt.sequencer.conclude_verification(info["attempt_id"], info["fence"])
+    return info
 
 
 def init_git_repo(path):

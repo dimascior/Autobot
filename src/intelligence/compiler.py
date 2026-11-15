@@ -147,12 +147,16 @@ def compile_proposal(proposal, environment, clock):
             "paths": _sorted_set(scope.get("paths", [])),
             "artifact_paths": _sorted_set(scope.get("artifact_paths", [])),
         },
-        # The schema requires these on every record; "no inputs" is the
-        # empty mapping, and the effect windows ride along even for
-        # READ_ONLY (which never mints an intent).
+        # The schema requires these on every record; the environment's
+        # default specification inputs apply when the proposal names none
+        # (C4-M2: a record whose role transform must be CHECKED needs its
+        # declared input — INV-44's chain starts at exact input bytes),
+        # and the effect windows ride along even for READ_ONLY (which
+        # never mints an intent).
         "specification_inputs": requirement.get(
             "specification_inputs",
-            {"name_to_exact_byte_sha256": {}}),
+            defaults.get("specification_inputs",
+                         {"name_to_exact_byte_sha256": {}})),
         "effect_policy": dict(requirement.get(
             "effect_policy", defaults["effect_policy"])),
         "retry_policy": dict(requirement.get(

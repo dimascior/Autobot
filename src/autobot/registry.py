@@ -56,6 +56,17 @@ class Registry:
         if not isinstance(payload, dict):
             raise AdmissionError("payload must be an object")
         kind = payload.get("kind")
+        if kind == "TaskContractRecord":
+            # F-TI-1 (TI-1, exposed by the independent identity oracle):
+            # obj-04's object hash IS the record_hash tier (D-29/D-33),
+            # which only the t-c01..t-c07 machine computes. The flat
+            # object_hash below would index a record under an identity
+            # recovery itself rejects (INV-11) — a permanent HALT from one
+            # well-formed call.
+            raise AdmissionError(
+                "a TaskContractRecord enters only through admit_payload"
+                " (t-c01..t-c07): its object hash is the record_hash tier"
+                " (D-29/D-33), never the flat object hash")
         result = validate_payload(kind, payload, self.schemas)
         if not result.ok:
             raise AdmissionError(

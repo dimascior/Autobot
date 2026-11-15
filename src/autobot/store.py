@@ -76,6 +76,23 @@ class Store:
     def has(self, address):
         return self._path_for(address).exists()
 
+    def remove(self, address):
+        """The guarded unlink (C4-M2, INV-58's reclamation half): delete
+        the object bytes at ``address``. Returns True when bytes were
+        removed, False when nothing was there (a missing object is a
+        no-op, not an error). The AUTHORITY to remove — that no live
+        registration closure still binds the address and no ledger column
+        references it — is the Sequencer's (``reclaim``) and is decided
+        there inside the same call; this method only performs the unlink
+        and never decides anything."""
+        path = self._path_for(address)
+        try:
+            os.remove(str(path))
+        except FileNotFoundError:
+            return False
+        self._fsync_dir(path.parent)
+        return True
+
     def get(self, address):
         """Exact bytes for a committed reference; re-hashes on every read.
 
