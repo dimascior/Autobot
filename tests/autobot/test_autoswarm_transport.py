@@ -74,39 +74,47 @@ class FindSessionTests(unittest.TestCase):
                       "workspace": str(self.home)})
         self.assertIsNone(self.transport.find_session(call_id))
 
-    def test_running_session_returns_original_handle_bytes(self):
+    def test_running_session_returns_original_task_bytes(self):
+        """obj-11 evidence is the original task.json bytes. The
+        native_session_id is obtained from handle.json independently."""
         call_id = "call_" + "b" * 32
-        handle_data = {"pid": 12345, "native_session_id": "sess-001",
-                       "started_at": "2026-01-01T00:00:01Z",
-                       "phase": "execution"}
-        _write_json(self._call_dir(call_id) / "task.json",
-                     {"call_id": call_id, "provider": "codex",
-                      "workspace": str(self.home),
-                      "created_at": "2026-01-01T00:00:00Z"})
-        _write_json(self._call_dir(call_id) / "handle.json", handle_data)
+        task_data = {"call_id": call_id, "provider": "codex",
+                     "prompt": "investigate logging",
+                     "workspace": str(self.home),
+                     "created_at": "2026-01-01T00:00:00Z"}
+        _write_json(self._call_dir(call_id) / "task.json", task_data)
+        _write_json(self._call_dir(call_id) / "handle.json",
+                     {"pid": 12345, "native_session_id": "sess-001",
+                      "started_at": "2026-01-01T00:00:01Z",
+                      "phase": "execution"})
         found = self.transport.find_session(call_id)
         self.assertIsNotNone(found)
         self.assertEqual(found["native_session_id"], "sess-001")
+        self.assertEqual(found["evidence"],
+                         (self._call_dir(call_id) / "task.json").read_bytes())
         evidence = json.loads(found["evidence"])
-        self.assertEqual(evidence["native_session_id"], "sess-001")
-        self.assertEqual(evidence["pid"], 12345)
+        self.assertEqual(evidence["call_id"], call_id)
+        self.assertEqual(evidence["prompt"], "investigate logging")
 
-    def test_returned_session_returns_original_result_bytes(self):
+    def test_returned_session_returns_original_task_bytes(self):
+        """Even when result.json exists, obj-11 evidence is task.json
+        (the record carrying received-prompt identity)."""
         call_id = "call_" + "c" * 32
-        result_data = {"call_id": call_id, "outcome": "completed",
-                       "native_session_id": "sess-002",
-                       "finished_at": "2026-01-01T01:00:00Z"}
-        _write_json(self._call_dir(call_id) / "task.json",
-                     {"call_id": call_id, "provider": "codex",
-                      "workspace": str(self.home),
-                      "created_at": "2026-01-01T00:00:00Z"})
-        _write_json(self._call_dir(call_id) / "result.json", result_data)
+        task_data = {"call_id": call_id, "provider": "codex",
+                     "prompt": "refactor bridge",
+                     "workspace": str(self.home),
+                     "created_at": "2026-01-01T00:00:00Z"}
+        _write_json(self._call_dir(call_id) / "task.json", task_data)
+        _write_json(self._call_dir(call_id) / "result.json",
+                     {"call_id": call_id, "outcome": "completed",
+                      "native_session_id": "sess-002"})
         found = self.transport.find_session(call_id)
         self.assertIsNotNone(found)
         self.assertEqual(found["native_session_id"], "sess-002")
+        self.assertEqual(found["evidence"],
+                         (self._call_dir(call_id) / "task.json").read_bytes())
         evidence = json.loads(found["evidence"])
-        self.assertEqual(evidence["outcome"], "completed")
-        self.assertEqual(evidence["call_id"], call_id)
+        self.assertEqual(evidence["prompt"], "refactor bridge")
 
     def test_handle_without_session_id_returns_none(self):
         call_id = "call_" + "d" * 32
@@ -201,7 +209,9 @@ class CollectTests(unittest.TestCase):
     def _call_dir(self, call_id):
         return self.home / "calls" / call_id
 
-    def test_collect_transcript_from_stdout_log(self):
+    def test_stdout_log_not_collected_as_transcript(self):
+        """stdout.log is AutoSwarm's pipe capture, not a provider-native
+        session transcript. obj-13 must not be emitted from it."""
         call_id = "call_" + "5" * 32
         d = self._call_dir(call_id)
         _write_json(d / "result.json",
@@ -211,14 +221,12 @@ class CollectTests(unittest.TestCase):
         (d / "stdout.log").write_bytes(b"raw provider output\n")
         collected = self.transport.collect(call_id)
         self.assertEqual(collected["outcome"], "success")
-        obj13 = next(wf for wf in collected["witness_files"]
-                     if wf[0] == "obj-13")
-        self.assertEqual(obj13[1], "agent_clis")
-        self.assertEqual(obj13[2], b"raw provider output\n")
+        kinds = [wf[0] for wf in collected["witness_files"]]
+        self.assertNotIn("obj-13", kinds)
 
-    def test_collect_governance_from_helios_evidence_tree(self):
-        """obj-12 is collected from the real Helios path:
-        <gate_root>/evidence/integrity/sessions/<session_id>/commands/"""
+    def test_collect_governance_individual_entries(self):
+        """Each decision.json is a separate obj-12 witness entry with
+        its original file bytes — never a combined JSON array."""
         session_id = "sess-gov-001"
         call_id = "call_" + "6" * 32
         _write_json(self._call_dir(call_id) / "result.json",
@@ -231,13 +239,14 @@ class CollectTests(unittest.TestCase):
         _write_json(evidence_dir / "toolu_002.decision.json",
                      {"verdict": "DENY", "tool": "Bash"})
         collected = self.transport.collect(call_id)
-        kinds = [wf[0] for wf in collected["witness_files"]]
-        self.assertIn("obj-12", kinds)
-        obj12 = next(wf for wf in collected["witness_files"]
-                     if wf[0] == "obj-12")
-        self.assertEqual(obj12[1], "helios")
-        records = json.loads(obj12[2])
-        self.assertEqual(len(records), 2)
+        obj12_entries = [wf for wf in collected["witness_files"]
+                         if wf[0] == "obj-12"]
+        self.assertEqual(len(obj12_entries), 2)
+        for kind, producer, data in obj12_entries:
+            self.assertEqual(producer, "helios")
+            record = json.loads(data)
+            self.assertIsInstance(record, dict)
+            self.assertIn("verdict", record)
 
     def test_no_governance_without_gate_root(self):
         transport = AutoSwarmTransport(
@@ -258,11 +267,12 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(self.transport.collect(call_id)["outcome"],
                          "success")
 
-    def test_collect_without_result_raises(self):
+    def test_collect_without_result_returns_none(self):
+        """No result.json means the session is not terminal — collect
+        returns None so the Taskforce can safely skip it."""
         call_id = "call_" + "8" * 32
         self._call_dir(call_id).mkdir(parents=True)
-        with self.assertRaises(RuntimeError):
-            self.transport.collect(call_id)
+        self.assertIsNone(self.transport.collect(call_id))
 
     def test_collect_no_evidence_when_no_stdout_no_governance(self):
         call_id = "call_" + "0" * 32

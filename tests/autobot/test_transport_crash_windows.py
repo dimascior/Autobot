@@ -232,11 +232,11 @@ class OutcomeNormalizationTests(unittest.TestCase):
         self._result(c, "interrupted")
         self.assertEqual(self.transport.collect(c)["outcome"], "interrupted")
 
-    def test_missing_result_raises(self):
+    def test_missing_result_returns_none(self):
+        """No result.json: collect returns None (non-terminal session)."""
         c = "call_" + "e" * 32
         self._call_dir(c).mkdir(parents=True)
-        with self.assertRaises(RuntimeError):
-            self.transport.collect(c)
+        self.assertIsNone(self.transport.collect(c))
 
     def test_no_stdout_produces_no_transcript(self):
         c = "call_" + "f" * 32
@@ -264,9 +264,10 @@ class OutcomeNormalizationTests(unittest.TestCase):
 class EvidenceProvenanceTests(unittest.TestCase):
     """Validate the actual provenance chain for each evidence kind."""
 
-    def test_obj11_evidence_is_original_autoswarm_file(self):
-        """obj-11 evidence from find_session must be the byte-identical
-        content of handle.json or result.json — not an adapter envelope."""
+    def test_obj11_evidence_is_original_task_json(self):
+        """obj-11 evidence from find_session is the byte-identical
+        content of task.json — the producer record carrying the
+        received-prompt identity."""
         tmpdir = tempfile.TemporaryDirectory()
         home = Path(tmpdir.name)
         store = _MockStore()
@@ -275,36 +276,43 @@ class EvidenceProvenanceTests(unittest.TestCase):
         d = home / "calls" / call_id
         _write_json(d / "task.json",
                      {"call_id": call_id, "provider": "codex",
+                      "prompt": "investigate logging",
                       "workspace": str(home),
                       "created_at": "2026-01-01T00:00:00Z"})
-        handle_data = {"pid": 1, "native_session_id": "sess-prov",
-                       "started_at": "2026-01-01T00:00:01Z",
-                       "phase": "execution"}
-        _write_json(d / "handle.json", handle_data)
+        _write_json(d / "handle.json",
+                     {"pid": 1, "native_session_id": "sess-prov",
+                      "started_at": "2026-01-01T00:00:01Z",
+                      "phase": "execution"})
         found = transport.find_session(call_id)
-        self.assertEqual(found["evidence"], (d / "handle.json").read_bytes())
+        self.assertEqual(found["evidence"], (d / "task.json").read_bytes())
         self.assertEqual(transport.producer_id, "autoswarm")
+        evidence = json.loads(found["evidence"])
+        self.assertEqual(evidence["prompt"], "investigate logging")
         tmpdir.cleanup()
 
-    def test_obj11_prefers_result_over_handle(self):
-        """When result.json exists, obj-11 evidence is result.json bytes."""
+    def test_obj11_is_task_json_even_when_result_exists(self):
+        """obj-11 is always task.json regardless of whether result.json
+        exists — result.json does not carry the prompt."""
         tmpdir = tempfile.TemporaryDirectory()
         home = Path(tmpdir.name)
         transport = AutoSwarmTransport(_MockStore(), str(home), str(home))
         call_id = "call_" + "2" * 32
         d = home / "calls" / call_id
         _write_json(d / "task.json", {"call_id": call_id, "provider": "codex",
+                                       "prompt": "refactor bridge",
                                        "workspace": str(home)})
         _write_json(d / "handle.json", {"pid": 1, "native_session_id": "s"})
         _write_json(d / "result.json", {"call_id": call_id, "outcome": "completed",
                                          "native_session_id": "s"})
         found = transport.find_session(call_id)
-        self.assertEqual(found["evidence"], (d / "result.json").read_bytes())
+        self.assertEqual(found["evidence"], (d / "task.json").read_bytes())
+        evidence = json.loads(found["evidence"])
+        self.assertEqual(evidence["prompt"], "refactor bridge")
         tmpdir.cleanup()
 
-    def test_obj12_collected_from_helios_evidence_tree(self):
-        """obj-12 governance evidence uses the real Helios path, not
-        <call_dir>/governance/."""
+    def test_obj12_individual_entries_with_original_bytes(self):
+        """Each decision.json becomes a separate obj-12 entry and the
+        bytes are the original file content, not a combined array."""
         tmpdir = tempfile.TemporaryDirectory()
         home = Path(tmpdir.name)
         gate_root = Path(tmpdir.name) / "gate"
@@ -322,16 +330,97 @@ class EvidenceProvenanceTests(unittest.TestCase):
         _write_json(evidence_dir / "toolu_abc.decision.json",
                      {"verdict": "ALLOW", "tool": "Read",
                       "session_id": session_id})
+        _write_json(evidence_dir / "toolu_def.decision.json",
+                     {"verdict": "DENY", "tool": "Bash",
+                      "session_id": session_id,
+                      "command_sha256": "sha256:aaa"})
         collected = transport.collect(call_id)
-        obj12 = next(wf for wf in collected["witness_files"]
-                     if wf[0] == "obj-12")
-        records = json.loads(obj12[2])
-        self.assertEqual(records[0]["session_id"], session_id)
+        obj12_entries = [wf for wf in collected["witness_files"]
+                         if wf[0] == "obj-12"]
+        self.assertEqual(len(obj12_entries), 2)
+        for kind, producer, data in obj12_entries:
+            self.assertEqual(producer, "helios")
+            record = json.loads(data)
+            self.assertIsInstance(record, dict)
+            self.assertEqual(record["session_id"], session_id)
+        file_bytes_abc = (evidence_dir / "toolu_abc.decision.json").read_bytes()
+        file_bytes_def = (evidence_dir / "toolu_def.decision.json").read_bytes()
+        self.assertEqual(obj12_entries[0][2], file_bytes_abc)
+        self.assertEqual(obj12_entries[1][2], file_bytes_def)
         tmpdir.cleanup()
 
-    def test_obj13_is_raw_stdout_pipe(self):
-        """obj-13 is the raw stdout.log from the provider process —
-        not a reconstructed envelope or result.content wrapper."""
+    def test_obj12_identity_extraction_per_entry(self):
+        """extract_facts recognizes session_id from each individual
+        obj-12 entry — impossible on a combined array."""
+        from autobot.witness_semantics import extract_facts
+        record = {"verdict": "ALLOW", "tool": "Read",
+                  "session_id": "sess-id-123"}
+        data = json.dumps(record).encode("utf-8")
+        facts = extract_facts("obj-12", data)
+        self.assertEqual(facts.get("session_id"), "sess-id-123")
+        self.assertEqual(facts.get("decision"), "ALLOW")
+
+    def test_obj12_dc414_admission_per_entry(self):
+        """authorization_direction_conflict (D-C4-14) detects
+        contradictory decision spellings on an individual record."""
+        from autobot.witness_semantics import authorization_direction_conflict
+        conflicted = {"decision": "DENY", "verdict": "ALLOW",
+                      "session_id": "s"}
+        data = json.dumps(conflicted).encode("utf-8")
+        result = authorization_direction_conflict("obj-12", data)
+        self.assertIsNotNone(result)
+
+    def test_obj12_deny_then_ran_with_individual_entries(self):
+        """deny_then_ran detects the U-01 contradiction across
+        individual obj-12 entries from the same session."""
+        from autobot.witness_semantics import extract_facts, deny_then_ran
+        cmd_sha = "sha256:deadbeef"
+        deny_record = {"verdict": "DENY", "tool": "Bash",
+                       "session_id": "s1",
+                       "command_sha256": cmd_sha}
+        exec_record = {"verdict": "ALLOW", "tool": "Bash",
+                       "session_id": "s1",
+                       "command_sha256": cmd_sha,
+                       "hook_event": "PostToolUse",
+                       "success": True}
+        entries = []
+        for i, rec in enumerate([deny_record, exec_record]):
+            data = json.dumps(rec).encode("utf-8")
+            facts = extract_facts("obj-12", data)
+            entries.append(((i,), "obj-12", facts))
+        contradictions = deny_then_ran(entries)
+        self.assertTrue(len(contradictions) > 0)
+        self.assertEqual(contradictions[0]["command_sha256"], cmd_sha)
+
+    def test_obj12_collector_completeness(self):
+        """Every decision file in the evidence tree produces an entry;
+        no file is silently dropped and no extra entries appear."""
+        tmpdir = tempfile.TemporaryDirectory()
+        home = Path(tmpdir.name)
+        gate_root = Path(tmpdir.name) / "gate"
+        transport = AutoSwarmTransport(
+            _MockStore(), str(home), str(home),
+            gate_root=str(gate_root))
+        session_id = "sess-complete"
+        call_id = "call_" + "c" * 32
+        _write_json(home / "calls" / call_id / "result.json",
+                     {"call_id": call_id, "outcome": "completed",
+                      "native_session_id": session_id})
+        evidence_dir = (gate_root / "evidence" / "integrity"
+                        / "sessions" / session_id / "commands")
+        for i in range(5):
+            _write_json(evidence_dir / ("toolu_%03d.decision.json" % i),
+                         {"verdict": "ALLOW", "tool": "Read",
+                          "session_id": session_id, "index": i})
+        collected = transport.collect(call_id)
+        obj12_entries = [wf for wf in collected["witness_files"]
+                         if wf[0] == "obj-12"]
+        self.assertEqual(len(obj12_entries), 5)
+        tmpdir.cleanup()
+
+    def test_obj13_not_emitted_from_stdout_pipe(self):
+        """AutoSwarm's stdout.log is a runner pipe capture, not a
+        provider-native session transcript. obj-13 must be absent."""
         tmpdir = tempfile.TemporaryDirectory()
         home = Path(tmpdir.name)
         transport = AutoSwarmTransport(_MockStore(), str(home), str(home))
@@ -340,11 +429,10 @@ class EvidenceProvenanceTests(unittest.TestCase):
         _write_json(d / "result.json", {"call_id": call_id,
                                          "outcome": "completed",
                                          "native_session_id": "s"})
-        raw_output = b'{"type":"result","content":"done"}\n'
         d.mkdir(parents=True, exist_ok=True)
-        (d / "stdout.log").write_bytes(raw_output)
+        (d / "stdout.log").write_bytes(
+            b'{"type":"result","content":"done"}\n')
         collected = transport.collect(call_id)
-        obj13 = next(wf for wf in collected["witness_files"]
-                     if wf[0] == "obj-13")
-        self.assertEqual(obj13[2], raw_output)
+        kinds = [wf[0] for wf in collected["witness_files"]]
+        self.assertNotIn("obj-13", kinds)
         tmpdir.cleanup()
