@@ -265,29 +265,36 @@ class Taskforce:
             finish_witness = self._witness_address_for_finish(admitted)
             # D-C3-4: the provider reports; the frozen mapping normalizes
             # (completed -> success); the frozen role policy decides.
-            outcome = normalize_outcome(result.get("outcome", "success"))
+            # A missing or empty outcome from the transport is never
+            # promoted to success — it normalizes to "" which is not in
+            # any frozen success_outcomes list.
+            outcome = normalize_outcome(result.get("outcome") or "")
             state = self.sequencer.finish_attempt(
                 att["attempt_id"], att["role"], outcome, finish_witness)
             entry = {"attempt_id": att["attempt_id"],
                      "sequence_id": att["sequence_id"],
                      "outcome": outcome, "state": state}
             if state == "FINISHED":
-                artifact = result.get("artifact_bytes",
-                                      b"no artifact collected\n")
-                # C3-M2 (INV-03): the artifact enters through the
-                # provenance seam — one causal event binding these exact
-                # bytes to THIS attempt — and the candidate references the
-                # admitted address through the obj-16 artifact set.
-                admitted_artifact = self.sequencer.admit_artifact(
-                    att["attempt_id"],
-                    result.get("artifact_path", "artifact/engineering-notes"),
-                    artifact)
-                with self.plan.transaction() as cur:
-                    cur.execute(
-                        "UPDATE seats SET artifact_address = ?, status ="
-                        " 'COLLECTED', updated_utc = ? WHERE call_id = ?",
-                        (admitted_artifact["content_address"], now,
-                         att["call_id"]))
+                artifact = result.get("artifact_bytes")
+                if artifact is not None:
+                    admitted_artifact = self.sequencer.admit_artifact(
+                        att["attempt_id"],
+                        result.get("artifact_path",
+                                   "artifact/engineering-notes"),
+                        artifact)
+                    with self.plan.transaction() as cur:
+                        cur.execute(
+                            "UPDATE seats SET artifact_address = ?,"
+                            " status = 'COLLECTED', updated_utc = ?"
+                            " WHERE call_id = ?",
+                            (admitted_artifact["content_address"], now,
+                             att["call_id"]))
+                else:
+                    with self.plan.transaction() as cur:
+                        cur.execute(
+                            "UPDATE seats SET status = 'COLLECTED',"
+                            " updated_utc = ? WHERE call_id = ?",
+                            (now, att["call_id"]))
                 # C4-M1 (cap-32): the git_adapter mints the REAL obj-16.
                 # SOURCE_MODIFYING work binds the candidate tree — the
                 # tree of the specialist's PROPOSED new value, read from
