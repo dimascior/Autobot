@@ -9,13 +9,11 @@ to what is actually there rather than to a convenient stand-in:
    command in the RECOGNIZED fact family, and this module asserts the
    facts extracted from exactly those bytes. It also holds the same two
    records in the PRODUCER's real shape (key sets, key order and byte
-   framing as the Helios command gate writes them; every value synthetic)
-   - and that is finding F-TI-5: the producer frames its records with a
-   UTF-8 byte order mark and spells its decision ``verdict``, so the
-   recognizer extracts NO fact from the exact bytes and no decision even
-   from the document. F-TI-5 is recorded and pinned, NOT fixed: which
-   producer spellings and which verdict vocabulary carry authority is a
-   decision the operator owns (D-C3-5/6/8).
+   framing as the Helios command gate writes them; every value synthetic).
+   Finding F-TI-5 (CLOSED): the producer frames its records with a UTF-8
+   byte order mark and spells its decision ``verdict``; the recognizer
+   now reads BOM-framed bytes via ``utf-8-sig`` and recognizes ``verdict``
+   as an alternative spelling for the ``decision`` fact (D-C3-5/6/8).
 
 2. The filesystem under closure materialization (F-TI-6, fixed). A
    packaged manifest names entries by string; Windows resolves strings
@@ -210,11 +208,12 @@ class GovernanceWitnessTests(unittest.TestCase):
 
 
 class GovernanceRecognizerDivergenceTests(unittest.TestCase):
-    """F-TI-5 (OPEN - recorded, not fixed). These tests PIN what the
-    production recognizer does with the producer's real shape, so the
-    correction is a conscious act: when the operator rules on the framing
-    and on the verdict vocabulary, the pins below must be rewritten with
-    the rule, in the same change."""
+    """F-TI-5 (CLOSED). The recognizer reads the producer's real shape:
+    BOM-framed UTF-8 (utf-8-sig) and the ``verdict`` spelling for the
+    governance decision. The tests below verify that the correction
+    classifies producer-framed DENY-then-executed evidence as
+    INTEGRITY_FAILED (deny_then_ran) without weakening any existing
+    causal matching rules."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -253,53 +252,56 @@ class GovernanceRecognizerDivergenceTests(unittest.TestCase):
         # constructed, not copied: every digest-shaped value is synthetic
         self.assertEqual(result_doc["policy_hash"], "0" * 64)
 
-    def test_layer_one_the_framing_hides_every_fact(self):
+    def test_layer_one_bom_framed_records_extract_facts(self):
+        """BOM-framed records are parsed via utf-8-sig: the recognizer
+        extracts identity and semantic facts whether the BOM is present
+        or absent."""
         decision = support.producer_decision_bytes()
         result = support.producer_result_bytes()
-        self.assertEqual(witness_semantics.extract_facts("obj-12", decision),
-                         {})
-        self.assertEqual(witness_semantics.extract_facts("obj-12", result),
-                         {})
-        # the control: the SAME documents minus the three BOM bytes are
-        # recognized - the recognizer works, the framing is what it cannot
-        # read
+        d_facts = witness_semantics.extract_facts("obj-12", decision)
+        r_facts = witness_semantics.extract_facts("obj-12", result)
+        for member in sorted(IDENTITY_FACTS):
+            self.assertEqual(d_facts[member], IDENTITY_FACTS[member])
+            self.assertEqual(r_facts[member], IDENTITY_FACTS[member])
+        self.assertEqual(d_facts["decision"], "ALLOW")
+        self.assertEqual(r_facts["hook_event"], "PostToolUse")
+        self.assertTrue(r_facts["success"])
+        # the control: bare records extract the same identity facts
         bare_decision = support.producer_decision_bytes(framed=False)
         bare_result = support.producer_result_bytes(framed=False)
         self.assertEqual(support.GOVERNANCE_BOM + bare_decision, decision)
         self.assertEqual(support.GOVERNANCE_BOM + bare_result, result)
-        self.assertEqual(
-            witness_semantics.extract_facts("obj-12", bare_decision),
-            IDENTITY_FACTS)
-        self.assertEqual(
-            witness_semantics.extract_facts("obj-12", bare_result),
-            dict(IDENTITY_FACTS, hook_event="PostToolUse", success=True,
-                 executed_utc="2026-11-09T12:00:02.0000000Z"))
+        for member in sorted(IDENTITY_FACTS):
+            self.assertEqual(
+                witness_semantics.extract_facts("obj-12", bare_decision)[
+                    member], IDENTITY_FACTS[member])
+            self.assertEqual(
+                witness_semantics.extract_facts("obj-12", bare_result)[
+                    member], IDENTITY_FACTS[member])
 
-    def test_layer_two_the_producer_spells_its_decision_verdict(self):
-        """Even from the bare document, no decision is recognized: the
-        recognizer's only spelling is ``decision``; the producer writes
-        ``verdict``."""
+    def test_layer_two_the_producer_verdict_is_a_recognized_decision(self):
+        """The ``verdict`` spelling is recognized as the ``decision`` fact
+        for every governance verdict the producer writes."""
         for verdict in ("ALLOW", "DENY", "DENY_FATAL"):
             bare = support.producer_decision_bytes(verdict=verdict,
                                                    framed=False)
             self.assertEqual(json.loads(bare.decode("utf-8"))["verdict"],
                              verdict)
-            self.assertNotIn(
-                "decision", witness_semantics.extract_facts("obj-12", bare))
-        # the control: the recognized family's spelling
+            self.assertEqual(
+                witness_semantics.extract_facts("obj-12", bare)["decision"],
+                verdict)
+        # the control: the canonical spelling
         self.assertEqual(
             witness_semantics.extract_facts(
                 "obj-12",
                 support.recognized_decision_bytes(decision="DENY"))[
                     "decision"], "DENY")
 
-    def test_a_producer_framed_deny_then_ran_classifies_complete(self):
-        """The consequence end to end (INV-68, D-C3-6/D-C3-8). The control
-        first: a DENY and the execution of the same command in the
-        recognized family classify INTEGRITY_FAILED (deny_then_ran). The
-        same contradiction in the producer's real framing classifies
-        COMPLETE with no contradiction - the integrity classes cannot see
-        it."""
+    def test_a_producer_framed_deny_then_ran_classifies_integrity_failed(self):
+        """The consequence end to end (INV-68, D-C3-6/D-C3-8). A DENY
+        decision followed by evidence of execution classifies
+        INTEGRITY_FAILED with the deny_then_ran contradiction — in both
+        the recognized AND the producer's real framing."""
         completeness, payload, _joins = self._classified(
             "TI-1 F-TI-5 control",
             (support.recognized_decision_bytes(decision="DENY"),
@@ -312,33 +314,236 @@ class GovernanceRecognizerDivergenceTests(unittest.TestCase):
                   support.producer_result_bytes())
         completeness, payload, joins = self._classified(
             "TI-1 F-TI-5 producer framing", framed)
-        self.assertEqual(completeness, "COMPLETE")          # F-TI-5
-        self.assertEqual(payload["contradictions"], [])     # F-TI-5
+        self.assertEqual(completeness, "INTEGRITY_FAILED")
+        self.assertEqual([c["rule"] for c in payload["contradictions"]],
+                         ["deny_then_ran"])
         for data in framed:
             join = joins[content_address(data)]
-            self.assertEqual(join["join"], "UNJOINED")
-            self.assertNotIn("facts", join)
+            self.assertEqual(join["join"], "JOINED")
+            self.assertIn("facts", join)
 
-    def test_without_the_mark_every_execution_is_an_orphan(self):
-        """Why the correction is not one line: read past the byte order
-        mark alone and the result record's execution facts appear while
-        the decision still does not - so an ALLOWED command classifies
-        INTEGRITY_FAILED (execution_without_decision), and a DENIED one is
-        named an orphan rather than deny_then_ran. Both layers, and the
-        verdict vocabulary, have to be ruled on together."""
-        for verdict in ("ALLOW", "DENY"):
-            completeness, payload, joins = self._classified(
-                "TI-1 F-TI-5 bare %s" % verdict,
-                (support.producer_decision_bytes(verdict=verdict,
-                                                 framed=False),
-                 support.producer_result_bytes(framed=False)))
-            self.assertEqual(completeness, "INTEGRITY_FAILED")
-            self.assertEqual([c["rule"] for c in payload["contradictions"]],
-                             ["execution_without_decision"])
+    def test_bare_records_classify_correctly_for_each_verdict(self):
+        """Bare records (no BOM, ``verdict`` spelling) are recognized since
+        both the BOM codec and the verdict spelling are registered.
+        DENY + execution classifies deny_then_ran; ALLOW + execution
+        classifies COMPLETE (allowed and ran — the correct outcome)."""
+        completeness, payload, joins = self._classified(
+            "TI-1 F-TI-5 bare DENY",
+            (support.producer_decision_bytes(verdict="DENY", framed=False),
+             support.producer_result_bytes(framed=False)))
+        self.assertEqual(completeness, "INTEGRITY_FAILED")
+        self.assertEqual([c["rule"] for c in payload["contradictions"]],
+                         ["deny_then_ran"])
+        self.assertEqual(
+            set(join["join"] for join in joins.values()
+                if join["witness_kind"] == "obj-12"),
+            set(["JOINED"]))
+
+        completeness, payload, joins = self._classified(
+            "TI-1 F-TI-5 bare ALLOW",
+            (support.producer_decision_bytes(verdict="ALLOW", framed=False),
+             support.producer_result_bytes(framed=False)))
+        self.assertEqual(completeness, "COMPLETE")
+        self.assertEqual(payload["contradictions"], [])
+        self.assertEqual(
+            set(join["join"] for join in joins.values()
+                if join["witness_kind"] == "obj-12"),
+            set(["JOINED"]))
+
+    def test_deny_without_execution_is_not_deny_then_ran(self):
+        """A DENY decision with no evidence of execution does not trigger
+        deny_then_ran: the governance family guarantees a decision PRECEDES
+        execution, so DENY alone is expected and diagnostic (D-12), never
+        a contradiction."""
+        completeness, payload, _joins = self._classified(
+            "TI-1 F-TI-5 deny only",
+            (support.producer_decision_bytes(verdict="DENY"),))
+        self.assertNotIn("deny_then_ran",
+                         [c["rule"] for c in payload["contradictions"]])
+
+    def test_cross_session_evidence_refused_at_admission(self):
+        """Evidence from another session is refused at admission (D-C3-5):
+        the Sequencer's identity gate detects the cross-execution session
+        mismatch before the evidence reaches the Collector or receipt.
+        This is a STRONGER guarantee than receipt-level CONTRADICTED —
+        cross-session witnesses never enter the admitted set."""
+        from autobot.models import ConflictError
+        cross_decision = support.producer_decision_bytes(
+            session_id="other-session-id", verdict="DENY")
+        seq = self.rt.sequencer
+        admitted = admit(self.rt, support.local_record_payload(
+            objective="TI-1 cross session"))
+        seq.mark_ready(admitted["sequence_id"])
+        info = seq.start_execution(admitted["sequence_id"])
+        seq.reserve_attempt(info["attempt_id"], info["fence"])
+        dispatched = seq.dispatch_attempt(
+            info["attempt_id"], "builder", "fake",
+            self.rt.store.put(b"projection: cross session\n"))
+        start = seq.admit_witness(
+            info["attempt_id"], "obj-11", "autoswarm",
+            support.session_record_bytes(dispatched["call_id"]))
+        seq.attempt_running(info["attempt_id"],
+                            support.GOVERNANCE_SESSION,
+                            start["content_address"])
+        with self.assertRaises(ConflictError) as ctx:
+            seq.admit_witness(
+                info["attempt_id"], "obj-12", "helios", cross_decision)
+        self.assertIn("cross-execution identity", str(ctx.exception))
+
+    def test_cross_command_evidence_does_not_satisfy_causal_join(self):
+        """A DENY for one command and execution of a different command in
+        the same session: deny_then_ran matches on command_sha256 identity,
+        so a different command does not trigger the contradiction."""
+        cross = (support.producer_decision_bytes(
+                     command="python other_script.py", verdict="DENY"),
+                 support.producer_result_bytes())
+        completeness, payload, joins = self._classified(
+            "TI-1 F-TI-5 cross command", cross)
+        self.assertNotIn("deny_then_ran",
+                         [c["rule"] for c in payload["contradictions"]])
+
+    def test_every_blocking_verdict_triggers_deny_then_ran(self):
+        """The Helios producer blocks execution for DENY, DENY_FATAL,
+        UNKNOWN and INTEGRITY_FAILURE. Each, followed by evidence of
+        execution, classifies INTEGRITY_FAILED with deny_then_ran."""
+        for verdict in ("DENY", "DENY_FATAL", "UNKNOWN",
+                        "INTEGRITY_FAILURE"):
+            framed = (support.producer_decision_bytes(verdict=verdict),
+                      support.producer_result_bytes())
+            completeness, payload, _joins = self._classified(
+                "TI-1 verdict %s" % verdict, framed)
+            self.assertEqual(completeness, "INTEGRITY_FAILED",
+                             "verdict %s" % verdict)
             self.assertEqual(
-                set(join["join"] for join in joins.values()
-                    if join["witness_kind"] == "obj-12"),
-                set(["JOINED"]))
+                [c["rule"] for c in payload["contradictions"]],
+                ["deny_then_ran"], "verdict %s" % verdict)
+
+    def test_authorizing_verdicts_do_not_trigger_deny_then_ran(self):
+        """ALLOW and PASSTHROUGH authorize execution. Neither triggers
+        deny_then_ran when the command subsequently runs."""
+        for verdict in ("ALLOW", "PASSTHROUGH"):
+            framed = (support.producer_decision_bytes(verdict=verdict),
+                      support.producer_result_bytes())
+            completeness, payload, _joins = self._classified(
+                "TI-1 verdict %s" % verdict, framed)
+            self.assertEqual(completeness, "COMPLETE",
+                             "verdict %s" % verdict)
+            self.assertEqual(payload["contradictions"], [],
+                             "verdict %s" % verdict)
+
+    def _running_attempt(self, objective):
+        """Set up an attempt in RUNNING state, ready for witness admission."""
+        seq = self.rt.sequencer
+        admitted = admit(self.rt, support.local_record_payload(
+            objective=objective))
+        seq.mark_ready(admitted["sequence_id"])
+        info = seq.start_execution(admitted["sequence_id"])
+        seq.reserve_attempt(info["attempt_id"], info["fence"])
+        dispatched = seq.dispatch_attempt(
+            info["attempt_id"], "builder", "fake",
+            self.rt.store.put(("projection: %s\n" % objective).encode()))
+        start = seq.admit_witness(
+            info["attempt_id"], "obj-11", "autoswarm",
+            support.session_record_bytes(dispatched["call_id"]))
+        seq.attempt_running(info["attempt_id"],
+                            support.GOVERNANCE_SESSION,
+                            start["content_address"])
+        return info
+
+    def test_contradictory_authorization_refused_at_admission(self):
+        """D-C4-14: a governance record whose decision and verdict
+        disagree on whether execution is authorized is refused at
+        witness admission. Both conflict directions are tested.
+        No admission row is created; the attempt stays in RUNNING."""
+        from autobot.models import ConflictError
+        for allow_field, deny_field in (("decision", "verdict"),
+                                         ("verdict", "decision")):
+            info = self._running_attempt("TI-1 D-C4-14 %s" % allow_field)
+            conflicting = json.dumps({
+                allow_field: "ALLOW", deny_field: "DENY",
+                "session_id": support.GOVERNANCE_SESSION,
+                "tool_use_id": support.GOVERNANCE_TOOL_USE,
+                "correlation_id": support.GOVERNANCE_CORRELATION,
+                "command_sha256": support.governance_command_sha256(),
+                "hook_event": "PreToolUse",
+            }, sort_keys=True).encode("utf-8")
+            with self.assertRaises(ConflictError) as ctx:
+                self.rt.sequencer.admit_witness(
+                    info["attempt_id"], "obj-12", "helios", conflicting)
+            self.assertIn("contradictory authorization", str(ctx.exception))
+            self.assertIn("D-C4-14", str(ctx.exception))
+            row = self.rt.db.conn.execute(
+                "SELECT COUNT(*) AS n FROM attempt_witnesses"
+                " WHERE attempt_id = ? AND witness_kind = 'obj-12'",
+                (info["attempt_id"],)).fetchone()
+            self.assertEqual(row["n"], 0, "no obj-12 admission row created")
+
+    def test_contradictory_authorization_refused_with_execution_evidence(self):
+        """D-C4-14 holds even when execution evidence exists — the
+        contradictory decision record is refused regardless of whether
+        a result record would have triggered deny_then_ran."""
+        from autobot.models import ConflictError
+        info = self._running_attempt("TI-1 D-C4-14 with execution")
+        self.rt.sequencer.admit_witness(
+            info["attempt_id"], "obj-12", "helios",
+            support.recognized_result_bytes())
+        conflicting = json.dumps({
+            "decision": "ALLOW", "verdict": "DENY",
+            "session_id": support.GOVERNANCE_SESSION,
+            "tool_use_id": support.GOVERNANCE_TOOL_USE,
+            "command_sha256": support.governance_command_sha256(),
+        }, sort_keys=True).encode("utf-8")
+        with self.assertRaises(ConflictError) as ctx:
+            self.rt.sequencer.admit_witness(
+                info["attempt_id"], "obj-12", "helios", conflicting)
+        self.assertIn("contradictory authorization", str(ctx.exception))
+
+    def test_same_direction_disagreement_is_not_refused(self):
+        """Same-direction disagreement (DENY vs DENY_FATAL, ALLOW vs
+        PASSTHROUGH) is NOT contradictory — both values agree on whether
+        execution is authorized."""
+        for field_a, val_a, field_b, val_b in (
+                ("decision", "DENY", "verdict", "DENY_FATAL"),
+                ("decision", "ALLOW", "verdict", "PASSTHROUGH")):
+            info = self._running_attempt("TI-1 same-dir %s-%s" % (val_a, val_b))
+            record = json.dumps({
+                field_a: val_a, field_b: val_b,
+                "session_id": support.GOVERNANCE_SESSION,
+                "tool_use_id": support.GOVERNANCE_TOOL_USE,
+                "command_sha256": support.governance_command_sha256(),
+            }, sort_keys=True).encode("utf-8")
+            result = self.rt.sequencer.admit_witness(
+                info["attempt_id"], "obj-12", "helios", record)
+            self.assertIn("content_address", result)
+
+    def test_matching_decision_and_verdict_admitted(self):
+        """Matching values: ALLOW/ALLOW and DENY/DENY are admitted and
+        classify correctly end to end."""
+        matching_allow = json.dumps({
+            "decision": "ALLOW", "verdict": "ALLOW",
+            "session_id": support.GOVERNANCE_SESSION,
+            "tool_use_id": support.GOVERNANCE_TOOL_USE,
+            "correlation_id": support.GOVERNANCE_CORRELATION,
+            "command_sha256": support.governance_command_sha256(),
+            "hook_event": "PreToolUse",
+        }, sort_keys=True).encode("utf-8")
+        completeness, payload, _joins = self._classified(
+            "TI-1 matching ALLOW",
+            (matching_allow, support.recognized_result_bytes()))
+        self.assertEqual(completeness, "COMPLETE")
+        self.assertEqual(payload["contradictions"], [])
+
+    def test_legitimate_deny_then_ran_still_fires(self):
+        """A legitimate (single-spelling) DENY followed by execution
+        still classifies INTEGRITY_FAILED via deny_then_ran — the
+        admission check does not interfere with valid evidence."""
+        completeness, payload, _joins = self._classified(
+            "TI-1 legitimate deny+run",
+            (support.producer_decision_bytes(verdict="DENY"),
+             support.producer_result_bytes()))
+        self.assertEqual(completeness, "INTEGRITY_FAILED")
+        self.assertEqual([c["rule"] for c in payload["contradictions"]],
+                         ["deny_then_ran"])
 
 
 # ---------------------------------------------------------- F-TI-6

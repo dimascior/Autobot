@@ -2036,6 +2036,12 @@ class Sequencer:
                 raise ConflictError(
                     "witness admission refused (cross-execution identity,"
                     " D-C3-5): %s" % "; ".join(conflicts))
+            auth_conflict = witness_semantics.authorization_direction_conflict(
+                witness_kind, data)
+            if auth_conflict:
+                raise ConflictError(
+                    "witness admission refused (contradictory authorization,"
+                    " D-C4-14): %s" % auth_conflict)
             address = self.store.put(data)
             existing = cur.execute(
                 "SELECT admission_id FROM attempt_witnesses WHERE attempt_id = ?"
