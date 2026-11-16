@@ -281,14 +281,58 @@ class AuthorityRuntime:
     @classmethod
     def bootstrap(cls, project_root=None, config=None,
                   defaults=None, clock=None):
-        """Construct the runtime and validate readiness without running.
+        """Construct the runtime, validate every pilot dependency, and
+        return the runtime ready for add_objective / run_until_stable.
 
-        Returns the runtime with all components assembled, lease
-        acquired, and environment loaded — ready for add_objective()
-        and run_until_stable(). Raises ConfigError if any required
-        component cannot be assembled."""
-        return cls.from_config(project_root=project_root, config=config,
-                               defaults=defaults, clock=clock)
+        Raises ConfigError if any required component is missing or
+        incomplete: research/builder seat, autoswarm_home, workspace,
+        gate_root, repository declaration, delegation, at least two
+        verifier registrations, identity-projection transform, and the
+        compiler defaults needed to freeze a READ_ONLY pilot contract."""
+        rt = cls.from_config(project_root=project_root, config=config,
+                             defaults=defaults, clock=clock)
+        try:
+            rt._validate_pilot_readiness()
+        except ConfigError:
+            rt.close()
+            raise
+        return rt
+
+    def _validate_pilot_readiness(self):
+        """Check every dependency the first READ_ONLY pilot requires."""
+        problems = []
+        try:
+            self.factory.select("research", "builder")
+        except Exception:
+            problems.append("no research/builder seat registered"
+                            " in AgentFactory")
+        if self.transport._gate_root is None:
+            problems.append("gate_root is None — governance evidence"
+                            " collection will be skipped")
+        if not self.transport._home.is_dir():
+            problems.append("autoswarm_home %s does not exist"
+                            % self.transport._home)
+        if len(self.environment.verifier_hashes) < 2:
+            problems.append("fewer than 2 verifier registrations"
+                            " in the ledger (need a1 + a2)")
+        if len(self.environment.transform_hashes) < 1:
+            problems.append("no transform registrations in the ledger"
+                            " (need identity-projection)")
+        defaults = self.environment.defaults
+        for key in ("acceptance_assertions", "allowed_scope",
+                    "capability_requirements", "evidence_requirements",
+                    "role_transform_id", "retry_policy", "repair_policy",
+                    "reuse_policy", "effect_policy"):
+            if key not in defaults:
+                problems.append("compiler default %r is missing" % key)
+        if defaults.get("role_transform_id") != "identity-projection":
+            problems.append(
+                "role_transform_id is %r, expected 'identity-projection'"
+                % defaults.get("role_transform_id"))
+        if problems:
+            raise ConfigError(
+                "bootstrap preflight failed:\n  - "
+                + "\n  - ".join(problems))
 
     # -------------------------------------------------------------- driver
 
