@@ -146,6 +146,21 @@ def _environment_from_ledger(db, store, repository_id, defaults):
         defaults=defaults)
 
 
+def _admitted_ids(db, store, kind, id_key):
+    """Return the set of registered IDs of a given ``kind`` from the
+    authority database (e.g. 'VerifierRegistration' / 'verifier_id')."""
+    rows = db.conn.execute(
+        "SELECT content_address FROM objects WHERE kind = ?"
+        " ORDER BY minted_utc", (kind,)).fetchall()
+    ids = set()
+    for r in rows:
+        payload = json.loads(store.get(r["content_address"]))
+        v = payload.get(id_key)
+        if v:
+            ids.add(v)
+    return ids
+
+
 class AuthorityRuntime:
     """The assembled production authority runtime.
 
@@ -298,6 +313,9 @@ class AuthorityRuntime:
             raise
         return rt
 
+    REQUIRED_VERIFIER_IDS = ("registry-checker", "vector-checker")
+    REQUIRED_TRANSFORM_IDS = ("identity-projection",)
+
     def _validate_pilot_readiness(self):
         """Check every dependency the first READ_ONLY pilot requires."""
         problems = []
@@ -309,15 +327,38 @@ class AuthorityRuntime:
         if self.transport._gate_root is None:
             problems.append("gate_root is None — governance evidence"
                             " collection will be skipped")
+        elif not Path(self.transport._gate_root).is_dir():
+            problems.append("gate_root %s does not exist"
+                            % self.transport._gate_root)
         if not self.transport._home.is_dir():
             problems.append("autoswarm_home %s does not exist"
                             % self.transport._home)
-        if len(self.environment.verifier_hashes) < 2:
-            problems.append("fewer than 2 verifier registrations"
-                            " in the ledger (need a1 + a2)")
-        if len(self.environment.transform_hashes) < 1:
-            problems.append("no transform registrations in the ledger"
-                            " (need identity-projection)")
+        if not self.transport._workspace.is_dir():
+            problems.append("workspace %s does not exist"
+                            % self.transport._workspace)
+        decl = self.environment.declaration
+        if decl.get("authority_location") != "LOCAL":
+            problems.append(
+                "declaration authority_location is %r, expected 'LOCAL'"
+                % decl.get("authority_location"))
+        deleg = self.environment.delegation
+        repos = deleg.get("repository_ids", [])
+        if "autobot" not in repos:
+            problems.append(
+                "delegation repository_ids %r does not include 'autobot'"
+                % repos)
+        verifier_ids = _admitted_ids(
+            self.db, self.store, "VerifierRegistration", "verifier_id")
+        for vid in self.REQUIRED_VERIFIER_IDS:
+            if vid not in verifier_ids:
+                problems.append(
+                    "verifier %r not registered in the ledger" % vid)
+        transform_ids = _admitted_ids(
+            self.db, self.store, "TransformRegistration", "transform_id")
+        for tid in self.REQUIRED_TRANSFORM_IDS:
+            if tid not in transform_ids:
+                problems.append(
+                    "transform %r not registered in the ledger" % tid)
         defaults = self.environment.defaults
         for key in ("acceptance_assertions", "allowed_scope",
                     "capability_requirements", "evidence_requirements",

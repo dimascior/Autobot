@@ -88,13 +88,12 @@ def cmd_seed(args):
     admitted = []
     skipped = []
 
-    seed_objects = [
+    declaration_objects = [
         "declaration_remote",
         "declaration_local",
-        "delegation_a",
     ]
 
-    for name in seed_objects:
+    for name in declaration_objects:
         if name not in graph:
             print("  SKIP %s (not in graph.json)" % name)
             skipped.append(name)
@@ -110,6 +109,46 @@ def cmd_seed(args):
             else:
                 print("  FAIL %s: %s" % (name, exc))
                 skipped.append(name)
+
+    pilot_delegation = {
+        "schema_version": "v1",
+        "kind": "DelegationContract",
+        "delegation_id": "dg_pilot_read_only_00000000000001",
+        "delegated_to": "planner",
+        "authored_by": "you",
+        "created_utc": instant(clock.now()),
+        "expires_utc": "2027-06-01T00:00:00.000Z",
+        "repository_ids": ["autobot"],
+        "allowed_scope": {
+            "paths": [
+                "src/autobot",
+                "src/intelligence",
+                "docs",
+            ],
+            "artifact_paths": [],
+        },
+        "mandatory_floors": {
+            "autobot": {
+                "READ_ONLY": [],
+                "SOURCE_MODIFYING": ["a1"],
+            }
+        },
+        "policy_bounds": {
+            "effect_hard_timeout_seconds": 240,
+            "effect_intent_ttl_seconds": 300,
+        },
+    }
+    try:
+        registry.admit_object(pilot_delegation, submitted_by="you")
+        admitted.append("pilot-delegation")
+        print("  OK   DelegationContract/pilot-delegation")
+    except Exception as exc:
+        if "already" in str(exc).lower() or "duplicate" in str(exc).lower():
+            print("  DUP  DelegationContract/pilot-delegation")
+            admitted.append("pilot-delegation")
+        else:
+            print("  FAIL DelegationContract/pilot-delegation: %s" % exc)
+            skipped.append("pilot-delegation")
 
     # Live verification and transform registrations: executable closures
     # pinned to the running interpreter, so the production verifier runner
@@ -248,6 +287,10 @@ sys.exit(0)
     db.close()
     print("seed complete: %d admitted, %d skipped"
           % (len(admitted), len(skipped)))
+    if skipped:
+        print("SEED FAILED: required objects not admitted: %s"
+              % ", ".join(skipped), file=sys.stderr)
+        return 1
     return 0
 
 
@@ -362,9 +405,9 @@ def cmd_run(args):
         return 1
 
     try:
-        rt = AuthorityRuntime.from_config(project_root=args.root)
+        rt = AuthorityRuntime.bootstrap(project_root=args.root)
     except ConfigError as exc:
-        print("cannot assemble runtime: %s" % exc, file=sys.stderr)
+        print("bootstrap FAILED: %s" % exc, file=sys.stderr)
         return 1
 
     try:

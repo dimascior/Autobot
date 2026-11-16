@@ -25,6 +25,7 @@ from intelligence import (
     readonly_view,
 )
 from intelligence.runtime import (
+    _admitted_ids,
     _environment_from_ledger,
     _resolve_autoswarm_home,
 )
@@ -316,6 +317,191 @@ class BootstrapAssemblyTests(unittest.TestCase):
         with self.assertRaises(ConfigError) as cm:
             runtime._validate_pilot_readiness()
         self.assertIn("compiler default", str(cm.exception))
+        runtime.close()
+
+    def test_bootstrap_validates_workspace(self):
+        """Bootstrap fails when workspace directory does not exist."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        env = support.intelligence_environment()
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()
+        factory.register("research", "builder", "codex")
+        bad_workspace = self.dir / "nonexistent_ws"
+        transport = AutoSwarmTransport(
+            rt.store, str(self.autoswarm_home), str(bad_workspace),
+            gate_root=str(self.gate_root))
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=self.clock,
+            authority_db_path=self.dir / "autobot.db",
+            holder="bootstrap-test")
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("workspace", str(cm.exception))
+        runtime.close()
+
+    def test_bootstrap_validates_declaration_location(self):
+        """Bootstrap fails when declaration is not LOCAL."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        from intelligence import RepositoryEnvironment
+        env = RepositoryEnvironment(
+            declaration=graph["declaration_remote"],
+            delegation=graph["delegation_a"],
+            verifier_registrations=[
+                support.live_registration("registry-checker", "PASS"),
+                support.live_registration("vector-checker", "PASS")],
+            transform_registrations=[
+                support.live_transform_registration("identity-projection")],
+            defaults=support.intelligence_environment().defaults)
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()
+        factory.register("research", "builder", "codex")
+        transport = AutoSwarmTransport(
+            rt.store, str(self.autoswarm_home), str(self.workspace),
+            gate_root=str(self.gate_root))
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=self.clock,
+            authority_db_path=self.dir / "autobot.db",
+            holder="bootstrap-test")
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("LOCAL", str(cm.exception))
+        runtime.close()
+
+    def test_bootstrap_validates_delegation_repository(self):
+        """Bootstrap fails when delegation does not include autobot."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        import copy
+        bad_deleg = copy.deepcopy(graph["delegation_a"])
+        bad_deleg["repository_ids"] = ["other-repo"]
+        from intelligence import RepositoryEnvironment
+        env = RepositoryEnvironment(
+            declaration=graph["declaration_local"],
+            delegation=bad_deleg,
+            verifier_registrations=[
+                support.live_registration("registry-checker", "PASS"),
+                support.live_registration("vector-checker", "PASS")],
+            transform_registrations=[
+                support.live_transform_registration("identity-projection")],
+            defaults=support.intelligence_environment().defaults)
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()
+        factory.register("research", "builder", "codex")
+        transport = AutoSwarmTransport(
+            rt.store, str(self.autoswarm_home), str(self.workspace),
+            gate_root=str(self.gate_root))
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=self.clock,
+            authority_db_path=self.dir / "autobot.db",
+            holder="bootstrap-test")
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("autobot", str(cm.exception))
+        runtime.close()
+
+    def test_bootstrap_validates_exact_verifier_ids(self):
+        """Bootstrap fails when a required verifier ID is missing."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        from intelligence import RepositoryEnvironment
+        env = RepositoryEnvironment(
+            declaration=graph["declaration_local"],
+            delegation=graph["delegation_a"],
+            verifier_registrations=[
+                support.live_registration("registry-checker", "PASS")],
+            transform_registrations=[
+                support.live_transform_registration("identity-projection")],
+            defaults=support.intelligence_environment().defaults)
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()
+        factory.register("research", "builder", "codex")
+        transport = AutoSwarmTransport(
+            rt.store, str(self.autoswarm_home), str(self.workspace),
+            gate_root=str(self.gate_root))
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=self.clock,
+            authority_db_path=self.dir / "autobot.db",
+            holder="bootstrap-test")
+        rt.db.conn.execute(
+            "DELETE FROM objects WHERE kind = 'VerifierRegistration'")
+        rt.db.conn.execute(
+            "INSERT INTO objects (object_hash, content_address, kind,"
+            " minted_utc) VALUES (?, ?, 'VerifierRegistration', ?)",
+            ("h_only_reg", "h_only_reg", "2026-11-16T00:00:00Z"))
+        from contract_library import content_address
+        payload = support.live_registration("registry-checker", "PASS")
+        addr = rt.store.put(
+            json.dumps(payload, sort_keys=True).encode("utf-8"))
+        rt.db.conn.execute(
+            "UPDATE objects SET content_address = ? WHERE object_hash = ?",
+            (addr, "h_only_reg"))
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("vector-checker", str(cm.exception))
+        runtime.close()
+
+    def test_bootstrap_validates_exact_transform_ids(self):
+        """Bootstrap fails when identity-projection is missing."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        env = support.intelligence_environment()
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()
+        factory.register("research", "builder", "codex")
+        transport = AutoSwarmTransport(
+            rt.store, str(self.autoswarm_home), str(self.workspace),
+            gate_root=str(self.gate_root))
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=self.clock,
+            authority_db_path=self.dir / "autobot.db",
+            holder="bootstrap-test")
+        rt.db.conn.execute(
+            "DELETE FROM objects WHERE kind = 'TransformRegistration'")
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("identity-projection", str(cm.exception))
         runtime.close()
 
     def test_bootstrap_passes_with_full_config(self):
