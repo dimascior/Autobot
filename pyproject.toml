@@ -9,6 +9,7 @@ coordinator = "coordinator.loop:main"
 coordinator-authorize = "coordinator.authorize:main"
 coordinator-discover = "coordinator.discover:main"
 coordinator-verify = "coordinator.verify_enforcement:main"
+autobot-authority = "intelligence.cli:main"
 
 [build-system]
 requires = ["hatchling"]
