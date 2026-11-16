@@ -62,6 +62,20 @@ class BootstrapAssemblyTests(unittest.TestCase):
                                  submitted_by="you")
         rt.sequencer.acquire_lease(ttl_seconds=360000)
         env = support.intelligence_environment()
+        import copy
+        pilot_deleg = copy.deepcopy(env.delegation)
+        pilot_deleg["allowed_scope"]["paths"] = [
+            "docs", "src/autobot", "src/intelligence"]
+        from intelligence import RepositoryEnvironment
+        env = RepositoryEnvironment(
+            declaration=env.declaration,
+            delegation=pilot_deleg,
+            verifier_registrations=[
+                support.live_registration("registry-checker", "PASS"),
+                support.live_registration("vector-checker", "PASS")],
+            transform_registrations=[
+                support.live_transform_registration("identity-projection")],
+            defaults=env.defaults)
         plan = PlanStore(self.dir / "intelligence.db")
         factory = AgentFactory()
         factory.register("research", "builder", "codex")
@@ -581,6 +595,245 @@ class _StubPolicy(ChiefEngineerPolicy):
         return []
 
 
+class SeedConvergenceTests(unittest.TestCase):
+    """Production seed is deterministic: same version, same objects."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        try:
+            self.tmp.cleanup()
+        except OSError:
+            pass
+
+    def _run_seed(self, db, store, registry):
+        from intelligence.production_seed import (
+            all_seed_objects,
+            store_closure_bytes,
+        )
+        from contract_library import object_hash
+        store_closure_bytes(store)
+        results = []
+        for name, payload in all_seed_objects():
+            h = object_hash(payload["kind"], payload)
+            try:
+                registry.admit_object(payload, submitted_by="you")
+            except Exception:
+                pass
+            results.append((name, h))
+        return results
+
+    def test_seed_converges(self):
+        """Two seeds produce identical object hashes."""
+        clock = support.manual_clock()
+        rt = support.make_runtime(self.dir, clock)
+        first = self._run_seed(rt.db, rt.store, rt.registry)
+        second = self._run_seed(rt.db, rt.store, rt.registry)
+        self.assertEqual(first, second)
+        count_after_first = rt.db.conn.execute(
+            "SELECT COUNT(*) AS n FROM objects").fetchone()["n"]
+        count_after_second = rt.db.conn.execute(
+            "SELECT COUNT(*) AS n FROM objects").fetchone()["n"]
+        self.assertEqual(count_after_first, count_after_second)
+        rt.db.close()
+
+    def test_registration_hashes_stable(self):
+        """Verifier and transform hashes remain identical across seeds."""
+        clock = support.manual_clock()
+        rt = support.make_runtime(self.dir, clock)
+        first = self._run_seed(rt.db, rt.store, rt.registry)
+        second = self._run_seed(rt.db, rt.store, rt.registry)
+        first_hashes = {n: h for n, h in first}
+        second_hashes = {n: h for n, h in second}
+        self.assertEqual(
+            first_hashes["verifier/registry-checker"],
+            second_hashes["verifier/registry-checker"])
+        self.assertEqual(
+            first_hashes["verifier/vector-checker"],
+            second_hashes["verifier/vector-checker"])
+        self.assertEqual(
+            first_hashes["transform/identity-projection"],
+            second_hashes["transform/identity-projection"])
+        rt.db.close()
+
+
+class DelegationSelectionTests(unittest.TestCase):
+    """Configured delegation_id selects the exact delegation."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.clock = support.manual_clock()
+
+    def tearDown(self):
+        try:
+            self.tmp.cleanup()
+        except OSError:
+            pass
+
+    def test_configured_delegation_selected(self):
+        """When delegation_id is given, that exact delegation is bound."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        from intelligence.production_seed import (
+            PILOT_DELEGATION_ID,
+            pilot_delegation,
+        )
+        pd = pilot_delegation()
+        rt.registry.admit_object(pd, submitted_by="you")
+        env = _environment_from_ledger(
+            rt.db, rt.store, "autobot", {},
+            delegation_id=PILOT_DELEGATION_ID)
+        self.assertEqual(env.delegation["delegation_id"],
+                         PILOT_DELEGATION_ID)
+        rt.db.close()
+
+    def test_unknown_delegation_raises(self):
+        """Configured delegation_id that doesn't exist fails."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        with self.assertRaises(ConfigError) as cm:
+            _environment_from_ledger(
+                rt.db, rt.store, "autobot", {},
+                delegation_id="dg_nonexistent")
+        self.assertIn("dg_nonexistent", str(cm.exception))
+        rt.db.close()
+
+    def test_expired_delegation_fails_bootstrap(self):
+        """A delegation past its expires_utc fails preflight."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        import copy
+        expired = copy.deepcopy(graph["delegation_a"])
+        expired["expires_utc"] = "2026-01-01T00:00:00.000Z"
+        from intelligence import RepositoryEnvironment
+        env = RepositoryEnvironment(
+            declaration=graph["declaration_local"],
+            delegation=expired,
+            verifier_registrations=[
+                support.live_registration("registry-checker", "PASS"),
+                support.live_registration("vector-checker", "PASS")],
+            transform_registrations=[
+                support.live_transform_registration("identity-projection")],
+            defaults=support.intelligence_environment().defaults)
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()
+        factory.register("research", "builder", "codex")
+        ws = self.dir / "ws"; ws.mkdir(exist_ok=True)
+        ah = self.dir / "ah"; ah.mkdir(exist_ok=True)
+        gr = self.dir / "gr"; gr.mkdir(exist_ok=True)
+        transport = AutoSwarmTransport(
+            rt.store, str(ah), str(ws), gate_root=str(gr))
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=SystemClock(),
+            authority_db_path=self.dir / "autobot.db",
+            holder="test")
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("expires_utc", str(cm.exception))
+        runtime.close()
+
+    def test_future_delegation_fails_bootstrap(self):
+        """A delegation whose created_utc is in the future fails."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        import copy
+        future = copy.deepcopy(graph["delegation_a"])
+        future["created_utc"] = "2099-01-01T00:00:00.000Z"
+        from intelligence import RepositoryEnvironment
+        env = RepositoryEnvironment(
+            declaration=graph["declaration_local"],
+            delegation=future,
+            verifier_registrations=[
+                support.live_registration("registry-checker", "PASS"),
+                support.live_registration("vector-checker", "PASS")],
+            transform_registrations=[
+                support.live_transform_registration("identity-projection")],
+            defaults=support.intelligence_environment().defaults)
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()
+        factory.register("research", "builder", "codex")
+        ws = self.dir / "ws"; ws.mkdir(exist_ok=True)
+        ah = self.dir / "ah"; ah.mkdir(exist_ok=True)
+        gr = self.dir / "gr"; gr.mkdir(exist_ok=True)
+        transport = AutoSwarmTransport(
+            rt.store, str(ah), str(ws), gate_root=str(gr))
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=SystemClock(),
+            authority_db_path=self.dir / "autobot.db",
+            holder="test")
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("created_utc", str(cm.exception))
+        runtime.close()
+
+    def test_wrong_principal_fails_bootstrap(self):
+        """A delegation with wrong delegated_to fails preflight."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        import copy
+        wrong = copy.deepcopy(graph["delegation_a"])
+        wrong["delegated_to"] = "attacker"
+        from intelligence import RepositoryEnvironment
+        env = RepositoryEnvironment(
+            declaration=graph["declaration_local"],
+            delegation=wrong,
+            verifier_registrations=[
+                support.live_registration("registry-checker", "PASS"),
+                support.live_registration("vector-checker", "PASS")],
+            transform_registrations=[
+                support.live_transform_registration("identity-projection")],
+            defaults=support.intelligence_environment().defaults)
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()
+        factory.register("research", "builder", "codex")
+        ws = self.dir / "ws"; ws.mkdir(exist_ok=True)
+        ah = self.dir / "ah"; ah.mkdir(exist_ok=True)
+        gr = self.dir / "gr"; gr.mkdir(exist_ok=True)
+        transport = AutoSwarmTransport(
+            rt.store, str(ah), str(ws), gate_root=str(gr))
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=SystemClock(),
+            authority_db_path=self.dir / "autobot.db",
+            holder="test")
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("planner", str(cm.exception))
+        runtime.close()
+
+
 class EnvironmentFromLedgerEdgeCases(unittest.TestCase):
     """Missing bound objects raise ConfigError."""
 
@@ -605,12 +858,58 @@ class EnvironmentFromLedgerEdgeCases(unittest.TestCase):
         graph = support.load_fixture("graph.json")
         rt.registry.admit_object(graph["declaration_local"],
                                  submitted_by="you")
-        # Delete the DelegationContract objects so the query finds none
         rt.db.conn.execute(
             "DELETE FROM objects WHERE kind = 'DelegationContract'")
         with self.assertRaises(ConfigError):
             _environment_from_ledger(rt.db, rt.store, "autobot", {})
         rt.db.close()
+
+    def test_production_seed_creates_local_declaration(self):
+        """The production seed creates a LOCAL declaration."""
+        from intelligence.production_seed import production_declaration
+        decl = production_declaration()
+        self.assertEqual(decl["authority_location"], "LOCAL")
+        self.assertEqual(decl["repository_id"], "autobot")
+        self.assertEqual(decl["canonical_ref"], "refs/heads/main")
+
+    def test_remote_declaration_fails_bootstrap(self):
+        """A REMOTE declaration fails the preflight check."""
+        rt = support.make_runtime(self.dir, support.manual_clock())
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        from intelligence import RepositoryEnvironment
+        env = RepositoryEnvironment(
+            declaration=graph["declaration_remote"],
+            delegation=graph["delegation_a"],
+            verifier_registrations=[
+                support.live_registration("registry-checker", "PASS"),
+                support.live_registration("vector-checker", "PASS")],
+            transform_registrations=[
+                support.live_transform_registration("identity-projection")],
+            defaults=support.intelligence_environment().defaults)
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()
+        factory.register("research", "builder", "codex")
+        ws = self.dir / "ws"; ws.mkdir(exist_ok=True)
+        ah = self.dir / "ah"; ah.mkdir(exist_ok=True)
+        gr = self.dir / "gr"; gr.mkdir(exist_ok=True)
+        transport = AutoSwarmTransport(
+            rt.store, str(ah), str(ws), gate_root=str(gr))
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=support.manual_clock(),
+            authority_db_path=self.dir / "autobot.db",
+            holder="test")
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("LOCAL", str(cm.exception))
+        runtime.close()
 
 
 if __name__ == "__main__":

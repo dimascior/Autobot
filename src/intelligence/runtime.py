@@ -102,10 +102,15 @@ def _load_config(project_root):
     return config
 
 
-def _environment_from_ledger(db, store, repository_id, defaults):
+def _environment_from_ledger(db, store, repository_id, defaults,
+                            delegation_id=None):
     """Build the RepositoryEnvironment from the admitted objects already
     in the authority database. The runtime reads the ledger it governs
-    rather than maintaining a second source of bound-object payloads."""
+    rather than maintaining a second source of bound-object payloads.
+
+    When ``delegation_id`` is given, the exact DelegationContract with
+    that ID is selected; otherwise the most recently admitted delegation
+    is used (test convenience — production always configures an ID)."""
     decl_row = db.conn.execute(
         "SELECT o.content_address FROM declarations d"
         " JOIN objects o ON d.object_hash = o.object_hash"
@@ -122,7 +127,20 @@ def _environment_from_ledger(db, store, repository_id, defaults):
         " ORDER BY minted_utc DESC").fetchall()
     if not deleg_rows:
         raise ConfigError("no DelegationContract admitted in the ledger")
-    delegation = json.loads(store.get(deleg_rows[0]["content_address"]))
+
+    delegation = None
+    if delegation_id:
+        for r in deleg_rows:
+            payload = json.loads(store.get(r["content_address"]))
+            if payload.get("delegation_id") == delegation_id:
+                delegation = payload
+                break
+        if delegation is None:
+            raise ConfigError(
+                "configured delegation_id %r not found in the ledger"
+                % delegation_id)
+    else:
+        delegation = json.loads(store.get(deleg_rows[0]["content_address"]))
 
     verifier_rows = db.conn.execute(
         "SELECT content_address FROM objects"
@@ -240,6 +258,7 @@ class AuthorityRuntime:
         holder = authority_section.get("holder", "autobot-authority")
         lease_ttl = int(authority_section.get("lease_ttl", 3600))
         repository_id = authority_section.get("repository_id", "autobot")
+        delegation_id = authority_section.get("delegation_id", None)
 
         # --- clock ---
         clock = clock or SystemClock()
@@ -284,7 +303,8 @@ class AuthorityRuntime:
         if defaults is None:
             defaults = authority_section.get("defaults", {})
         environment = _environment_from_ledger(
-            db, store, repository_id, defaults)
+            db, store, repository_id, defaults,
+            delegation_id=delegation_id)
 
         return cls(
             db=db, store=store, registry=registry, sequencer=sequencer,
@@ -341,12 +361,35 @@ class AuthorityRuntime:
             problems.append(
                 "declaration authority_location is %r, expected 'LOCAL'"
                 % decl.get("authority_location"))
+        if decl.get("canonical_ref") != "refs/heads/main":
+            problems.append(
+                "declaration canonical_ref is %r, expected"
+                " 'refs/heads/main'" % decl.get("canonical_ref"))
         deleg = self.environment.delegation
         repos = deleg.get("repository_ids", [])
         if "autobot" not in repos:
             problems.append(
                 "delegation repository_ids %r does not include 'autobot'"
                 % repos)
+        if deleg.get("delegated_to") != "planner":
+            problems.append(
+                "delegation delegated_to is %r, expected 'planner'"
+                % deleg.get("delegated_to"))
+        now_str = instant(self.clock.now())
+        created = deleg.get("created_utc", "")
+        expires = deleg.get("expires_utc", "")
+        if created and now_str < created:
+            problems.append(
+                "delegation created_utc %s is in the future" % created)
+        if expires and now_str >= expires:
+            problems.append(
+                "delegation expires_utc %s has passed" % expires)
+        scope_paths = deleg.get("allowed_scope", {}).get("paths", [])
+        for required in ("src/autobot", "src/intelligence", "docs"):
+            if required not in scope_paths:
+                problems.append(
+                    "delegation scope missing required path %r"
+                    % required)
         verifier_ids = _admitted_ids(
             self.db, self.store, "VerifierRegistration", "verifier_id")
         for vid in self.REQUIRED_VERIFIER_IDS:

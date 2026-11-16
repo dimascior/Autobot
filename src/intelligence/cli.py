@@ -27,39 +27,27 @@ def _project_root():
 def cmd_seed(args):
     """Admit the canonical production objects through the Registry.
 
-    Convergent: re-running after a successful seed is a no-op (the
-    Registry deduplicates on content identity). Admits:
+    Deterministic: the same seed version under the same closure bytes
+    and interpreter identity always produces the same canonical objects
+    and object hashes.  A second seed adds zero new authority objects.
+
+    Admits (pilot-read-only-v1):
       - RepositoryAuthorityDeclaration (LOCAL, autobot)
-      - DelegationContract (delegation_a)
+      - DelegationContract (pilot-read-only)
       - VerifierRegistration (registry-checker, vector-checker)
       - TransformRegistration (identity-projection)
-      - Live verifier/transform closure bytes and dependency lock
-
-    These are the same objects the test suite seeds through
-    support.seed_bound_objects(), admitted through the real Registry
-    admission path."""
+      - Live closure bytes and dependency lock in CAS"""
     from autobot import Database, Registry, Sequencer, Store, SystemClock
-    from autobot.models import instant
+    from contract_library import object_hash
 
-    try:
-        import tomllib as _tomllib
-    except ModuleNotFoundError:
-        _tomllib = None
+    from .production_seed import (
+        SEED_VERSION,
+        all_seed_objects,
+        store_closure_bytes,
+    )
 
     project_root = args.root or _project_root()
-    config = {}
-    if _tomllib is not None:
-        for name in ("config.toml", "config.local.toml"):
-            path = project_root / name
-            if path.is_file():
-                with open(str(path), "rb") as fh:
-                    local = _tomllib.load(fh)
-                for section, values in local.items():
-                    if isinstance(values, dict):
-                        config.setdefault(section, {}).update(values)
-                    else:
-                        config[section] = values
-
+    config = _load_seed_config(project_root)
     authority_section = config.get("authority", {})
     data_dir = Path(authority_section.get("data_dir", str(project_root)))
     authority_db_path = data_dir / authority_section.get(
@@ -74,224 +62,60 @@ def cmd_seed(args):
     sequencer = Sequencer(db, store, clock, holder=holder)
     sequencer.acquire_lease(ttl_seconds=300)
 
-    fixtures_dir = project_root / "docs" / "architecture" / "chapter1" \
-        / "vectors" / "fixtures"
-    graph_path = fixtures_dir / "graph.json"
-    if not graph_path.is_file():
-        print("cannot find fixtures at %s" % fixtures_dir, file=sys.stderr)
-        db.close()
-        return 1
+    store_closure_bytes(store)
 
-    with open(str(graph_path), "r", encoding="utf-8") as fh:
-        graph = json.load(fh)
-
+    print("seed profile: %s" % SEED_VERSION)
     admitted = []
     skipped = []
+    seed_objects = all_seed_objects()
 
-    declaration_objects = [
-        "declaration_remote",
-        "declaration_local",
-    ]
-
-    for name in declaration_objects:
-        if name not in graph:
-            print("  SKIP %s (not in graph.json)" % name)
-            skipped.append(name)
-            continue
+    for logical_name, payload in seed_objects:
+        obj_hash = object_hash(payload["kind"], payload)
         try:
-            registry.admit_object(graph[name], submitted_by="you")
-            admitted.append(name)
-            print("  OK   %s" % name)
+            registry.admit_object(payload, submitted_by="you")
+            admitted.append((logical_name, payload["kind"], obj_hash))
+            print("  OK   %-40s %s" % (logical_name, obj_hash[:24]))
         except Exception as exc:
-            if "already" in str(exc).lower() or "duplicate" in str(exc).lower():
-                print("  DUP  %s" % name)
-                admitted.append(name)
+            msg = str(exc).lower()
+            if "already" in msg or "duplicate" in msg:
+                admitted.append((logical_name, payload["kind"], obj_hash))
+                print("  DUP  %-40s %s" % (logical_name, obj_hash[:24]))
             else:
-                print("  FAIL %s: %s" % (name, exc))
-                skipped.append(name)
-
-    pilot_delegation = {
-        "schema_version": "v1",
-        "kind": "DelegationContract",
-        "delegation_id": "dg_pilot_read_only_00000000000001",
-        "delegated_to": "planner",
-        "authored_by": "you",
-        "created_utc": instant(clock.now()),
-        "expires_utc": "2027-06-01T00:00:00.000Z",
-        "repository_ids": ["autobot"],
-        "allowed_scope": {
-            "paths": [
-                "src/autobot",
-                "src/intelligence",
-                "docs",
-            ],
-            "artifact_paths": [],
-        },
-        "mandatory_floors": {
-            "autobot": {
-                "READ_ONLY": [],
-                "SOURCE_MODIFYING": ["a1"],
-            }
-        },
-        "policy_bounds": {
-            "effect_hard_timeout_seconds": 240,
-            "effect_intent_ttl_seconds": 300,
-        },
-    }
-    try:
-        registry.admit_object(pilot_delegation, submitted_by="you")
-        admitted.append("pilot-delegation")
-        print("  OK   DelegationContract/pilot-delegation")
-    except Exception as exc:
-        if "already" in str(exc).lower() or "duplicate" in str(exc).lower():
-            print("  DUP  DelegationContract/pilot-delegation")
-            admitted.append("pilot-delegation")
-        else:
-            print("  FAIL DelegationContract/pilot-delegation: %s" % exc)
-            skipped.append("pilot-delegation")
-
-    # Live verification and transform registrations: executable closures
-    # pinned to the running interpreter, so the production verifier runner
-    # can execute them.
-    sys.path.insert(0, str(project_root / "src"))
-    try:
-        from autobot.environment_probe import interpreter_identity
-        from contract_library import artifact_root, content_address
-
-        live_lock = b"# autobot live verifier dependency lock: stdlib only\\n"
-        store.put(live_lock)
-
-        # Live verifier scripts (same as support.LIVE_PASS_SCRIPT)
-        live_pass_script = b'''import hashlib
-import json
-import sys
-
-
-def main():
-    with open(sys.argv[1], "r", encoding="utf-8") as fh:
-        context = json.load(fh)
-    for artifact in context["subject"]["artifacts"]:
-        with open(artifact["file"], "rb") as fh:
-            digest = "sha256:" + hashlib.sha256(fh.read()).hexdigest()
-        if digest != artifact["content_sha256"]:
-            print(json.dumps({"autobot_verifier_result": {
-                "conclusion": "FAIL",
-                "detail": "subject artifact drifted: %s"
-                          % artifact["logical_path"]}}))
-            return 0
-    print(json.dumps({"autobot_verifier_result": {
-        "conclusion": "PASS",
-        "detail": "subject bytes verified against their content"
-                  " addresses"}}))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-'''
-        store.put(live_pass_script)
-
-        # Identity-projection transform script
-        live_identity_script = b'''import sys
-
-with open(sys.argv[1], "rb") as fh:
-    data = fh.read()
-with open(sys.argv[2], "wb") as fh:
-    fh.write(data)
-sys.exit(0)
-'''
-        store.put(live_identity_script)
-
-        interp_id = interpreter_identity()
-
-        def _make_verifier(verifier_id, suffix, script):
-            closure = {
-                "kind": "python",
-                "script_sha256": content_address(script),
-                "interpreter_id": interp_id,
-                "dependency_lock_sha256": content_address(live_lock),
-            }
-            return {
-                "schema_version": "v1",
-                "kind": "VerifierRegistration",
-                "registration_id": "rg_" + suffix.rjust(32, "0"),
-                "verifier_id": verifier_id,
-                "version": "1.0.0",
-                "closure": closure,
-                "artifact_root": artifact_root(closure),
-                "entrypoint": "verify.py",
-                "execution_requirements": [],
-                "registered_by": "you",
-                "registered_utc": instant(clock.now()),
-            }
-
-        def _make_transform(transform_id, suffix, script):
-            closure = {
-                "kind": "python",
-                "script_sha256": content_address(script),
-                "interpreter_id": interp_id,
-                "dependency_lock_sha256": content_address(live_lock),
-            }
-            return {
-                "schema_version": "v1",
-                "kind": "TransformRegistration",
-                "registration_id": "rg_" + suffix.rjust(32, "0"),
-                "transform_id": transform_id,
-                "version": "1.0.0",
-                "closure": closure,
-                "artifact_root": artifact_root(closure),
-                "entrypoint": "transform.py",
-                "execution_requirements": [],
-                "registered_by": "you",
-                "registered_utc": instant(clock.now()),
-            }
-
-        registrations = [
-            ("registry-checker", "c1", live_pass_script),
-            ("vector-checker", "c2", live_pass_script),
-        ]
-        for verifier_id, suffix, script in registrations:
-            payload = _make_verifier(verifier_id, suffix, script)
-            try:
-                registry.admit_object(payload, submitted_by="you")
-                print("  OK   VerifierRegistration/%s" % verifier_id)
-                admitted.append("verifier/%s" % verifier_id)
-            except Exception as exc:
-                if "already" in str(exc).lower() or \
-                        "duplicate" in str(exc).lower():
-                    print("  DUP  VerifierRegistration/%s" % verifier_id)
-                    admitted.append("verifier/%s" % verifier_id)
-                else:
-                    print("  FAIL VerifierRegistration/%s: %s"
-                          % (verifier_id, exc))
-
-        transform_payload = _make_transform(
-            "identity-projection", "d1", live_identity_script)
-        try:
-            registry.admit_object(transform_payload, submitted_by="you")
-            print("  OK   TransformRegistration/identity-projection")
-            admitted.append("transform/identity-projection")
-        except Exception as exc:
-            if "already" in str(exc).lower() or \
-                    "duplicate" in str(exc).lower():
-                print("  DUP  TransformRegistration/identity-projection")
-                admitted.append("transform/identity-projection")
-            else:
-                print("  FAIL TransformRegistration/identity-projection:"
-                      " %s" % exc)
-
-    finally:
-        if str(project_root / "src") in sys.path:
-            sys.path.remove(str(project_root / "src"))
+                skipped.append((logical_name, payload["kind"], str(exc)))
+                print("  FAIL %-40s %s" % (logical_name, exc))
 
     db.close()
     print("seed complete: %d admitted, %d skipped"
           % (len(admitted), len(skipped)))
     if skipped:
-        print("SEED FAILED: required objects not admitted: %s"
-              % ", ".join(skipped), file=sys.stderr)
+        print("SEED FAILED: required objects not admitted:",
+              file=sys.stderr)
+        for name, kind, reason in skipped:
+            print("  %s (%s): %s" % (name, kind, reason),
+                  file=sys.stderr)
         return 1
     return 0
+
+
+def _load_seed_config(project_root):
+    try:
+        import tomllib as _tomllib
+    except ModuleNotFoundError:
+        _tomllib = None
+    if _tomllib is None:
+        return {}
+    config = {}
+    for name in ("config.toml", "config.local.toml"):
+        path = project_root / name
+        if path.is_file():
+            with open(str(path), "rb") as fh:
+                local = _tomllib.load(fh)
+            for section, values in local.items():
+                if isinstance(values, dict):
+                    config.setdefault(section, {}).update(values)
+                else:
+                    config[section] = values
+    return config
 
 
 def cmd_bootstrap(args):
@@ -302,19 +126,32 @@ def cmd_bootstrap(args):
         print("bootstrap FAILED: %s" % exc, file=sys.stderr)
         return 1
     try:
+        decl = rt.environment.declaration
+        deleg = rt.environment.delegation
+        assignment = rt.factory.select("research", "builder")
         print("authority runtime assembled")
-        print("  holder:     %s" % rt.sequencer.holder)
-        print("  epoch:      %s" % rt.sequencer.epoch)
-        print("  repository: %s" % rt.environment.repository_id)
-        print("  factory:    %d registrations"
-              % len(rt.factory._rows))
-        print("  transport:  %s -> %s"
+        print("  holder:      %s" % rt.sequencer.holder)
+        print("  epoch:       %s" % rt.sequencer.epoch)
+        print("  repository:  %s" % rt.environment.repository_id)
+        print("  location:    %s" % decl.get("authority_location"))
+        print("  canonical:   %s" % decl.get("canonical_ref"))
+        print("  delegation:  %s" % deleg.get("delegation_id"))
+        print("  delegated:   %s" % deleg.get("delegated_to"))
+        print("  scope:       %s"
+              % deleg.get("allowed_scope", {}).get("paths", []))
+        print("  created:     %s" % deleg.get("created_utc"))
+        print("  expires:     %s" % deleg.get("expires_utc"))
+        print("  provider:    %s" % assignment.get("provider"))
+        print("  transport:   %s -> %s"
               % (rt.transport.__class__.__name__,
                  rt.transport._home))
-        print("  gate_root:  %s" % rt.transport._gate_root)
+        print("  workspace:   %s" % rt.transport._workspace)
+        print("  gate_root:   %s" % rt.transport._gate_root)
+        print("  verifiers:   %s" % rt.environment.verifier_hashes)
+        print("  transforms:  %s" % rt.environment.transform_hashes)
         st = rt.status()
-        print("  objectives: %d active" % len(st["objectives"]))
-        print("  sequences:  %d active, %d recently completed"
+        print("  objectives:  %d active" % len(st["objectives"]))
+        print("  sequences:   %d active, %d recently completed"
               % (len(st["active_sequences"]),
                  len(st["recent_completed"])))
         print("bootstrap OK")
