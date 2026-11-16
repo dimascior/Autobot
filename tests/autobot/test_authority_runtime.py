@@ -230,6 +230,165 @@ class BootstrapAssemblyTests(unittest.TestCase):
             runtime.close()
 
 
+    # ================================================================
+    # 11. Bootstrap validates pilot readiness
+    # ================================================================
+
+    def test_bootstrap_validates_factory_seat(self):
+        """Bootstrap fails when research/builder seat is missing."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        env = support.intelligence_environment()
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()  # no registrations
+        transport = AutoSwarmTransport(
+            rt.store, str(self.autoswarm_home), str(self.workspace),
+            gate_root=str(self.gate_root))
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=self.clock,
+            authority_db_path=self.dir / "autobot.db",
+            holder="bootstrap-test")
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("research/builder", str(cm.exception))
+        runtime.close()
+
+    def test_bootstrap_validates_gate_root(self):
+        """Bootstrap fails when gate_root is None."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        env = support.intelligence_environment()
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()
+        factory.register("research", "builder", "codex")
+        transport = AutoSwarmTransport(
+            rt.store, str(self.autoswarm_home), str(self.workspace),
+            gate_root=None)  # no gate root
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=self.clock,
+            authority_db_path=self.dir / "autobot.db",
+            holder="bootstrap-test")
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("gate_root", str(cm.exception))
+        runtime.close()
+
+    def test_bootstrap_validates_defaults(self):
+        """Bootstrap fails when compiler defaults are incomplete."""
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        graph = support.load_fixture("graph.json")
+        rt.registry.admit_object(graph["declaration_local"],
+                                 submitted_by="you")
+        rt.sequencer.acquire_lease(ttl_seconds=360000)
+        env = _environment_from_ledger(
+            rt.db, rt.store, "autobot", defaults={})  # empty defaults
+        plan = PlanStore(self.dir / "intelligence.db")
+        factory = AgentFactory()
+        factory.register("research", "builder", "codex")
+        transport = AutoSwarmTransport(
+            rt.store, str(self.autoswarm_home), str(self.workspace),
+            gate_root=str(self.gate_root))
+        runner = ProductionVerifierRunner(rt.sequencer, rt.store)
+        runtime = AuthorityRuntime(
+            db=rt.db, store=rt.store, registry=rt.registry,
+            sequencer=rt.sequencer, plan=plan, factory=factory,
+            transport=transport, runner=runner, environment=env,
+            clock=self.clock,
+            authority_db_path=self.dir / "autobot.db",
+            holder="bootstrap-test")
+        with self.assertRaises(ConfigError) as cm:
+            runtime._validate_pilot_readiness()
+        self.assertIn("compiler default", str(cm.exception))
+        runtime.close()
+
+    def test_bootstrap_passes_with_full_config(self):
+        """Bootstrap succeeds when all pilot dependencies are present."""
+        runtime, _rt = self._seed_and_build()
+        try:
+            runtime._validate_pilot_readiness()
+        finally:
+            runtime.close()
+
+
+class PromptBindingTests(unittest.TestCase):
+    """The CLI's prompt/spec-input binding stores exact guidance bytes
+    in CAS and wires the address into specification_inputs."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.clock = support.manual_clock()
+
+    def tearDown(self):
+        try:
+            self.tmp.cleanup()
+        except OSError:
+            pass
+
+    def test_prompt_bytes_stored_and_addressable(self):
+        """Guidance bytes stored in CAS are retrievable by their address."""
+        rt = support.make_runtime(self.dir, self.clock)
+        guidance = "Inspect the execution boundary."
+        prompt_bytes = guidance.encode("utf-8")
+        address = rt.store.put(prompt_bytes)
+        retrieved = rt.store.get(address)
+        self.assertEqual(retrieved, prompt_bytes)
+        rt.db.close()
+
+    def test_spec_inputs_carries_prompt_address(self):
+        """The specification_inputs structure carries the exact CAS
+        address of the prompt bytes."""
+        from contract_library import content_address
+        rt = support.make_runtime(self.dir, self.clock)
+        guidance = "Inspect the execution boundary."
+        prompt_bytes = guidance.encode("utf-8")
+        address = rt.store.put(prompt_bytes)
+        spec_inputs = {
+            "name_to_exact_byte_sha256": {
+                "specialist_prompt": address,
+            }
+        }
+        self.assertEqual(
+            spec_inputs["name_to_exact_byte_sha256"]["specialist_prompt"],
+            content_address(prompt_bytes))
+        rt.db.close()
+
+    def test_identity_projection_over_prompt_equals_prompt(self):
+        """With identity-projection, the transform output equals the
+        input — so prompt_sha256 from the provider's task.json should
+        match the frozen specification input address."""
+        from autobot import transforms
+        rt = support.make_runtime(self.dir, self.clock)
+        support.seed_bound_objects(rt)
+        guidance = "Inspect the execution boundary."
+        prompt_bytes = guidance.encode("utf-8")
+        address = rt.store.put(prompt_bytes)
+        reg = support.live_transform_registration("identity-projection")
+        output_bytes, _ = transforms.execute_transform(
+            rt.store, reg, prompt_bytes)
+        self.assertEqual(output_bytes, prompt_bytes)
+        from contract_library import content_address
+        self.assertEqual(content_address(output_bytes), address)
+        rt.db.close()
+
+
 class _StubPolicy(ChiefEngineerPolicy):
     """Does nothing — used to test driver construction only."""
     def plan(self, view):
