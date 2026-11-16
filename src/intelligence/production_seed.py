@@ -169,3 +169,48 @@ def store_closure_bytes(store):
     store.put(LIVE_LOCK)
     store.put(LIVE_PASS_SCRIPT)
     store.put(LIVE_IDENTITY_SCRIPT)
+
+
+def production_defaults(project_root=None):
+    """The compiler defaults for the pilot-read-only-v1 profile.
+
+    Reads the V-A engineering profile from the frozen fixtures and
+    patches the environment constraint to match the running interpreter,
+    exactly as the test suite's intelligence_environment() does."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    if project_root is None:
+        project_root = _Path(__file__).resolve().parents[2]
+    fixtures = (project_root / "docs" / "architecture" / "chapter1"
+                / "vectors" / "fixtures")
+    with open(str(fixtures / "va_record.json"), "r",
+              encoding="utf-8") as fh:
+        record = _json.load(fh)
+
+    interp = interpreter_identity()
+    parts = interp.split("-")
+    impl = parts[0]
+    version = parts[1]
+
+    assertions = _json.loads(_json.dumps(record["acceptance_assertions"]))
+    assertions["ids_and_environment_constraints"][0][
+        "environment_constraint"] = {
+        "interpreter": {
+            "implementations": [impl],
+            "versions": [version],
+        }
+    }
+    return {
+        "acceptance_assertions": assertions,
+        "allowed_scope": record["allowed_scope"],
+        "capability_requirements": record["capability_requirements"],
+        "evidence_requirements": record["evidence_requirements"],
+        "retry_policy": {"max_retries": 2},
+        "repair_policy": {"max_repairs": 1},
+        "reuse_policy": {"mode": "NEVER"},
+        "effect_policy": {"effect_intent_ttl_seconds": 300,
+                          "effect_hard_timeout_seconds": 240},
+        "role_transform_id": "identity-projection",
+        "specification_inputs": record.get("specification_inputs", {}),
+    }

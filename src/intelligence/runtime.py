@@ -302,6 +302,9 @@ class AuthorityRuntime:
         # --- environment ---
         if defaults is None:
             defaults = authority_section.get("defaults", {})
+        if not defaults:
+            from .production_seed import production_defaults
+            defaults = production_defaults(project_root)
         environment = _environment_from_ledger(
             db, store, repository_id, defaults,
             delegation_id=delegation_id)
