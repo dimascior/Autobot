@@ -11,6 +11,12 @@ backlog.toml
 *.db
 *.db.bak*
 
+# Pilot evidence bundles (preserved DB + CAS + call snapshots)
+pilot-evidence-*/
+
+# CAS object store (produced by seed/run, never committed)
+store/
+
 # Python
 __pycache__/
 *.pyc

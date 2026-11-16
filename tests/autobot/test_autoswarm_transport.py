@@ -274,13 +274,21 @@ class CollectTests(unittest.TestCase):
         self._call_dir(call_id).mkdir(parents=True)
         self.assertIsNone(self.transport.collect(call_id))
 
-    def test_collect_no_evidence_when_no_stdout_no_governance(self):
+    def test_collect_always_includes_result_as_obj11(self):
+        """result.json is always collected as the obj-11 lifecycle witness,
+        even when no governance or transcript evidence exists."""
         call_id = "call_" + "0" * 32
         _write_json(self._call_dir(call_id) / "result.json",
                      {"call_id": call_id, "outcome": "failed",
                       "error": "auth"})
         collected = self.transport.collect(call_id)
-        self.assertEqual(collected["witness_files"], [])
+        obj11 = [w for w in collected["witness_files"]
+                 if w[0] == "obj-11"]
+        self.assertEqual(len(obj11), 1)
+        self.assertEqual(obj11[0][1], "autoswarm")
+        import json
+        witness = json.loads(obj11[0][2])
+        self.assertEqual(witness["call_id"], call_id)
         self.assertEqual(collected["outcome"], "failed")
 
 
