@@ -18,6 +18,11 @@ from contract_library import artifact_root, content_address
 
 SEED_VERSION = "pilot-read-only-v1"
 
+EVIDENCE_PROFILES = {
+    "READ_ONLY_REPORT": ["EXECUTION_LIFECYCLE"],
+    "READ_ONLY_GOVERNED": ["COMMAND_GOVERNANCE", "EXECUTION_LIFECYCLE"],
+}
+
 SEED_EPOCH = "2026-11-16T00:00:00.000Z"
 
 LIVE_LOCK = b"# autobot live verifier dependency lock: stdlib only\\n"
@@ -171,8 +176,12 @@ def store_closure_bytes(store):
     store.put(LIVE_IDENTITY_SCRIPT)
 
 
-def production_defaults(project_root=None):
+def production_defaults(project_root=None, evidence_profile="READ_ONLY_REPORT"):
     """The compiler defaults for the pilot-read-only-v1 profile.
+
+    ``evidence_profile`` selects the evidence requirements:
+    READ_ONLY_REPORT requires only EXECUTION_LIFECYCLE;
+    READ_ONLY_GOVERNED also requires COMMAND_GOVERNANCE.
 
     Reads the V-A engineering profile from the frozen fixtures and
     patches the environment constraint to match the running interpreter,
@@ -201,11 +210,12 @@ def production_defaults(project_root=None):
             "versions": [version],
         }
     }
+    delegation = pilot_delegation()
     return {
         "acceptance_assertions": assertions,
-        "allowed_scope": record["allowed_scope"],
+        "allowed_scope": delegation["allowed_scope"],
         "capability_requirements": record["capability_requirements"],
-        "evidence_requirements": record["evidence_requirements"],
+        "evidence_requirements": EVIDENCE_PROFILES[evidence_profile],
         "retry_policy": {"max_retries": 2},
         "repair_policy": {"max_repairs": 1},
         "reuse_policy": {"mode": "NEVER"},

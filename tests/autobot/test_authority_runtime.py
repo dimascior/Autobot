@@ -912,5 +912,94 @@ class EnvironmentFromLedgerEdgeCases(unittest.TestCase):
         runtime.close()
 
 
+class PilotRegressionTests(unittest.TestCase):
+    """Regressions from the first live READ_ONLY pilot (2026-11-16)."""
+
+    def test_defaults_scope_within_delegation(self):
+        """production_defaults scope must be within the delegation scope.
+
+        Finding: fixture scope (artifact_paths: ['artifacts/ch1']) was
+        outside the pilot delegation (artifact_paths: []). SEM-11 blocked
+        admission as QUEUED_FOR_YOU."""
+        from intelligence.production_seed import (
+            production_defaults, pilot_delegation)
+        from contract_library.grammars import scope_within
+        defaults = production_defaults()
+        delegation = pilot_delegation()
+        d_scope = defaults["allowed_scope"]
+        g_scope = delegation["allowed_scope"]
+        self.assertTrue(
+            scope_within(d_scope.get("paths", []),
+                         g_scope.get("paths", [])),
+            "default paths outside delegation paths")
+        self.assertTrue(
+            scope_within(d_scope.get("artifact_paths", []),
+                         g_scope.get("artifact_paths", [])),
+            "default artifact_paths outside delegation artifact_paths")
+
+    def test_evidence_profiles_defined(self):
+        """READ_ONLY_REPORT and READ_ONLY_GOVERNED profiles exist."""
+        from intelligence.production_seed import EVIDENCE_PROFILES
+        self.assertIn("READ_ONLY_REPORT", EVIDENCE_PROFILES)
+        self.assertIn("READ_ONLY_GOVERNED", EVIDENCE_PROFILES)
+        self.assertEqual(EVIDENCE_PROFILES["READ_ONLY_REPORT"],
+                         ["EXECUTION_LIFECYCLE"])
+        self.assertIn("COMMAND_GOVERNANCE",
+                       EVIDENCE_PROFILES["READ_ONLY_GOVERNED"])
+        self.assertIn("EXECUTION_LIFECYCLE",
+                       EVIDENCE_PROFILES["READ_ONLY_GOVERNED"])
+
+    def test_evidence_profile_selects_requirements(self):
+        """production_defaults evidence_profile parameter selects correctly."""
+        from intelligence.production_seed import production_defaults
+        report = production_defaults(evidence_profile="READ_ONLY_REPORT")
+        governed = production_defaults(evidence_profile="READ_ONLY_GOVERNED")
+        self.assertEqual(report["evidence_requirements"],
+                         ["EXECUTION_LIFECYCLE"])
+        self.assertIn("COMMAND_GOVERNANCE",
+                       governed["evidence_requirements"])
+
+    def test_transport_collects_result_as_obj11(self):
+        """AutoSwarm transport collects result.json as obj-11 witness.
+
+        Finding: failed specialist produced no witnesses; Sequencer
+        crashed on store.has(None). Transport must always provide
+        result.json bytes as the obj-11 execution-lifecycle witness."""
+        import json, tempfile
+        from autobot.autoswarm_transport import AutoSwarmTransport
+        from autobot import Store
+        tmp = tempfile.mkdtemp()
+        store = Store(Path(tmp) / "store")
+        home = Path(tmp) / "home"
+        home.mkdir()
+        (home / "calls").mkdir()
+        transport = AutoSwarmTransport(
+            store, str(home), str(tmp))
+        call_id = "call_test_obj11_regression"
+        call_dir = home / "calls" / call_id
+        call_dir.mkdir()
+        result = {
+            "call_id": call_id,
+            "outcome": "failed",
+            "native_session_id": "test-session",
+            "error": "test error",
+            "exit_code": 1,
+        }
+        (call_dir / "result.json").write_text(
+            json.dumps(result), encoding="utf-8")
+        collected = transport.collect(call_id)
+        self.assertIsNotNone(collected)
+        obj11 = [w for w in collected["witness_files"]
+                 if w[0] == "obj-11"]
+        self.assertEqual(len(obj11), 1,
+                         "result.json must be collected as obj-11")
+        witness_bytes = obj11[0][2]
+        witness = json.loads(witness_bytes)
+        self.assertEqual(witness["call_id"], call_id)
+        self.assertEqual(witness["outcome"], "failed")
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -133,7 +133,8 @@ class AutoSwarmTransport(Transport):
                 manifest["projection_address"])
             projection = json.loads(projection_bytes)
             prompt = projection["engineering_context"]["guidance"]
-            info = self._cli([
+            model = manifest.get("provider_assignment", {}).get("model")
+            args = [
                 "run",
                 "--agent", provider,
                 "--no-parent",
@@ -141,8 +142,11 @@ class AutoSwarmTransport(Transport):
                 "--cwd", str(self._workspace),
                 "--call-id", call_id,
                 "--manifest", str(manifest_file),
-                "--input", "-"],
-                stdin_text=prompt)
+                "--input", "-"]
+            if model:
+                args.insert(args.index("--no-parent"), "--model")
+                args.insert(args.index("--no-parent"), model)
+            info = self._cli(args, stdin_text=prompt)
         finally:
             try:
                 manifest_file.unlink()
@@ -195,6 +199,11 @@ class AutoSwarmTransport(Transport):
             return None
         session_id = result.get("native_session_id")
         witness_files = []
+        result_path = directory / "result.json"
+        if result_path.is_file():
+            witness_files.append(
+                ("obj-11", WITNESS_KINDS["obj-11"]["producer"],
+                 result_path.read_bytes()))
         for entry_bytes in self._collect_governance(session_id):
             witness_files.append(
                 ("obj-12", WITNESS_KINDS["obj-12"]["producer"],

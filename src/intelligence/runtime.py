@@ -19,6 +19,7 @@ management — connecting configuration to constructors.
 
 import json
 import os
+import shutil
 import sys
 
 try:
@@ -39,6 +40,10 @@ from .compiler import RepositoryEnvironment
 from .driver import ContinuousDriver
 from .planstore import PlanStore, readonly_view
 from .roles import AgentFactory
+
+
+def _which(name):
+    return shutil.which(name)
 
 
 class ConfigError(Exception):
@@ -214,7 +219,7 @@ class AuthorityRuntime:
 
     @classmethod
     def from_config(cls, project_root=None, config=None,
-                    defaults=None, clock=None):
+                    defaults=None, clock=None, evidence_profile=None):
         """Assemble the full runtime from project configuration.
 
         ``project_root`` is the checkout directory containing config.toml
@@ -282,22 +287,32 @@ class AuthorityRuntime:
             if not isinstance(route_config, dict):
                 continue
             agent = route_config.get("agent", route_name)
+            model = route_config.get("model", None)
             for capability, role_map in route_config.items():
                 if capability in ("agent", "model", "provider_args",
                                   "workspace", "remote_control",
                                   "effort"):
                     continue
                 if isinstance(role_map, str):
-                    factory.register(capability, role_map, agent)
+                    factory.register(capability, role_map, agent,
+                                     model=model)
                 elif isinstance(role_map, dict):
                     for role, provider in role_map.items():
-                        factory.register(capability, role, provider)
+                        factory.register(capability, role, provider,
+                                         model=model)
 
         # --- transport ---
+        autoswarm_cli = authority_section.get("autoswarm_cli", None)
+        autoswarm_argv = None
+        if autoswarm_cli:
+            autoswarm_argv = [autoswarm_cli]
+        elif _which("autoswarm"):
+            autoswarm_argv = [_which("autoswarm")]
         transport = AutoSwarmTransport(
             store, str(autoswarm_home), workspace,
             gate_root=str(gate_root) if gate_root else None,
-            session_export_dir=session_export_dir)
+            session_export_dir=session_export_dir,
+            autoswarm_argv=autoswarm_argv)
 
         # --- verifier ---
         runner = ProductionVerifierRunner(sequencer, store)
@@ -307,7 +322,9 @@ class AuthorityRuntime:
             defaults = authority_section.get("defaults", {})
         if not defaults:
             from .production_seed import production_defaults
-            defaults = production_defaults(project_root)
+            ep = evidence_profile or "READ_ONLY_REPORT"
+            defaults = production_defaults(project_root,
+                                           evidence_profile=ep)
         environment = _environment_from_ledger(
             db, store, repository_id, defaults,
             delegation_id=delegation_id)
@@ -321,7 +338,7 @@ class AuthorityRuntime:
 
     @classmethod
     def bootstrap(cls, project_root=None, config=None,
-                  defaults=None, clock=None):
+                  defaults=None, clock=None, evidence_profile=None):
         """Construct the runtime, validate every pilot dependency, and
         return the runtime ready for add_objective / run_until_stable.
 
@@ -331,7 +348,8 @@ class AuthorityRuntime:
         verifier registrations, identity-projection transform, and the
         compiler defaults needed to freeze a READ_ONLY pilot contract."""
         rt = cls.from_config(project_root=project_root, config=config,
-                             defaults=defaults, clock=clock)
+                             defaults=defaults, clock=clock,
+                             evidence_profile=evidence_profile)
         try:
             rt._validate_pilot_readiness()
         except ConfigError:

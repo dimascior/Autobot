@@ -229,8 +229,6 @@ def cmd_run(args):
                     "roles": {"builder": {
                         "required": True,
                         "success_outcomes": ["success"]}},
-                    "evidence_requirements": [
-                        "COMMAND_GOVERNANCE", "EXECUTION_LIFECYCLE"],
                     "finalization_class": "READ_ONLY",
                     "guidance": self.guidance,
                     "specification_inputs": self.spec_inputs,
@@ -244,8 +242,10 @@ def cmd_run(args):
         print("--objective is required", file=sys.stderr)
         return 1
 
+    evidence_profile = getattr(args, "evidence_profile", "READ_ONLY_REPORT")
     try:
-        rt = AuthorityRuntime.bootstrap(project_root=args.root)
+        rt = AuthorityRuntime.bootstrap(
+            project_root=args.root, evidence_profile=evidence_profile)
     except ConfigError as exc:
         print("bootstrap FAILED: %s" % exc, file=sys.stderr)
         return 1
@@ -314,6 +314,9 @@ def main():
                        help="objective id (default: auto-generated)")
     run_p.add_argument("--guidance", default=None,
                        help="specialist guidance (default: objective text)")
+    run_p.add_argument("--evidence-profile", default="READ_ONLY_REPORT",
+                       choices=["READ_ONLY_REPORT", "READ_ONLY_GOVERNED"],
+                       help="evidence profile (default: READ_ONLY_REPORT)")
     run_p.add_argument("--dry-run", action="store_true",
                        help="assemble and add objective without executing")
 
