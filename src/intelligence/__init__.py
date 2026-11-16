@@ -38,11 +38,14 @@ from .findings import admit_finding
 from .planstore import PlanStore, readonly_view
 from .proposals import PROPOSAL_CLASSES, proposal_identity, validate_proposal
 from .roles import CAPABILITIES, AgentFactory
+from .runtime import AuthorityRuntime, ConfigError
 from .taskforce import Taskforce
 
 __all__ = [
     "AgentFactory",
+    "AuthorityRuntime",
     "CAPABILITIES",
+    "ConfigError",
     "ChiefEngineerPolicy",
     "ChiefEngineerService",
     "compile_proposal",
