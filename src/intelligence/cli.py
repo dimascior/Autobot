@@ -101,7 +101,10 @@ def _load_seed_config(project_root):
     try:
         import tomllib as _tomllib
     except ModuleNotFoundError:
-        _tomllib = None
+        try:
+            import tomli as _tomllib
+        except ModuleNotFoundError:
+            _tomllib = None
     if _tomllib is None:
         return {}
     config = {}
