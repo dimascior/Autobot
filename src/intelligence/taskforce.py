@@ -163,6 +163,16 @@ class Taskforce:
             info["attempt_id"], assignment["role"], assignment["provider"],
             projection)
         call_id = dispatched["call_id"]
+        if record["finalization_class"] == "SOURCE_MODIFYING" \
+                and self.repo_path:
+            import subprocess as _sp
+            target = record.get("source_domain", {}).get(
+                "target_ref", "refs/heads/main")
+            proc = _sp.run(
+                ["git", "-C", str(self.repo_path), "rev-parse", target],
+                capture_output=True, text=True)
+            if proc.returncode == 0:
+                assignment["source_revision"] = proc.stdout.strip()
         launch_with_manifest(
             self.sequencer, self.transport, info["attempt_id"],
             assignment, capability)
@@ -311,8 +321,17 @@ class Taskforce:
                     (att["sequence_id"],)).fetchone()
                 record = self._record_payload(seq["record_hash"])
                 if record["finalization_class"] == "SOURCE_MODIFYING":
-                    effect = _loads(artifact.decode("utf-8", "replace"),
-                                    {})
+                    text = artifact.decode("utf-8", "replace")
+                    effect = _loads(text, None)
+                    if effect is None:
+                        import re
+                        m = re.search(
+                            r'\{[^{}]*"target_ref"[^{}]*"new_value"[^{}]*\}',
+                            text, re.DOTALL)
+                        if m:
+                            effect = _loads(m.group(), {})
+                        else:
+                            effect = {}
                     treeish = effect.get("new_value") \
                         if isinstance(effect, dict) else None
                     if self.repo_path is None or not isinstance(
@@ -320,9 +339,25 @@ class Taskforce:
                         entry["candidate"] = "BLOCKED_NO_CANDIDATE_TREE"
                         collected.append(entry)
                         continue
+                    expected_old = effect.get("expected_old")
+                    if expected_old and isinstance(expected_old, str):
+                        from autobot.git_adapter import (
+                            changed_paths, verify_mutation_scope)
+                        paths = changed_paths(
+                            self.repo_path, expected_old, treeish)
+                        scope = record.get("allowed_scope", {}).get(
+                            "paths", [])
+                        unauthorized = verify_mutation_scope(paths, scope)
+                        if unauthorized:
+                            entry["candidate"] = (
+                                "BLOCKED_SCOPE_VIOLATION: %s"
+                                % unauthorized)
+                            collected.append(entry)
+                            continue
                     minted = mint_candidate_receipt(
                         self.sequencer, self.store, att["attempt_id"],
-                        repo_path=self.repo_path, treeish=treeish)
+                        repo_path=self.repo_path, treeish=treeish,
+                        source_revision=expected_old)
                 else:
                     minted = mint_candidate_receipt(
                         self.sequencer, self.store, att["attempt_id"])
@@ -465,8 +500,15 @@ class Taskforce:
                 (att["attempt_id"],)).fetchone()
             if seat is None or not seat["artifact_address"]:
                 continue
-            effect = _loads(self.store.get(
-                seat["artifact_address"]).decode("utf-8"), {})
+            text = self.store.get(
+                seat["artifact_address"]).decode("utf-8")
+            effect = _loads(text, None)
+            if effect is None:
+                import re
+                m = re.search(
+                    r'\{[^{}]*"target_ref"[^{}]*"new_value"[^{}]*\}',
+                    text, re.DOTALL)
+                effect = _loads(m.group(), {}) if m else {}
             needed = ("target_ref", "expected_old", "new_value")
             if not all(isinstance(effect.get(k), str) for k in needed):
                 continue  # the specialist proposed no executable effect

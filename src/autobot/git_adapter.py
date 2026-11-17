@@ -40,6 +40,33 @@ CANDIDATE_MINTER = "git_adapter"
 _TREE_HEX_LENGTHS = (40, 64)  # sha1 and sha256 repository object names
 
 
+def changed_paths(repo_path, old_commit, new_commit):
+    """Derive the exact set of paths changed between two commits."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo_path), "diff", "--name-only",
+         old_commit, new_commit],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ConflictError(
+            "changed-path derivation failed: git diff --name-only"
+            " %s %s: %s" % (old_commit[:12], new_commit[:12],
+                            proc.stderr.strip()))
+    return sorted(line.strip() for line in proc.stdout.strip().split("\n")
+                  if line.strip())
+
+
+def verify_mutation_scope(changed, allowed_paths):
+    """Every changed path must be covered by the allowed scope paths."""
+    unauthorized = []
+    for path in changed:
+        covered = any(
+            path == scope or path.startswith(scope.rstrip("/") + "/")
+            for scope in allowed_paths)
+        if not covered:
+            unauthorized.append(path)
+    return unauthorized
+
+
 def capture_tree(repo_path, treeish):
     """cap-42 read: the tree object name ``treeish`` peels to, from Git's
     own object model (``rev-parse <treeish>^{tree}``). Refuses anything
@@ -61,7 +88,8 @@ def capture_tree(repo_path, treeish):
     return tree
 
 
-def build_candidate_payload(state, clock, candidate_tree=None):
+def build_candidate_payload(state, clock, candidate_tree=None,
+                            candidate_changed_paths=None):
     """The canonical obj-16 payload over the Sequencer's candidate_state
     facts. Pure except for the capture instant (audit metadata, D-27):
     every binding member comes from durable ledger facts, and the tree —
@@ -98,11 +126,14 @@ def build_candidate_payload(state, clock, candidate_tree=None):
     }
     if candidate_tree is not None:  # D-37: absence by omission
         payload["candidate_tree"] = {"git_tree_sha": candidate_tree}
+    if candidate_changed_paths is not None:
+        payload["changed_paths"] = list(candidate_changed_paths)
     return payload
 
 
 def mint_candidate_receipt(sequencer, store, attempt_id,
-                           repo_path=None, treeish=None):
+                           repo_path=None, treeish=None,
+                           source_revision=None):
     """Mint the obj-16 CandidateReceipt for one FINISHED attempt and put
     its canonical bytes in the content store. Returns
     ``{"candidate_address", "payload"}`` — the freeze admission
@@ -115,17 +146,21 @@ def mint_candidate_receipt(sequencer, store, attempt_id,
     must be absent."""
     state = sequencer.candidate_state(attempt_id)
     candidate_tree = None
+    candidate_paths = None
     if state["finalization_class"] == "SOURCE_MODIFYING":
         if repo_path is None or treeish is None:
             raise ConflictError(
                 "SOURCE_MODIFYING candidate capture needs the repository"
                 " and the candidate tree-ish (cap-31/cap-42)")
         candidate_tree = capture_tree(repo_path, treeish)
+        if source_revision is not None:
+            candidate_paths = changed_paths(
+                repo_path, source_revision, treeish)
     elif repo_path is not None or treeish is not None:
         raise ConflictError(
             "READ_ONLY candidate capture takes no repository or tree-ish"
             " (no invented candidate tree)")
     payload = build_candidate_payload(state, sequencer.clock,
-                                      candidate_tree)
+                                      candidate_tree, candidate_paths)
     address = store.put(canonicalize(payload))
     return {"candidate_address": address, "payload": payload}

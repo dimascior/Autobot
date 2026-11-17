@@ -198,20 +198,18 @@ def cmd_run(args):
     from .chief import ChiefEngineerPolicy
 
     class OperatorPolicy(ChiefEngineerPolicy):
-        """A single-objective policy: emits one INVESTIGATE proposal
-        for the operator's objective, then stops proposing.
+        """A single-objective policy: emits one proposal for the
+        operator's objective, then stops proposing.
 
-        The guidance bytes are content-addressed in the CAS and placed
-        explicitly in specification_inputs so that the frozen record's
-        role-transform verifier can check:
-            prompt == identity-projection(frozen specification input)
-            == frozen specification input bytes
-        This is the exact identity chain the joined lifecycle proof
-        already verified."""
+        For READ_ONLY: emits INVESTIGATE (read-only by default).
+        For SOURCE_MODIFYING: emits CREATE_TASK (compiler derives SM)."""
 
-        def __init__(self, guidance, spec_inputs):
+        def __init__(self, guidance, spec_inputs, finalization_class,
+                     allow_paths=None):
             self.guidance = guidance
             self.spec_inputs = spec_inputs
+            self.fin_class = finalization_class
+            self.allow_paths = allow_paths
             self.proposed = False
 
         def plan(self, view):
@@ -219,11 +217,26 @@ def cmd_run(args):
                 return []
             self.proposed = True
             obj = view.objectives[0]
-            return [{
-                "objective_id": obj["objective_id"],
-                "class": "INVESTIGATE",
-                "rationale": "operator-directed investigation",
-                "requirement": {
+            if self.fin_class == "SOURCE_MODIFYING":
+                cls = "CREATE_TASK"
+                requirement = {
+                    "objective": obj["text"],
+                    "capability": "research",
+                    "finalization_class": "SOURCE_MODIFYING",
+                    "roles": {"builder": {
+                        "required": True,
+                        "success_outcomes": ["success"]}},
+                    "guidance": self.guidance,
+                    "specification_inputs": self.spec_inputs,
+                }
+                if self.allow_paths:
+                    requirement["allowed_scope"] = {
+                        "paths": sorted(self.allow_paths),
+                        "artifact_paths": [],
+                    }
+            else:
+                cls = "INVESTIGATE"
+                requirement = {
                     "objective": obj["text"],
                     "capability": "research",
                     "roles": {"builder": {
@@ -232,7 +245,12 @@ def cmd_run(args):
                     "finalization_class": "READ_ONLY",
                     "guidance": self.guidance,
                     "specification_inputs": self.spec_inputs,
-                },
+                }
+            return [{
+                "objective_id": obj["objective_id"],
+                "class": cls,
+                "rationale": "operator-directed %s" % cls.lower().replace("_", " "),
+                "requirement": requirement,
                 "snapshot": {"entries": view.snapshot["entries"],
                              "head_hash": view.snapshot["head_hash"]},
                 "provenance": {"findings": [], "events": []},
@@ -265,7 +283,10 @@ def cmd_run(args):
             }
         }
         print("prompt stored: %s" % prompt_address)
-        policy = OperatorPolicy(guidance, spec_inputs)
+        fin_class = getattr(args, "finalization_class", "READ_ONLY")
+        allow_paths = getattr(args, "allow_paths", None)
+        policy = OperatorPolicy(guidance, spec_inputs, fin_class,
+                                allow_paths=allow_paths)
 
         if args.dry_run:
             print("dry-run: runtime assembled, objective added,"
@@ -277,6 +298,24 @@ def cmd_run(args):
         print("running to stability...")
         result = rt.run_until_stable(policy)
         print("stable after %d steps" % result["steps"])
+
+        authorize_pub = getattr(args, "authorize_publication", False)
+        if fin_class == "SOURCE_MODIFYING" and authorize_pub:
+            verified = [dict(r) for r in rt.db.conn.execute(
+                "SELECT sequence_id FROM sequences"
+                " WHERE state = 'VERIFIED'")]
+            for row in verified:
+                has_permit = rt.db.conn.execute(
+                    "SELECT 1 FROM permit_state WHERE sequence_id = ?",
+                    (row["sequence_id"],)).fetchone()
+                if not has_permit:
+                    rt.sequencer.grant_permit(
+                        row["sequence_id"], permitted_uses=1)
+                    print("permit granted: %s" % row["sequence_id"])
+            if verified:
+                print("continuing after permit grant...")
+                result = rt.run_until_stable(policy)
+                print("stable after %d steps" % result["steps"])
 
         st = rt.status()
         if st["recent_completed"]:
@@ -315,8 +354,18 @@ def main():
     run_p.add_argument("--guidance", default=None,
                        help="specialist guidance (default: objective text)")
     run_p.add_argument("--evidence-profile", default="READ_ONLY_REPORT",
-                       choices=["READ_ONLY_REPORT", "READ_ONLY_GOVERNED"],
+                       choices=["READ_ONLY_REPORT", "READ_ONLY_GOVERNED",
+                                "SOURCE_MODIFYING_GOVERNED"],
                        help="evidence profile (default: READ_ONLY_REPORT)")
+    run_p.add_argument("--finalization-class", default="READ_ONLY",
+                       choices=["READ_ONLY", "SOURCE_MODIFYING"],
+                       help="finalization class (default: READ_ONLY)")
+    run_p.add_argument("--allow-path", action="append", default=None,
+                       dest="allow_paths",
+                       help="exact task mutation path (repeat for multiple)")
+    run_p.add_argument("--authorize-publication", action="store_true",
+                       default=False,
+                       help="grant one publication use for this sequence")
     run_p.add_argument("--dry-run", action="store_true",
                        help="assemble and add objective without executing")
 

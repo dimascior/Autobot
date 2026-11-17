@@ -743,12 +743,14 @@ def init_git_repo(path):
     git("init", "-q", "-b", "main")
     git("config", "user.email", "autobot@test.invalid")
     git("config", "user.name", "autobot-test")
-    (Path(path) / "one.txt").write_text("one\n", encoding="utf-8")
-    git("add", "one.txt")
+    scope_dir = Path(path) / "docs" / "architecture" / "chapter1"
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / "one.txt").write_text("one\n", encoding="utf-8")
+    git("add", "docs/architecture/chapter1/one.txt")
     git("commit", "-q", "-m", "commit A")
     sha_old = git("rev-parse", "HEAD")
-    (Path(path) / "two.txt").write_text("two\n", encoding="utf-8")
-    git("add", "two.txt")
+    (scope_dir / "two.txt").write_text("two\n", encoding="utf-8")
+    git("add", "docs/architecture/chapter1/two.txt")
     git("commit", "-q", "-m", "commit B")
     sha_new = git("rev-parse", "HEAD")
     # main back to A; B stays reachable as an object for the CAS target.

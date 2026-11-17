@@ -1001,5 +1001,93 @@ class PilotRegressionTests(unittest.TestCase):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+class CandidateScopeTests(unittest.TestCase):
+    """Regressions from the first SM pilot: candidate must be constrained
+    by the frozen task scope, not just the delegation envelope."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.repo = self.dir / "repo"
+        self.repo.mkdir()
+        subprocess.run(["git", "init", str(self.repo)],
+                       capture_output=True, check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit",
+             "--allow-empty", "-m", "initial"],
+            capture_output=True, check=True)
+        self.old = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True).stdout.strip()
+
+    def tearDown(self):
+        try:
+            self.tmp.cleanup()
+        except OSError:
+            pass
+
+    def _commit_file(self, path, content="x"):
+        full = self.repo / path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(content)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "add", str(path)],
+            capture_output=True, check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-m", "add " + path],
+            capture_output=True, check=True)
+        return subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True).stdout.strip()
+
+    def test_exact_one_file_candidate(self):
+        """A single-file candidate within scope passes."""
+        from autobot.git_adapter import changed_paths, verify_mutation_scope
+        new = self._commit_file("docs/pilot.md")
+        paths = changed_paths(str(self.repo), self.old, new)
+        self.assertEqual(paths, ["docs/pilot.md"])
+        unauthorized = verify_mutation_scope(paths, ["docs"])
+        self.assertEqual(unauthorized, [])
+
+    def test_extra_delegated_file_refused(self):
+        """Candidate changes intended file + extra delegated file -> REFUSE."""
+        from autobot.git_adapter import changed_paths, verify_mutation_scope
+        (self.repo / "docs").mkdir(exist_ok=True)
+        (self.repo / "docs" / "pilot.md").write_text("pilot")
+        (self.repo / "src").mkdir(exist_ok=True)
+        (self.repo / "src" / "extra.py").write_text("extra")
+        subprocess.run(
+            ["git", "-C", str(self.repo), "add", "."],
+            capture_output=True, check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-m", "two files"],
+            capture_output=True, check=True)
+        new = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True).stdout.strip()
+        paths = changed_paths(str(self.repo), self.old, new)
+        unauthorized = verify_mutation_scope(paths, ["docs"])
+        self.assertIn("src/extra.py", unauthorized)
+
+    def test_path_outside_task_scope_refused(self):
+        """Candidate changes path outside TaskContractRecord scope -> REFUSE."""
+        from autobot.git_adapter import verify_mutation_scope
+        unauthorized = verify_mutation_scope(
+            ["docs/pilot.md", "secret/key.txt"],
+            ["docs"])
+        self.assertIn("secret/key.txt", unauthorized)
+
+    def test_path_outside_delegation_scope_refused(self):
+        """Candidate changes path outside delegation scope -> REFUSE."""
+        from autobot.git_adapter import verify_mutation_scope
+        unauthorized = verify_mutation_scope(
+            ["outside/file.txt"],
+            ["docs", "src/autobot", "src/intelligence"])
+        self.assertIn("outside/file.txt", unauthorized)
+
+
+import subprocess
+
+
 if __name__ == "__main__":
     unittest.main()

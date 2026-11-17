@@ -63,6 +63,14 @@
               "REMOTE_CHECK"
             ]
           }
+        },
+        "source_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "target_ref": {
+          "type": "string",
+          "pattern": "^refs/"
         }
       }
     },

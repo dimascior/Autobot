@@ -2391,6 +2391,7 @@ class Sequencer:
                 "requirement_digest": seq["requirement_digest"],
                 "contract_digest": seq["contract_digest"],
                 "finalization_class": payload["finalization_class"],
+                "allowed_scope": payload.get("allowed_scope", {}),
                 "source_state": dict(contract["source_state"]),
                 "artifacts": self._artifact_triples(cur, attempt_id)}
 
