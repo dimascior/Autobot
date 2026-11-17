@@ -62,6 +62,10 @@
         "git_tree_sha": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"}
       }
     },
+    "changed_paths": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^[^\\0]+$"}
+    },
     "captured_utc": {"$ref": "#/$defs/instant"}
   },
   "$defs": {

@@ -128,18 +128,32 @@ class AutoSwarmTransport(Transport):
             prefix="manifest-", suffix=".json",
             dir=str(self._home)))
         manifest_file.write_bytes(manifest_bytes)
+        worktree_dir = None
         try:
             projection_bytes = self._store.get(
                 manifest["projection_address"])
             projection = json.loads(projection_bytes)
             prompt = projection["engineering_context"]["guidance"]
             model = manifest.get("provider_assignment", {}).get("model")
+            workspace = str(self._workspace)
+            constraints = manifest.get("constraints", {})
+            if constraints.get("finalization_class") == "SOURCE_MODIFYING":
+                import tempfile as _tf
+                source_rev = constraints.get(
+                    "source_revision", "refs/heads/main")
+                worktree_dir = Path(_tf.mkdtemp(
+                    prefix="autobot-wt-", dir=str(self._workspace)))
+                subprocess.run(
+                    ["git", "-C", str(self._workspace), "worktree", "add",
+                     "--detach", str(worktree_dir), source_rev],
+                    capture_output=True, text=True, check=True)
+                workspace = str(worktree_dir)
             args = [
                 "run",
                 "--agent", provider,
                 "--no-parent",
                 "--background",
-                "--cwd", str(self._workspace),
+                "--cwd", workspace,
                 "--call-id", call_id,
                 "--manifest", str(manifest_file),
                 "--input", "-"]

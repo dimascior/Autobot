@@ -101,6 +101,12 @@ def build_execution_manifest(sequencer, attempt_id, factory_assignment,
                 "evidence_requirements", []),
         },
     }
+    source_rev = factory_assignment.get("source_revision")
+    if source_rev is not None:
+        artifact["constraints"]["source_revision"] = source_rev
+    target = record.get("source_domain", {}).get("target_ref")
+    if target is not None:
+        artifact["constraints"]["target_ref"] = target
     if transform_field is not None:
         artifact["role_transform"] = transform_field
     if parent_call_id is not None:
