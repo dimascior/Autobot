@@ -55,6 +55,18 @@ def changed_paths(repo_path, old_commit, new_commit):
                   if line.strip())
 
 
+def candidate_parent(repo_path, commit):
+    """The first parent of a commit, from Git's object model."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo_path), "rev-parse", commit + "^"],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ConflictError(
+            "cannot resolve parent of %s: %s"
+            % (commit[:12], proc.stderr.strip()))
+    return proc.stdout.strip()
+
+
 def verify_mutation_scope(changed, allowed_paths):
     """Every changed path must be covered by the allowed scope paths."""
     unauthorized = []
@@ -154,6 +166,11 @@ def mint_candidate_receipt(sequencer, store, attempt_id,
                 " and the candidate tree-ish (cap-31/cap-42)")
         candidate_tree = capture_tree(repo_path, treeish)
         if source_revision is not None:
+            parent = candidate_parent(repo_path, treeish)
+            if parent != source_revision:
+                raise ConflictError(
+                    "candidate parent %s != frozen source revision %s"
+                    % (parent[:12], source_revision[:12]))
             candidate_paths = changed_paths(
                 repo_path, source_revision, treeish)
     elif repo_path is not None or treeish is not None:

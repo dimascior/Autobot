@@ -275,6 +275,34 @@ def cmd_run(args):
         print("objective added: %s" % objective_id)
 
         guidance = args.guidance or args.objective
+        if fin_class == "SOURCE_MODIFYING" and allow_paths:
+            sm_contract = (
+                "\n\n--- SOURCE_MODIFYING EXECUTION CONTRACT ---\n"
+                "Your working directory is an isolated Git worktree "
+                "at a frozen source revision.\n"
+                "Only these paths may change: %s\n\n"
+                "Steps:\n"
+                "1. Run: git rev-parse HEAD\n"
+                "   Record this SHA as SOURCE_REVISION.\n"
+                "2. Make ONLY the authorized file modification.\n"
+                "3. Stage: git add <authorized paths>\n"
+                "4. Commit: git commit -m \"<message>\"\n"
+                "5. Run: git rev-parse HEAD\n"
+                "   Record this SHA as NEW_VALUE.\n"
+                "6. Verify: git diff --name-only SOURCE_REVISION HEAD\n"
+                "   Must show ONLY the authorized paths.\n"
+                "7. Verify: git status --porcelain\n"
+                "   Must be empty (clean worktree).\n"
+                "8. Output EXACTLY this JSON as the LAST line of your"
+                " response (no other text after it):\n"
+                '{"target_ref":"refs/heads/main",'
+                '"expected_old":"SOURCE_REVISION",'
+                '"new_value":"NEW_VALUE"}\n'
+                "   Replace SOURCE_REVISION and NEW_VALUE with the"
+                " actual SHA hex strings.\n"
+                "--- END CONTRACT ---"
+            ) % allow_paths
+            guidance = guidance + sm_contract
         prompt_bytes = guidance.encode("utf-8")
         prompt_address = rt.store.put(prompt_bytes)
         spec_inputs = {
