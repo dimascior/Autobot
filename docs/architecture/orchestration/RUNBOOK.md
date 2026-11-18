@@ -295,6 +295,14 @@ Staffing selects a specialist first; execution routing then selects the provider
 
 A Project Manager staffing decision can request an escalation class for an assignment. Route names are organization-defined, and configured provider and model identifiers are passed through. Routes are execution state: they can change between attempts while the specialist and work identities stay the same. The Engineer expresses work needs or escalation requests without choosing the provider or model; use preflight to see the resolved routes (`routing.py:36-52`, `cli.py:336-356`).
 
+### 5.5 The sandbox edge
+
+For a sandboxed `SOURCE_MODIFYING` assignment, only `git add [--] <path in the frozen scope>...` and `git commit -m "<message>"` may run outside the sandbox (`supervision.py:91-97`). `git add` must name at least one path and may use `-A`, `--all`, `-u`, `--update`, `-v` or `--verbose`. `git commit` must provide a message with `-m`, `--message` or `--message=...`; it may use `-q`, `--quiet`, `-v`, `--verbose`, `-s` or `--signoff`. Any path arguments must be plain paths inside the frozen scope; unsupported flags, absolute paths, `..`, pathspec magic and wildcards are refused (`supervision.py:98-100`, `supervision.py:294-347`).
+
+The assignment must allow shell use and have `SOURCE_MODIFYING` finalization. The request must wrap exactly one plain command in a trusted system shell; any nonempty `commandActions` must contain exactly that command. The command must run from the assignment worktree root, whose `.git` pointer must still identify the repository-created linked worktree (`supervision.py:187-240`, `supervision.py:243-291`, `supervision.py:350-374`, `supervision.py:403-428`).
+
+Every other sandbox-exit request is refused with a reason. Taskforce sends the decision and reason to the transport and records them in an `assignment_approvals` row, along with the request, assignment, call, tool, subject and decision time (`supervision.py:377-440`, `taskforce.py:768-785`).
+
 ---
 
 ## 6. Provider failure handling
