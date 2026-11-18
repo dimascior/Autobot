@@ -92,7 +92,9 @@ The project lines and the `--report` payload use the list of active objectives t
   | `max_repairs` | 6 |
   | `max_retention_decisions` | 12 |
 
-- The CLI does **no range validation**. It accepts zero and negative values.
+- Zero is accepted. Negative values are **rejected** by `PlanStore.set_budget` with `ValueError` (`planstore.py:577-583`):
+  - On a fresh run, the ACTIVE objective is created first (`add_objective` commits), and then the uncaught `ValueError` produces a traceback and exit 1. The objective is **left ACTIVE**.
+  - On a resume, the same value gives `cannot change the budget` and exit 1 (`runtime.py:594-600`).
 - On a fresh run, the budget keys go to `add_objective(budget=...)` (`cli.py:573-579`).
 - On a resume, they go to `rt.set_objective_budget(objective_id, budget)` (`cli.py:585-604`). This **merges**: the keys you give replace the current limits, and the others keep their current values (`runtime.py:594-596`). See [§3](#3-default-behaviour-when---objective-is-omitted-resume).
 
@@ -103,7 +105,7 @@ The help text says the flag grants "one use for each verified SOURCE_MODIFYING s
 - It does **not** check the finalization class. Any VERIFIED sequence without a permit qualifies.
 - It includes sequences from **earlier runs**, as long as they belong to an active objective.
 - It grants permits only after a **stable** round. A timed-out round grants none.
-- The loop is capped at 17 rounds (`rounds > 16`). The grant is evaluated before the cap is checked, so the last round can grant permits and then stop without running again (`cli.py:880-884`, `cli.py:633-647`).
+- The loop is capped at 17 rounds (`rounds > 16`). The grant is evaluated before the cap is checked, so the last round can grant permits and then stop without running again (`cli.py:645`, `cli.py:633-647`).
 - Each continuation round gets a fresh `--max-wall-seconds` budget.
 
 #### Report file
@@ -202,10 +204,10 @@ A fresh run (with `--objective`) sends the budget and constraints to `add_object
 | `1` | `set_objective_budget` raised `ConfigError`. | `cli.py:597-600` |
 | `1` | Resume found no active objective. | `cli.py:611-614` |
 | `1` | Building the engineer policy raised `ConfigError`. | `cli.py:617-619` |
-| `1` (traceback) | Any other uncaught exception. Examples: an unwritable `--report` path, or the runaway guard's `RuntimeError` (more than 512 active steps, `driver.py:210-213`). Provider failures are not raised; they are recorded as failed attempts (`taskforce.py:825-827`). | – |
+| `1` (traceback) | Any other uncaught exception. Examples: an unwritable `--report` path, or the runaway guard's `RuntimeError` (more than 512 active steps, `driver.py:210-213`). A transport launch error (a non-zero exit from `autoswarm run`) escapes as an uncaught `RuntimeError` (traceback, exit 1) and leaves the attempt DISPATCHED; neither `launch_manifest`, `launch_with_manifest` nor `_drive` catches it. Provider-reported outcomes (session failures after a successful launch) are recorded as failed attempts (`taskforce.py:825-827`). | `autoswarm_transport.py:105-107` |
 | `2` | The run **timed out**, **or** it was stable but objectives are **still active**. | `cli.py:692` |
 | `2` | An argparse usage error, such as `--root` placed after the subcommand. | argparse |
-| platform-dependent | Interrupted (Ctrl-C). A `KeyboardInterrupt` during the wait loop is not caught and exits through the interpreter's default handler. The code is typically 130 on Unix. | – |
+| platform-dependent | Interrupted (Ctrl-C). A `KeyboardInterrupt` at any point during the command is not caught: `cmd_engineer` has only `try`/`finally` and `main()` has no handler. The process exits immediately; on POSIX the exit code is typically 130. | `cli.py:568-694`, `cli.py:993-994` |
 
 These are the cases established from source; the table is not claimed to be exhaustive.
 
@@ -302,7 +304,7 @@ Two independent budgets limit retries.
 
 **The production effective retry policy is `max_retries = 2`.** The production defaults set it (`production_seed.py:234`). The compiler copies it into every contract that does not set its own (`compiler.py:175-176`), and the runtime applies the production defaults when the authority configuration supplies none (`runtime.py:409-414`). The Sequencer's fallback of `max_retries = 0` (`sequencer.py:375`) applies only to a payload with no `retry_policy`, which compiled contracts never lack.
 
-After a provider failure, the sequence returns to **READY**. It runs again once the Engineer authorizes a `REPAIR_TASK` (`taskforce.py:248-257`). `retry_exhausted` occurs only after all three attempts (`1 + max_retries`) have failed.
+After a provider failure, the sequence returns to **READY**. It runs again once the Engineer authorizes a `REPAIR_TASK` or `ASSIGN_SPECIALIST` (`taskforce.py:248-257`). `retry_exhausted` occurs only after all three attempts (`1 + max_retries`) have failed.
 
 Every attempt, including a retry, also spends the objective's `attempts` budget (`taskforce.py:415-421`).
 
@@ -315,7 +317,7 @@ Every attempt, including a retry, also spends the objective's `attempts` budget 
   autobot engineer --objective-id <id> --max-attempts <N>
   ```
 
-- **After a first or second failure:** no action is needed for the retry itself. The sequence is READY, and the next attempt starts once the Engineer authorizes a `REPAIR_TASK`. Each retry also spends the objective's `attempts` budget, so check it if retries are not starting.
+- **After a first or second failure:** no action is needed for the retry itself. The sequence is READY, and the next attempt starts once the Engineer authorizes a `REPAIR_TASK` or `ASSIGN_SPECIALIST`. Each retry also spends the objective's `attempts` budget, so check it if retries are not starting.
 - **If the error is `retry_exhausted`:** all three attempts have failed. Raising the objective budget does not help. The work has to continue as a new contract, which the Engineer must propose.
 - **If an attempt hangs in `RUNNING`:** nothing will fail it automatically (see [§5.2](#52-in-flight)). Each run waits until the wall bound and then exits 2.
 
@@ -330,11 +332,17 @@ A later `engineer` run, whether a resume or a fresh run, keeps no memory of an e
 | Ledger state found | What the run does | Source |
 |---|---|---|
 | Active objectives | On a resume it emits `operator_resumed` for each one, which forces an Engineer cycle. Every run drives all of them. | `runtime.py:607-624`, `cli.py:610` |
-| `DISPATCHED` attempt whose session the transport still has | `resume_interrupted` skips it; adoption happens in `reconcile_dispatched`, which each sweep calls first. What `reconcile_dispatched` does in detail is not verified (see [§8](#8-not-yet-verified)). | `taskforce.py:693-694`, `taskforce.py:1154`, `transport.py:139` |
-| `DISPATCHED` attempt for which the transport reports a definite launch failure | Fails the attempt, then applies the provider-failure handling in [§6](#6-provider-failure-handling). | `taskforce.py:689-702` |
+| `DISPATCHED` attempt whose session the transport still has | `resume_interrupted` skips it; adoption happens in `reconcile_dispatched`, which each sweep calls first. | `taskforce.py:693-694`, `taskforce.py:1154`, `transport.py:139` |
+| `DISPATCHED` attempt for which the transport reports a definite launch failure | `reconcile_dispatched` fails the attempt on the transport's positive launch-failure determination, then the provider-failure handling in [§6](#6-provider-failure-handling) applies. `resume_interrupted` leaves it alone. | `transport.py:166-169`, `taskforce.py:695-697` |
 | `DISPATCHED` attempt in any other case | Re-launches it **under the same call id**. | `taskforce.py:689-702` |
 | Attempt with no assignment row, or whose assignment status is not SELECTED or DISPATCHED | Not resumed. | `taskforce.py:686-688` |
 | Verified sequences without a permit | Stay parked unless `--authorize-publication` is given. With the flag, sequences from earlier runs are included. | `cli.py:633-647` |
+
+**How `reconcile_dispatched` handles DISPATCHED attempts.** `advance()` calls `reconcile_dispatched` before `resume_interrupted` (`taskforce.py:1154`). For each DISPATCHED attempt (`transport.py:139-175`):
+
+- if the transport finds the session, it is adopted: the obj-11 witness is admitted and the attempt is set RUNNING;
+- if the transport positively determines a launch failure, the attempt is failed via `fail_dispatched_attempt` (`transport.py:166-169`);
+- otherwise the attempt stays DISPATCHED, awaiting the next check.
 
 ### Known dead end
 
@@ -348,7 +356,6 @@ Do not rely on any of the following until it has been checked against source:
 
 - what happens when a second driver starts while the lease is held;
 - whether `rt.close()` releases the driver lease when the runaway `RuntimeError` propagates;
-- what `reconcile_dispatched` does in detail (`autobot/transport.py`);
 - the exact meaning of each `--evidence-profile` value;
 - what happens when an auto-generated objective id collides with an existing one. Two fresh runs in the same second produce the same id;
 - whether the runtime and the reporting commands always resolve the same data directory when `--root` is omitted (`cli.py:39-44`, `cli.py:144-151`).
