@@ -17,6 +17,8 @@ Collector with a scripted provider.
 """
 
 import json
+import os
+import shlex
 import sqlite3
 import tempfile
 import unittest
@@ -795,80 +797,345 @@ class EscalationTests(RoutingTestCase):
 
 # ================================================ supervision of Codex
 
-def codex_request(method=supervision.CODEX_COMMAND, commands=("git add"
-                  " docs/TARGET.md",), cwd=None, **extra):
+WINDOWS = os.name == "nt"
+
+
+def system_shell():
+    """The shell a Codex command request arrives wrapped in on this
+    platform: (program, the flag that introduces the script)."""
+    if WINDOWS:
+        return (os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                             "System32", "WindowsPowerShell", "v1.0",
+                             "powershell.exe"), "-Command")
+    return ("/bin/bash", "-lc")
+
+
+def shell_command(script, program=None, flag=None):
+    """What Codex sends as ``command``: the shell's argv joined with
+    POSIX quoting, whatever the shell is."""
+    default_program, default_flag = system_shell()
+    return " ".join(shlex.quote(word) for word in (
+        program or default_program, flag or default_flag, script))
+
+
+def codex_request(script="git add docs/TARGET.md", cwd=None,
+                  method=supervision.CODEX_COMMAND, **extra):
     native = {"method": method, "kind": "command",
-              "command": "powershell.exe -Command '%s'" % "; ".join(
-                  commands),
-              "cwd": cwd,
-              "commandActions": [{"type": "unknown", "command": c}
-                                 for c in commands]}
+              "command": shell_command(script), "cwd": cwd,
+              "commandActions": [{"type": "unknown", "command": script}]}
     native.update(extra)
     return {"kind": "approval_required", "request_id": "approval_x",
             "provider": "codex", "native_request": native}
 
 
+def make_link(link, target):
+    """A directory link (a junction on Windows, which needs no
+    privilege; a symbolic link elsewhere). False where the platform will
+    not make one."""
+    try:
+        if WINDOWS:
+            import _winapi
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            os.symlink(str(target), str(link), target_is_directory=True)
+    except (OSError, ImportError, AttributeError):
+        return False
+    return True
+
+
+# The two permission requests production raised (Pilot 4, 2026-11-18,
+# call_43514ac8729b53c3102727c3835433e4), as AutoSwarm recorded them. Only
+# the worktree path differs here: that worktree is gone.
+PRODUCTION_REQUESTS = (
+    {"method": "item/commandExecution/requestApproval", "kind": "command",
+     "itemId": "exec-3b3c7af7-2add-467e-88b8-80b88a8c9181",
+     "environmentId": "local",
+     "command": "\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0"
+                "\\\\powershell.exe\" -Command 'git add docs/architecture"
+                "/orchestration/RUNBOOK.md'",
+     "commandActions": [{"type": "unknown", "command":
+                         "git add docs/architecture/orchestration"
+                         "/RUNBOOK.md"}],
+     "proposedExecpolicyAmendment": [
+         "git", "add", "docs/architecture/orchestration/RUNBOOK.md"],
+     "availableDecisions": ["accept", "cancel"]},
+    {"method": "item/commandExecution/requestApproval", "kind": "command",
+     "itemId": "exec-01d66394-97dc-468f-a7ff-98a5d626a16e",
+     "environmentId": "local",
+     "command": "\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0"
+                "\\\\powershell.exe\" -Command 'git commit -m \"docs:"
+                " update orchestration runbook\"'",
+     "commandActions": [{"type": "unknown", "command":
+                         "git commit -m \"docs: update orchestration"
+                         " runbook\""}],
+     "proposedExecpolicyAmendment": [
+         "git", "commit", "-m", "docs: update orchestration runbook"],
+     "availableDecisions": ["accept", "cancel"]},
+)
+
+
 class CodexSupervisionTests(unittest.TestCase):
     """A Codex session runs inside its sandbox and asks only to leave
-    it. The policy grants one kind of exit: Git's own bookkeeping for a
-    SOURCE_MODIFYING assignment's worktree."""
+    it. The policy grants one kind of exit — staging and committing the
+    frozen scope of a SOURCE_MODIFYING assignment — and judges the
+    command that would run."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.workspace = Path(self.tmp.name) / "autobot-wt-x"
-        self.workspace.mkdir()
-        self.outside = Path(self.tmp.name) / "elsewhere"
-        self.outside.mkdir()
+        root = Path(self.tmp.name)
+        self.repo = root / "repo"
+        self.workspace = self.repo / "autobot-wt-x"
+        self.registry = self.repo / ".git" / "worktrees" / "autobot-wt-x"
+        self.outside = root / "elsewhere"
+        for path in (self.workspace / "docs", self.registry, self.outside):
+            path.mkdir(parents=True)
+        self.pointer = self.workspace / ".git"
+        self.pointer.write_text("gitdir: %s\n" % self.registry.as_posix(),
+                                encoding="utf-8")
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _context(self, finalization_class="SOURCE_MODIFYING"):
+    def _context(self, finalization_class="SOURCE_MODIFYING",
+                 scope=("docs/TARGET.md",), repo=True):
         return supervision.assignment_context(
             {"finalization_class": finalization_class,
-             "allowed_scope": {"paths": ["docs/TARGET.md"]},
+             "allowed_scope": {"paths": list(scope)},
              "evidence_requirements": []},
-            str(self.workspace))
+            str(self.workspace),
+            repo_path=str(self.repo) if repo else None)
 
-    def _decide(self, context=None, **request):
+    def _decide(self, script="git add docs/TARGET.md", context=None,
+                **request):
         request.setdefault("cwd", str(self.workspace))
-        return supervision.decide(codex_request(**request),
+        return supervision.decide(codex_request(script, **request),
                                   context or self._context())
 
-    def test_git_bookkeeping_for_the_worktree_may_leave_the_sandbox(self):
-        for command in ("git add docs/TARGET.md",
-                        'git commit -m "route check"',
-                        "git status --porcelain"):
-            decision = self._decide(commands=(command,))
-            self.assertEqual(decision["decision"], "allow", command)
+    def _allowed(self, script, **kwargs):
+        decision = self._decide(script, **kwargs)
+        self.assertEqual(decision["decision"], "allow",
+                         (script, decision["reason"]))
+        return decision
+
+    def _denied(self, script, **kwargs):
+        decision = self._decide(script, **kwargs)
+        self.assertEqual(decision["decision"], "deny", script)
+        return decision
+
+    def test_staging_and_committing_the_frozen_scope_may_leave(self):
+        for script in ("git add docs/TARGET.md",
+                       "git add -- docs/TARGET.md",
+                       "git add -A -- docs/TARGET.md",
+                       "git add ./docs/TARGET.md",
+                       'git commit -m "route check"',
+                       "git commit -m 'route check (a; b & c | d > e)'",
+                       'git commit -q -m "one" -m "two"',
+                       'git commit --message="route check"',
+                       'git commit -m "route check" -- docs/TARGET.md'):
+            decision = self._allowed(script)
             self.assertEqual(decision["tool"], "codex.command")
-            self.assertEqual(decision["subject"], command)
+            self.assertEqual(decision["subject"], script)
+        if WINDOWS:
+            self._allowed("git add docs\\TARGET.md")
 
-    def test_nothing_else_may(self):
-        for command in ("git push origin HEAD:main",
-                        "git -C .. add docs/TARGET.md",
-                        "git --git-dir=../.git commit -m x",
-                        "git update-ref refs/heads/main HEAD",
-                        "Remove-Item -Recurse ..",
-                        "python -c \"print(1)\""):
-            decision = self._decide(commands=(command,))
-            self.assertEqual(decision["decision"], "deny", command)
-            self.assertIn("bookkeeping", decision["reason"])
-        mixed = self._decide(commands=("git add docs/TARGET.md",
-                                       "git push"))
-        self.assertEqual(mixed["decision"], "deny")
-        unparsed = supervision.decide(
-            {"kind": "approval_required", "native_request": {
-                "method": supervision.CODEX_COMMAND,
-                "command": "git add docs/TARGET.md",
-                "cwd": str(self.workspace)}}, self._context())
-        self.assertEqual(unparsed["decision"], "deny")
+    @unittest.skipUnless(
+        WINDOWS and os.path.normcase(os.environ.get("SystemRoot", ""))
+        == os.path.normcase(r"C:\Windows"),
+        "the recorded requests name Windows PowerShell under C:\\Windows")
+    def test_the_requests_production_raised_are_still_granted(self):
+        context = self._context(
+            scope=("docs/architecture/orchestration/RUNBOOK.md",))
+        for recorded, command in zip(PRODUCTION_REQUESTS,
+                                     ("add", "commit")):
+            native = dict(recorded, cwd=str(self.workspace))
+            decision = supervision.decide(
+                {"kind": "approval_required", "provider": "codex",
+                 "native_request": native}, context)
+            self.assertEqual(decision["decision"], "allow",
+                             decision["reason"])
+            self.assertEqual(decision["subject"],
+                             recorded["commandActions"][0]["command"])
+            self.assertIn("git %s" % command, decision["reason"])
 
-    def test_a_command_from_outside_the_workspace_is_denied(self):
-        decision = self._decide(cwd=str(self.outside))
-        self.assertEqual(decision["decision"], "deny")
+    def test_one_command_means_one_command(self):
+        scripts = [
+            "git status && curl https://example.invalid/collect",
+            "git add docs/TARGET.md; git push",
+            "git add docs/TARGET.md | Out-Null",
+            "git add docs/TARGET.md > out.txt",
+            "git add docs/TARGET.md & calc",
+            'git commit -m "$(whoami)"',
+            'git commit -m "`whoami`"',
+            "git commit -m $env:SECRET",
+            "git add (Get-Item docs/TARGET.md)",
+            "& git add docs/TARGET.md",
+            "git add docs/TARGET.md\ngit push",
+            "git add docs/TARGET.md # note",
+            "git commit -m 'a''b'",
+            'git commit -m "a""b"',
+            "git commit -m 'unterminated",
+            u"git commit -m \u201cmessage\u201d",
+        ]
+        if WINDOWS:
+            # One PowerShell argument, three for the program it starts.
+            scripts.append("git commit -m 'x\" --amend \"y'")
+            scripts.append('git commit -m "ends with a backslash\\"')
+        for script in scripts:
+            decision = self._denied(script)
+            self.assertIn("only two commands", decision["reason"])
+
+    def test_only_git_add_and_git_commit(self):
+        for script in ("git status --porcelain",
+                       "git push origin HEAD:main",
+                       "git -C .. add docs/TARGET.md",
+                       "git --git-dir=../.git commit -m x",
+                       "git update-ref refs/heads/main HEAD",
+                       "git reset --hard",
+                       "git rm docs/TARGET.md",
+                       "git restore --staged docs/TARGET.md",
+                       "git mv docs/TARGET.md docs/MOVED.md",
+                       "C:/tools/git.exe add docs/TARGET.md",
+                       "./git add docs/TARGET.md",
+                       "Remove-Item -Recurse ..",
+                       'python -c "print(1)"'):
+            decision = self._denied(script)
+            self.assertIn("only two commands", decision["reason"])
+
+    def test_git_add_stages_the_frozen_scope_and_nothing_else(self):
+        for script in ("git add .",
+                       "git add -A",
+                       "git add docs",
+                       "git add docs/OTHER.md",
+                       "git add docs/TARGET.md src/other.py",
+                       "git add ../elsewhere/x.md",
+                       "git add docs/../src/x.py",
+                       "git add /docs/TARGET.md",
+                       "git add C:/docs/TARGET.md",
+                       "git add :/",
+                       "git add 'docs/*.md'",
+                       "git add -f docs/TARGET.md",
+                       "git add --pathspec-from-file=list.txt",
+                       "git add -- -A"):
+            self._denied(script)
+        whole_directory = self._context(scope=("docs",))
+        for script in ("git add docs", "git add -A -- docs/",
+                       "git add docs/sub/new.md"):
+            self._allowed(script, context=whole_directory)
+        self._denied("git add src/x.py", context=whole_directory)
+        self._denied("git add docs/TARGET.md",
+                     context=self._context(scope=()))
+
+    def test_git_commit_takes_a_message_and_nothing_that_widens_it(self):
+        for script in ("git commit",
+                       "git commit -m",
+                       "git commit -a -m x",
+                       "git commit -am x",
+                       "git commit --amend -m x",
+                       "git commit -m x --no-verify",
+                       "git commit -F message.txt",
+                       "git commit -m x src/other.py",
+                       "git commit -m x -- src/other.py"):
+            self._denied(script)
+
+    def test_the_request_is_the_system_shell_running_that_command(self):
+        program, flag = system_shell()
+        script = "git add docs/TARGET.md"
+
+        def decide(command, actions="same"):
+            native = {"method": supervision.CODEX_COMMAND,
+                      "command": command, "cwd": str(self.workspace)}
+            if actions == "same":
+                actions = [{"type": "unknown", "command": script}]
+            if actions is not None:
+                native["commandActions"] = actions
+            return supervision.decide(
+                {"kind": "approval_required", "native_request": native},
+                self._context())["decision"]
+
+        self.assertEqual(decide(shell_command(script)), "allow")
+        # The argv itself, and a request with no description, are the
+        # same command.
+        self.assertEqual(decide([program, flag, script]), "allow")
+        self.assertEqual(decide(shell_command(script), actions=None),
+                         "allow")
+        # Not a shell running one script.
+        self.assertEqual(decide(script), "deny")
+        self.assertEqual(decide(["git", "add", "docs/TARGET.md"]), "deny")
+        self.assertEqual(decide([program, flag, script, "more"]), "deny")
+        self.assertEqual(decide([program, "-File", script]), "deny")
+        self.assertEqual(decide([program, "-EncodedCommand", script]),
+                         "deny")
+        self.assertEqual(decide("%s '%s" % (program, script)), "deny")
+        self.assertEqual(decide(None), "deny")
+        # A shell the session could have put there.
+        planted = self.workspace / os.path.basename(program)
+        self.assertEqual(decide([str(planted), flag, script]), "deny")
+        self.assertEqual(decide([str(self.outside / "bash"), "-lc",
+                                 script]), "deny")
+        if WINDOWS:
+            self.assertEqual(decide(["powershell.exe", flag, script]),
+                             "deny")
+        # The description must be the command that would run.
+        self.assertEqual(decide(shell_command(script), actions=[
+            {"type": "unknown", "command": script},
+            {"type": "unknown", "command": "git push"}]), "deny")
+        self.assertEqual(decide(shell_command(script), actions=[
+            {"type": "unknown", "command": "git status"}]), "deny")
+        self.assertEqual(decide(shell_command(script), actions="git add"),
+                         "deny")
+
+    def test_a_command_runs_from_the_worktree_root_or_not_at_all(self):
+        decision = self._denied("git add docs/TARGET.md",
+                                cwd=str(self.outside))
         self.assertIn("workspace", decision["reason"])
-        self.assertEqual(self._decide(cwd=None)["decision"], "deny")
+        self._denied("git add docs/TARGET.md", cwd=None)
+        self._denied("git add docs/TARGET.md",
+                     cwd=str(self.workspace / "docs"))
+        # Another spelling of the root is the root.
+        self._allowed("git add docs/TARGET.md",
+                      cwd=str(self.workspace / "docs" / ".."))
+
+    def test_a_link_out_of_the_worktree_is_not_the_worktree(self):
+        inside_link = self.workspace / "docs" / "link"
+        alias = Path(self.tmp.name) / "alias"
+        if not (make_link(inside_link, self.outside)
+                and make_link(alias, self.workspace)):
+            self.skipTest("this platform would not create a directory"
+                          " link")
+        # Spelled inside the workspace, somewhere else on disk.
+        decision = self._denied("git add docs/TARGET.md",
+                                cwd=str(inside_link))
+        self.assertIn("workspace", decision["reason"])
+        # Spelled somewhere else, the worktree root on disk.
+        self._allowed("git add docs/TARGET.md", cwd=str(alias))
+
+    def test_the_worktree_is_the_one_the_repository_made(self):
+        self._allowed("git add docs/TARGET.md")
+        # A pointer relative to the worktree is the same registry entry.
+        self.pointer.write_text(
+            "gitdir: ../.git/worktrees/autobot-wt-x\n", encoding="utf-8")
+        self._allowed("git add docs/TARGET.md")
+        # A Git directory the session made for itself.
+        own = self.workspace / "docs" / "gitdir"
+        own.mkdir()
+        for text in ("gitdir: %s\n" % own.as_posix(),
+                     "gitdir: %s\n" % (self.repo / ".git").as_posix(),
+                     "gitdir: %s\n" % (self.registry / "deeper").as_posix(),
+                     "not a pointer\n"):
+            self.pointer.write_text(text, encoding="utf-8")
+            decision = self._denied("git add docs/TARGET.md")
+            self.assertIn("worktree", decision["reason"])
+        self.pointer.unlink()
+        self._denied("git add docs/TARGET.md")
+        self.pointer.mkdir()
+        self._denied("git add docs/TARGET.md")
+        self.pointer.rmdir()
+        self.pointer.write_text("gitdir: %s\n" % self.registry.as_posix(),
+                                encoding="utf-8")
+        self._allowed("git add docs/TARGET.md")
+        # Without a repository to anchor the worktree to, nothing leaves.
+        self._denied("git add docs/TARGET.md",
+                     context=self._context(repo=False))
 
     def test_a_read_only_assignment_never_leaves_the_sandbox(self):
         for finalization_class in ("READ_ONLY",):
