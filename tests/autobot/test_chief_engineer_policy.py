@@ -257,6 +257,63 @@ class ReasonedLoopTests(WorkforceTestCase):
         self.assertEqual(final["active_objectives"], [])
         self.assertEqual(self._projects()[0]["status"], "COMPLETED")
 
+    def test_the_engineer_recovers_from_a_provider_failure(self):
+        """The provider fails the first session. The production policy is
+        shown the failed attempt in the project state with the provider's
+        own report, orders another attempt of the SAME workstream, and
+        releases nobody for a failure that was not the specialist's; the
+        project completes on the second attempt."""
+        from test_taskforce_orchestration import provider_failure
+        self.transport.scripts = {"investigator": [
+            provider_failure("usage window exhausted"), result()]}
+        self._objective()
+        seen = []
+
+        def decide(projection, _call):
+            objective = projection["objectives"][0]
+            oid = objective["objective_id"]
+            streams = objective["project"]["workstreams"]
+            if not streams:
+                return {"reasoning": "", "proposals": [
+                    open_project(oid), investigation(oid, "A", key="a"),
+                    select(oid, "a", outside_offering(projection)[0])]}
+            stream = streams[0]
+            if stream["state"] == "COMPLETED":
+                return {"reasoning": "", "proposals": [
+                    {"class": "PROJECT_COMPLETE", "objective_id": oid,
+                     "rationale": "the workstream is COMPLETED"}]}
+            waiting = any(d["status"] == "OPEN"
+                          for d in stream["assignment_decisions"])
+            if stream["failed_attempts"] and stream["state"] == "READY" \
+                    and not waiting:
+                seen.append(stream["failed_attempts"][-1]
+                            ["provider_report"]["error"])
+                return {"reasoning": "", "proposals": [
+                    {"class": "REPAIR_TASK", "objective_id": oid,
+                     "rationale": "the provider failed the session, not"
+                                  " the specialist",
+                     "workstream": "a", "guidance": "Run it again.",
+                     "staffing": {"mode": "same_member"}}]}
+            return {"reasoning": "", "proposals": []}
+
+        self.driver = self._driver(self._policy(Brain(decide)),
+                                   runner=QueueRunner())
+        final = self.driver.run_until_stable()
+        self.assertEqual(seen, ["usage window exhausted"])
+        self.assertEqual(final["active_objectives"], [])
+        self.assertEqual(list(self._states().values()), ["COMPLETED"])
+        first, second = self._assignments()
+        self.assertEqual((first["outcome"], second["outcome"]),
+                         ("ATTEMPT_FAILED", "VERIFIED_ACCEPTED"))
+        self.assertEqual(second["specialist_id"], first["specialist_id"])
+        self.assertEqual(self._rows(
+            "SELECT * FROM proposals WHERE class = 'RELEASE_SPECIALIST'"),
+            [])
+        self.assertEqual(
+            [(p["class"], p["status"]) for p in self._rows(
+                "SELECT class, status FROM proposals WHERE class ="
+                " 'REPAIR_TASK'")], [("REPAIR_TASK", "APPLIED")])
+
     def test_the_reasoned_loop_retains_and_reuses(self):
         """The whole organization under the PRODUCTION policy: the
         reasoner opens the project, decides A and explicitly selects an
@@ -880,6 +937,19 @@ class PolicyUnitTests(unittest.TestCase):
             {"event_id": 1, "event_kind": "operator_resumed",
              "subject_id": "obj-1", "facts": None})
         self.assertTrue(policy.needs_reasoning(view))
+
+    def test_the_instructions_cover_provider_failures_and_handing_back(
+            self):
+        """What the Engineer is told about a session the provider failed
+        (not evidence about the specialist; another attempt only on its
+        word) and about work it selected someone for before a member held
+        that capability."""
+        policy = ReasoningEngineerPolicy(lambda prompt: "{}")
+        prompt = policy.build_prompt(self._view())
+        for needle in ("failed_attempts", "provider_report",
+                       "release nobody for it", "retry_exhausted",
+                       'ASSIGN_SPECIALIST for it with {"mode": "taskforce"}'):
+            self.assertIn(needle, prompt)
 
     def test_a_refused_proposal_is_not_work_to_complete(self):
         """A proposal refused at admission has no sequence: it neither

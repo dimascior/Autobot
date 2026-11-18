@@ -29,6 +29,7 @@ outcome and accepted result (``QUERIES`` names them for the CLI).
 
 import json
 
+from .demonstrations import provider_report
 from .proposals import (
     ACTING_AS,
     CONTRACT_CLASSES,
@@ -1087,13 +1088,33 @@ def staffing_needs(plan, ro, objective_id, roster):
     return needs
 
 
-def project_state(plan, ro, project_id, roster=None):
+def failed_attempts(ro, attempts, store=None):
+    """The attempts of one workstream that did not produce accepted work,
+    in order: FAILED or STALE (the session failed at the provider — with
+    the provider's own report when a content store is given) and REJECTED
+    (verification failed). They stay part of the workstream's history."""
+    out = []
+    for attempt in attempts:
+        if attempt["state"] not in ("FAILED", "STALE", "REJECTED"):
+            continue
+        entry = {"attempt_id": attempt["attempt_id"],
+                 "state": attempt["state"], "call_id": attempt["call_id"]}
+        if attempt["state"] != "REJECTED":
+            reported = provider_report(ro, store, attempt["attempt_id"])
+            if reported is not None:
+                entry["provider_report"] = reported
+        out.append(entry)
+    return out
+
+
+def project_state(plan, ro, project_id, roster=None, store=None):
     """One project as a temporary undertaking: the solution it realizes,
     its workstreams and their dependencies (each REFERENCING the work's
     authority state, never copying it), who is assigned to what and on
     which staffing path, and the team — everyone taking part, as a
     retained member or an outside specialist, and whether their
-    participation is still open."""
+    participation is still open. ``store`` (the content store) lets a
+    failed attempt carry what the provider itself reported."""
     project = plan.project(project_id)
     if project is None:
         return None
@@ -1133,6 +1154,8 @@ def project_state(plan, ro, project_id, roster=None):
             "state": entry["state"] or entry["proposal_status"],
             "record_hash": entry["record_hash"],
             "attempts": len(entry["attempts"]),
+            "failed_attempts": failed_attempts(ro, entry["attempts"],
+                                               store),
             "depends_on": depends.get(sequence_id, []),
             "assignments": [
                 {"assignment_id": a["assignment_id"],
@@ -1185,7 +1208,7 @@ def project_state(plan, ro, project_id, roster=None):
     }
 
 
-def project_views(plan, ro, objectives, roster=None):
+def project_views(plan, ro, objectives, roster=None, store=None):
     """The Engineer's project state, per active objective
     (PlanningView.projects): the current project — or none yet — and the
     workstreams that wait for a staffing decision."""
@@ -1197,17 +1220,18 @@ def project_views(plan, ro, objectives, roster=None):
             views[objective_id] = {"project_id": None, "workstreams": [],
                                    "team": [], "needs_staffing": []}
             continue
-        state = project_state(plan, ro, project["project_id"], roster)
+        state = project_state(plan, ro, project["project_id"], roster,
+                              store)
         state["needs_staffing"] = staffing_needs(plan, ro, objective_id,
                                                  roster)
         views[objective_id] = state
     return views
 
 
-def projects_report(plan, ro):
+def projects_report(plan, ro, store=None):
     """Every project on record with its team: the TEMPORARY side of the
     organization, beside ``taskforce_report``'s persistent one."""
-    return [project_state(plan, ro, p["project_id"])
+    return [project_state(plan, ro, p["project_id"], store=store)
             for p in plan.projects()]
 
 

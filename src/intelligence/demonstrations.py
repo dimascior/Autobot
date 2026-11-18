@@ -89,6 +89,46 @@ def _loads(text, default):
         return default
 
 
+def provider_report(ro_conn, store, attempt_id):
+    """What the EXECUTION SUBSTRATE itself reported for one attempt's
+    session: the producer-original result witness (obj-11) the authority
+    plane admitted, read back from the content store. Returned as the
+    witness's address and the producer's own words — its outcome, its
+    error text, the phase it failed in — never an interpretation.
+
+    It exists so that an attempt that failed because the provider could
+    not run the session (a usage window exhausted, a session that could
+    not start) is not mistaken for the specialist's work. None when no
+    result witness was admitted, or there is no store to read it from."""
+    if ro_conn is None or store is None or not attempt_id:
+        return None
+    rows = ro_conn.execute(
+        "SELECT content_sha256 FROM attempt_witnesses WHERE attempt_id = ?"
+        " AND witness_kind = 'obj-11' ORDER BY rowid DESC",
+        (attempt_id,)).fetchall()
+    for row in rows:
+        try:
+            data = json.loads(
+                store.get(row["content_sha256"]).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not (isinstance(data, dict) and "outcome" in data):
+            continue  # the provider's task record, not its result
+        report = {"witness": row["content_sha256"],
+                  "outcome": data.get("outcome")}
+        error = data.get("error")
+        if isinstance(error, str) and error.strip():
+            report["error"] = error.strip()[:400]
+        diagnostics = data.get("diagnostics")
+        if isinstance(diagnostics, dict) and isinstance(
+                diagnostics.get("phase"), str):
+            report["phase"] = diagnostics["phase"]
+        if isinstance(data.get("exit_code"), int):
+            report["exit_code"] = data["exit_code"]
+        return report
+    return None
+
+
 class DemonstrationRecorder:
     def __init__(self, plan, roster, ro_conn, store):
         self.plan = plan
@@ -213,6 +253,14 @@ class DemonstrationRecorder:
                 [a for a in approvals if a["decision"] == "deny"]),
             "writes_granted": len(granted_writes),
         }
+        if attempt["state"] in ("FAILED", "STALE"):
+            # The attempt never produced work to judge. What the provider
+            # itself said about the session is recorded beside the
+            # criteria, so a failure of the execution substrate reads as
+            # one and not as the specialist's performance.
+            reported = provider_report(self.ro, self.store, attempt_id)
+            if reported is not None:
+                observations["provider_report"] = reported
         domains = set()
         subsystem = requirement.get("subsystem")
         if isinstance(subsystem, str) and subsystem:
@@ -281,20 +329,25 @@ class DemonstrationRecorder:
             # it changes no membership and creates no seat: an outside
             # specialist with qualifying work is exactly as outside as
             # before, until a retention decision says otherwise.
+            event = {"specialist_id": assignment["specialist_id"],
+                     "seat_id": assignment["seat_id"],
+                     "project_id": assignment["project_id"],
+                     "capability": assignment["capability"],
+                     "role": assignment["role"],
+                     "sequence_id": sequence["sequence_id"],
+                     "outcome": "QUALIFYING" if qualifying
+                     else "NOT_QUALIFYING",
+                     "settled_as": outcome_label,
+                     "standing": standing,
+                     "retention_candidate": bool(
+                         qualifying and standing == OUTSIDE)}
+            reported = facts["observations"].get("provider_report") or {}
+            if reported.get("error"):
+                # The Engineer is told in the provider's own words.
+                event["provider_error"] = reported["error"]
             self.plan.emit_workforce_event(
                 cur, "demonstration:" + demonstration_id,
-                "demonstration_recorded", demonstration_id,
-                {"specialist_id": assignment["specialist_id"],
-                 "seat_id": assignment["seat_id"],
-                 "project_id": assignment["project_id"],
-                 "capability": assignment["capability"],
-                 "role": assignment["role"],
-                 "sequence_id": sequence["sequence_id"],
-                 "outcome": "QUALIFYING" if qualifying
-                 else "NOT_QUALIFYING",
-                 "standing": standing,
-                 "retention_candidate": bool(
-                     qualifying and standing == OUTSIDE)}, now)
+                "demonstration_recorded", demonstration_id, event, now)
         if qualifying and assignment["seat_id"]:
             # Repeated verified work in a seat already RETAINED is what
             # establishes it (the Taskforce's own evidence-bound rule).

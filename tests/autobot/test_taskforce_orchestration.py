@@ -985,6 +985,202 @@ class RepairOrchestrationTests(WorkforceTestCase):
         self.assertEqual(len(team), 2)  # both took part in the project
 
 
+# ============================================== provider-failed attempts
+
+def provider_failure(error="usage window exhausted"):
+    """What a transport collects when the PROVIDER fails the session
+    before the specialist does any work: a failed outcome and the
+    provider's own result record (the obj-11 witness)."""
+    reported = json.dumps(
+        {"outcome": "failed", "error": error, "exit_code": 1,
+         "diagnostics": {"phase": "execution"}},
+        sort_keys=True).encode("utf-8")
+    return {"witness_files": [("obj-11", "autoswarm", reported)],
+            "outcome": "failed", "findings": []}
+
+
+class RetryPolicy(ChiefEngineerPolicy):
+    """One investigation. When authority says the work is READY again
+    after a failed attempt, the Engineer orders another attempt — or,
+    with ``repair`` off, says nothing."""
+
+    def __init__(self, mode="same_member", repair=True, twice=False):
+        self.mode = mode
+        self.repair = repair
+        self.twice = twice
+
+    def plan(self, view):
+        if not view.objectives:
+            return []
+        oid = view.objectives[0]["objective_id"]
+        if not view.authority["sequences"]:
+            return [investigate(view, oid, "R")]
+        proposals = []
+        for event in view.events:
+            if event["event_kind"] != "retry_ready" or not self.repair:
+                continue
+            modes = [self.mode] + (["taskforce"] if self.twice else [])
+            for mode in modes:
+                p = base_fields(view, oid)
+                p.update({
+                    "class": "REPAIR_TASK",
+                    "rationale": "the provider failed the session; the"
+                                 " work is ready again",
+                    "sequence_id": event["subject_id"],
+                    "capability": "research",
+                    "role": "investigator",
+                    "guidance": "Run the investigation again.",
+                    "staffing": {"mode": mode},
+                    "provenance": {"findings": [],
+                                   "events": [event["journal_seq"]]}})
+                proposals.append(p)
+        sequences = view.authority["sequences"]
+        if not proposals and all(s["state"] == "COMPLETED"
+                                 for s in sequences):
+            proposals.append(complete(view, oid))
+        return proposals
+
+
+class ProviderFailureTests(WorkforceTestCase):
+    """An attempt the PROVIDER failed (a usage window exhausted, a session
+    that died) is genuine history and recoverable work — never a dead
+    end, never a silent re-execution, and never accepted state."""
+
+    def _run(self, script, **policy):
+        self.transport.scripts = {"investigator": script}
+        self._objective()
+        self.driver = self._driver(RetryPolicy(**policy),
+                                   runner=QueueRunner())
+        return self.driver.run_until_stable()
+
+    def _attempt_states(self):
+        return [r["state"] for r in self.driver.ro.execute(
+            "SELECT state FROM attempts ORDER BY rowid").fetchall()]
+
+    def _planning_kinds(self, kind):
+        return [r for r in self._rows(
+            "SELECT * FROM planning_events WHERE event_kind = ?", (kind,))]
+
+    def _workstream(self):
+        project_id = self._projects()[0]["project_id"]
+        return query.project_state(
+            self.plan, self.driver.ro, project_id,
+            store=self.rt.store)["workstreams"][0]
+
+    def test_a_failed_attempt_is_recovered_on_the_engineers_word(self):
+        """The provider fails the first session. Authority records the
+        attempt FAILED and accepts nothing; the sequence returns to READY
+        through the registered retry arc (t-s08); the Engineer orders
+        another attempt; the SAME workstream completes on a second
+        AttemptContract. The failed attempt stays in the history with
+        what the provider itself reported."""
+        final = self._run([provider_failure("usage window exhausted"),
+                           result()])
+        self.assertEqual(final["active_objectives"], [])
+        self.assertEqual(list(self._states().values()), ["COMPLETED"])
+        self.assertEqual(self._attempt_states(), ["FAILED", "VERIFIED"])
+        self.assertEqual(len(self._planning_kinds("retry_ready")), 1)
+        first, second = self._assignments()
+        self.assertEqual((first["outcome"], second["outcome"]),
+                         ("ATTEMPT_FAILED", "VERIFIED_ACCEPTED"))
+        self.assertEqual(second["sequence_id"], first["sequence_id"])
+        self.assertEqual(second["attempt_ordinal"], 2)
+        self.assertNotEqual(second["attempt_id"], first["attempt_id"])
+        self.assertNotEqual(second["call_id"], first["call_id"])
+        self.assertEqual(second["specialist_id"], first["specialist_id"])
+        repair = self._rows("SELECT proposal_id FROM proposals WHERE class"
+                            " = 'REPAIR_TASK'")[0]["proposal_id"]
+        self.assertEqual(second["authorized_by_proposal"], repair)
+        # The failed attempt is a record that says WHY, in the provider's
+        # own words — and it earned nothing.
+        failed, verified = self._demonstrations()
+        criteria = json.loads(failed["criteria"])
+        self.assertEqual(failed["outcome"], "NOT_QUALIFYING")
+        self.assertEqual(criteria["settled_as"], "ATTEMPT_FAILED")
+        reported = criteria["observations"]["provider_report"]
+        self.assertEqual(reported["error"], "usage window exhausted")
+        self.assertEqual(reported["phase"], "execution")
+        self.assertEqual(verified["outcome"], "QUALIFYING")
+        self.assertNotIn("provider_report",
+                         json.loads(verified["criteria"])["observations"])
+        told = [json.loads(e["facts"]) for e in self._rows(
+            "SELECT facts FROM workforce_events WHERE event_kind ="
+            " 'demonstration_recorded' ORDER BY event_id")]
+        self.assertEqual(told[0]["provider_error"],
+                         "usage window exhausted")
+        self.assertEqual(told[0]["settled_as"], "ATTEMPT_FAILED")
+        self.assertNotIn("provider_error", told[1])
+        # The project keeps the failed attempt beside the work.
+        workstream = self._workstream()
+        self.assertEqual(workstream["state"], "COMPLETED")
+        self.assertEqual(workstream["attempts"], 2)
+        self.assertEqual(
+            [(a["attempt_id"], a["state"],
+              a["provider_report"]["error"])
+             for a in workstream["failed_attempts"]],
+            [(first["attempt_id"], "FAILED", "usage window exhausted")])
+        self.assertEqual(self._seats(), [])  # and nobody was retained
+
+    def test_a_failed_attempt_never_re_executes_itself(self):
+        """Returning to READY starts nothing: with no word from the
+        Engineer the workstream waits, visibly, with one attempt."""
+        final = self._run([provider_failure(), result()], repair=False)
+        self.assertEqual(len(final["active_objectives"]), 1)
+        self.assertEqual(list(self._states().values()), ["READY"])
+        self.assertEqual(self._attempt_states(), ["FAILED"])
+        self.assertEqual(len(self._assignments()), 1)
+        self.assertEqual(len(self._planning_kinds("retry_ready")), 1)
+        self.assertEqual(len(self.transport.scripts["investigator"]), 1)
+
+    def test_one_word_authorizes_one_attempt(self):
+        """Ordering the same pending attempt twice is refused: a second
+        authorization would outlive the attempt and start a later one
+        nobody ordered. The work runs once more, on the first word."""
+        final = self._run([provider_failure(), result()], twice=True)
+        self.assertEqual(final["active_objectives"], [])
+        self.assertEqual(self._attempt_states(), ["FAILED", "VERIFIED"])
+        repairs = self._rows(
+            "SELECT status, note FROM proposals WHERE class ="
+            " 'REPAIR_TASK' ORDER BY created_utc, rowid")
+        self.assertEqual([r["status"] for r in repairs],
+                         ["APPLIED", "REJECTED"])
+        self.assertIn("already authorized", repairs[1]["note"])
+        self.assertEqual(len(self._rows(
+            "SELECT * FROM seats WHERE authorized_by_proposal IS NOT"
+            " NULL")), 1)
+        self.assertEqual(
+            self.plan.budget_usage(self.objective_id)["repairs"], 1)
+        self.assertIsNone(self.plan.open_authorization(
+            self._assignments()[0]["sequence_id"]))
+        second = self._assignments()[1]
+        self.assertEqual(json.loads(second["selected_reason"])
+                         ["directive"]["mode"], "same_member")
+
+    def test_the_frozen_retry_budget_bounds_recovery(self):
+        """max_retries 2: three attempts and no more. When the provider
+        fails the third, the Sequencer refuses the retry arc, the
+        sequence stays where it is and the Engineer is told once."""
+        self._run([provider_failure(), provider_failure(),
+                   provider_failure()])
+        self.assertEqual(self._attempt_states(),
+                         ["FAILED", "FAILED", "FAILED"])
+        self.assertEqual(list(self._states().values()), ["EXECUTING"])
+        self.assertEqual(len(self._planning_kinds("retry_ready")), 2)
+        exhausted = self._rows(
+            "SELECT * FROM workforce_events WHERE event_kind ="
+            " 'retry_exhausted'")
+        self.assertEqual(len(exhausted), 1)
+        self.assertIn("retry budget exhausted",
+                      json.loads(exhausted[0]["facts"])["reason"])
+        self.assertEqual(len(self._workstream()["failed_attempts"]), 3)
+        # Looking again changes nothing and tells nobody twice.
+        for _ in range(3):
+            self.driver.step()
+        self.assertEqual(len(self._rows(
+            "SELECT * FROM workforce_events WHERE event_kind ="
+            " 'retry_exhausted'")), 1)
+
+
 # ====================================================== restart recovery
 
 class _Boom(Exception):

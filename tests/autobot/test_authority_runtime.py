@@ -190,6 +190,39 @@ class BootstrapAssemblyTests(unittest.TestCase):
         finally:
             runtime.close()
 
+    def test_an_active_objectives_budget_is_yours_to_change(self):
+        """The limits are yours (cap-47), also after the objective has
+        started — attempts the provider failed spend budget through no
+        fault of the plan. Named limits replace the current ones, the
+        others stay, and the Engineer is told. A finished or unknown
+        objective has no budget to change."""
+        from intelligence.runtime import ConfigError
+        runtime, _rt = self._seed_and_build()
+        try:
+            runtime.add_objective("obj-b", "Budget me.",
+                                  budget={"max_attempts": 2,
+                                          "max_repairs": 1})
+            limits = runtime.set_objective_budget("obj-b",
+                                                  {"max_attempts": 5})
+            self.assertEqual(limits["max_attempts"], 5)
+            self.assertEqual(limits["max_repairs"], 1)  # kept as it was
+            self.assertEqual(runtime.plan.budget_limits("obj-b"), limits)
+            events = runtime.plan.unconsumed_workforce_events()
+            self.assertEqual(
+                [(e["event_kind"], e["subject_id"]) for e in events],
+                [("budget_granted", "obj-b")])
+            with self.assertRaises(ConfigError):
+                runtime.set_objective_budget("obj-nope", {"max_attempts": 9})
+            with self.assertRaises(ConfigError):
+                runtime.set_objective_budget("obj-b", {"max_typo": 9})
+            self.assertEqual(runtime.plan.budget_limits("obj-b"), limits)
+            runtime.plan.complete_objective("obj-b",
+                                            "2026-01-01T00:00:00.000Z")
+            with self.assertRaises(ConfigError):
+                runtime.set_objective_budget("obj-b", {"max_attempts": 9})
+        finally:
+            runtime.close()
+
     def test_the_catalog_is_read_from_configuration(self):
         """[specialists.<handle>] is the catalog; the two earlier
         spellings are still read, and the current one wins on a clash.

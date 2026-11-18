@@ -576,6 +576,34 @@ class AuthorityRuntime:
                                  **budget)
         return objective_id
 
+    def set_objective_budget(self, objective_id, budget,
+                             set_by="operator"):
+        """Change one ACTIVE objective's engineering-work budget (cap-47:
+        the limits are yours). The named limits replace the current ones
+        and the others stay as they are. The Engineer is told
+        (``budget_granted``), so intent that was refused for budget is
+        proposed again. Returns the limits now in force."""
+        objective = self.plan.objective(objective_id)
+        if objective is None:
+            raise ConfigError("no objective %r" % (objective_id,))
+        if objective["status"] != "ACTIVE":
+            raise ConfigError("objective %s is %s: only an active"
+                              " objective has a budget to change"
+                              % (objective_id, objective["status"]))
+        now = instant(self.clock.now())
+        limits = dict(self.plan.budget_limits(objective_id))
+        try:
+            limits.update(budget)
+            limits = self.plan.set_budget(objective_id, now, set_by=set_by,
+                                          **limits)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(str(exc))
+        with self.plan.transaction() as cur:
+            self.plan.emit_workforce_event(
+                cur, "budget_granted:%s:%s" % (objective_id, now),
+                "budget_granted", objective_id, {"limits": limits}, now)
+        return limits
+
     def signal_resume(self):
         """Tell the Engineer you resumed the loop: one workforce event
         per active objective. A loop that went quiet with a decision

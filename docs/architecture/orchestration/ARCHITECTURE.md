@@ -641,6 +641,42 @@ left to do and nothing is in flight. A quiet step while a specialist is
 still executing is a wait: the driver sleeps, looks again, answers
 requests and collects the result when it arrives (D-TF-5).
 
+### 6.6 A failed attempt
+
+An attempt can fail before its specialist does any work: the provider's
+usage window is exhausted, or the session dies. Authority records the
+attempt FAILED with the provider's own result as its witness and accepts
+nothing.
+
+The work is not lost, and it does not restart itself (D-TF-24):
+
+| Step | Who |
+|---|---|
+| the sequence returns to READY while the frozen retry budget lasts (t-s08) | the pump asks; the Sequencer checks both preconditions |
+| the Engineer is told: `attempt_failed`, `retry_ready`, and a NOT_QUALIFYING demonstration that carries the provider's report | authority and workforce events |
+| another attempt of the same workstream, on a new AttemptContract | only on the Engineer's word (`REPAIR_TASK`), staffed like any attempt |
+| the retry budget is spent | the sequence stays where it is and the Engineer is told once (`retry_exhausted`); the work can continue only as a new contract |
+
+One word authorizes one attempt. A second `REPAIR_TASK` for an attempt
+that is already ordered is refused — it would outlive that attempt and
+start a later one nobody ordered. Changing who does the pending attempt
+is a staffing decision (`ASSIGN_SPECIALIST`).
+
+The failed attempt stays part of the workstream. Project state lists it
+under `failed_attempts` with what the provider reported, read from the
+admitted witness (`demonstrations.provider_report`): its outcome, its
+error text, the phase it failed in. The Engineer reads those words;
+nothing in the deterministic layer interprets them. A provider failure is
+no evidence about the specialist, and the production policy is told to
+release nobody for one.
+
+A reasoning model that cannot be reached answers nothing, and the loop
+goes quiet with the objective still active. `engineer` without
+`--objective` resumes it: the resume is a stimulus, so the Engineer
+reasons again over the state as it stands. A resume may also change the
+objective's budget (`--objective-id` with the budget flags): attempts the
+provider failed spend budget through no fault of the plan.
+
 ## 7. Authority integration
 
 ```text
@@ -768,6 +804,7 @@ refused. The authority database is not touched.
 | D-TF-21 | An outside specialist can be released from a project with no membership change. |
 | D-TF-22 | The Engineer is not shown routing: handles, providers and models are removed from what it reasons over. |
 | D-TF-23 | A member is outside for work it holds no seat for. |
+| D-TF-24 | An attempt that failed at the provider returns its sequence to READY by the registered retry arc (t-s08), which the pump asks for; the next attempt needs the Engineer's word. The provider's own report is recorded with the attempt and shown to the Engineer, uninterpreted. |
 
 ## 12. Findings
 
@@ -787,3 +824,6 @@ refused. The authority database is not touched.
 | F-TF-12 | The first form of this workforce model made an outside assignment a provisional Taskforce seat and let the Taskforce bring outside specialists onto work itself, conflating project participation with membership. | Corrected before it was committed: D-TF-3, D-TF-4, D-TF-16 to D-TF-23. |
 | F-TF-13 | A second release of the same specialist for the same reason had the same proposal identity as the first and was treated as already applied. | Fixed: a release names the work it considered, and a workforce decision on record is applied again through the roster, which converges on its own identity. |
 | F-TF-14 | The production policy's completion guard counted a work proposal that was refused at admission as an unfinished workstream, so one refusal (a spent contract budget, a Registry rejection) made its project impossible to complete. | Fixed before it was committed: the guard and the finished-project trigger count admitted work only (section 3.7). |
+| F-TF-15 | Found in production, 2026-11-18. The provider's usage window ran out while Pilot 1's first two specialists were starting; both sessions failed. Authority recorded the attempts FAILED and accepted nothing, correctly — but the pump never asked for the registered retry arc (t-s08), so both sequences stayed EXECUTING and no further attempt could be ordered. | Fixed: the pump asks for t-s08 every sweep (section 6.6, D-TF-24). |
+| F-TF-16 | Found in the same run. The Engineer was not shown why an attempt failed: the provider's error text existed only inside the admitted witness, so a usage-window failure looked like a specialist's failure. | Fixed: the provider's report is recorded with the demonstration and listed with the workstream's failed attempts (section 6.6). The two demonstrations recorded before the fix keep the form they were recorded in; project state reads their reports from the witnesses. |
+| F-TF-17 | Found in the same run. The limits of an objective's budget are the operator's, but once an objective had started the command line had no way to change them. | Fixed: `engineer --objective-id … --max-…` on a resume. |

@@ -48,7 +48,10 @@ is authorized by its originating admitted proposal; every LATER attempt
 (a repair after t-s11, a retry after t-s08) requires an explicit
 authorization minted by a REPAIR_TASK/ASSIGN_SPECIALIST proposal —
 failures never re-execute themselves, and findings never become work
-without the Engineer's say.
+without the Engineer's say. The pump asks the Sequencer for the retry arc
+itself (t-s08: an attempt that failed at the provider returns its
+sequence to READY while the frozen retry budget lasts), so the work is
+recoverable; what it never does is start the next attempt on its own.
 
 The frozen prompt. When a contract declares its specialist prompt as a
 specification input, the specialist is launched on exactly those bytes —
@@ -70,7 +73,7 @@ from autobot.collector import Collector
 from autobot.execution_boundary import launch_with_manifest
 from autobot.git_adapter import mint_candidate_receipt
 from autobot.git_executor import execute_local_cas
-from autobot.models import ConflictError
+from autobot.models import ConflictError, instant
 from autobot.projection import project_prompt
 from autobot.transport import normalize_outcome, reconcile_dispatched
 from autobot.verifier_runner import ProductionVerifierRunner
@@ -939,14 +942,55 @@ class Taskforce:
 
     # ------------------------------------------- finalization/acceptance
 
-    def advance_authority_arcs(self):
-        """The deterministic registered arcs past VERIFIED: finalization
-        (SL, inside your permit grant), acceptance, release, completion,
-        and readiness re-evaluation. Each is a registered transition the
-        Sequencer alone applies; a missing permit or attestation leaves
-        the sequence visibly waiting for YOUR registered authority —
-        whoever did the work, retained member or not."""
-        report = {"finalized": [], "accepted": [], "released": [],
+    def release_failed_executions(self, now=None):
+        """t-s08: a sequence whose current attempt FAILED or went STALE
+        before its candidate froze returns to READY while the frozen
+        retry budget lasts. The Sequencer checks both preconditions; this
+        only asks. Returning to READY starts nothing: the next attempt
+        still needs the Engineer's word (the allocation gate), so a
+        failure never re-executes itself. With the budget spent the
+        sequence stays where it is and the Engineer is told once
+        (``retry_exhausted``): that work can continue only as a new
+        contract."""
+        retried = []
+        for row in self._sequences_in(["EXECUTING"]):
+            attempt_id = row["current_attempt_id"]
+            attempt = self.ro.execute(
+                "SELECT state FROM attempts WHERE attempt_id = ?",
+                (attempt_id,)).fetchone() if attempt_id else None
+            if attempt is None or attempt["state"] not in ("FAILED",
+                                                           "STALE"):
+                continue
+            try:
+                self.sequencer.retry_sequence(row["sequence_id"])
+            except ConflictError as exc:
+                if "retry budget exhausted" not in str(exc):
+                    raise
+                stamp = now or (instant(self.clock.now())
+                                if self.clock is not None else None)
+                if stamp is not None:
+                    self._emit(
+                        "retry_exhausted:%s:%s" % (row["sequence_id"],
+                                                   attempt_id),
+                        "retry_exhausted", row["sequence_id"],
+                        {"attempt_id": attempt_id,
+                         "attempt_state": attempt["state"],
+                         "reason": str(exc)}, stamp)
+                continue
+            retried.append(row["sequence_id"])
+        return retried
+
+    def advance_authority_arcs(self, now=None):
+        """The deterministic registered arcs around execution: the retry
+        arc for an attempt that failed at the provider (t-s08), readiness
+        evaluation, and everything past VERIFIED — finalization (SL,
+        inside your permit grant), acceptance, release and completion.
+        Each is a registered transition the Sequencer alone applies; a
+        missing permit or attestation leaves the sequence visibly waiting
+        for YOUR registered authority — whoever did the work, retained
+        member or not."""
+        report = {"retried": self.release_failed_executions(now),
+                  "finalized": [], "accepted": [], "released": [],
                   "completed": [], "ready": [], "blocked": []}
         for row in self._sequences_in(["DECLARED"]):
             state = self.sequencer.mark_ready(row["sequence_id"])
@@ -1052,7 +1096,7 @@ class Taskforce:
         supervised = self.supervise_running(now)
         collected = self.collect_running(now)
         verified = self.verify_evidence_complete()
-        arcs = self.advance_authority_arcs()
+        arcs = self.advance_authority_arcs(now)
         settled = self.settle_assignments(now)
         return {"allocated": allocated + resumed,
                 "adopted": [a for a in adopted if a["action"] == "adopted"],

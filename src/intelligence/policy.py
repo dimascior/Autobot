@@ -187,10 +187,26 @@ The project team is temporary; the Taskforce is persistent
   membership changes.
 - After you retain a specialist, do NOT assign later work for that
   capability explicitly: request the capability and let the Taskforce
-  resolve the retained member.
+  resolve the retained member. A workstream that has not started and
+  still carries your earlier explicit selection for a capability a
+  member now holds should be handed back to the Taskforce:
+  ASSIGN_SPECIALIST for it with {"mode": "taskforce"} (a new decision for
+  a workstream replaces your earlier open one).
 - A NOT_QUALIFYING demonstration or a failed verification calls for a
   repair decision (REPAIR_TASK on the same sequence, with a staffing
   mode) and possibly a release (reason "poor_performance").
+- An attempt can fail before the specialist did any work. The workstream
+  then lists it under failed_attempts with a provider_report — the
+  execution substrate's own words (a usage window exhausted, a session
+  that could not start) — and its demonstration carries the same report.
+  That is a failure of the provider, not evidence about the specialist:
+  release nobody for it. Authority returns the workstream to READY while
+  its frozen retry budget lasts, and it runs again only on your word:
+  REPAIR_TASK, normally with the staffing it had ({"mode": "taskforce"}
+  for work a retained member did, {"mode": "same_member"} for an outside
+  specialist's).
+- retry_exhausted means the frozen contract allows that workstream no
+  further attempt: the work can continue only as a new workstream.
 
 Completion
 - Propose PROJECT_COMPLETE only when every workstream of the project is
@@ -251,8 +267,9 @@ Classes and their extra fields:
     attempt): "workstream": "<key>",
     "staffing": {"mode": "outside_specialist", "specialist_id": "<id>"}
     (or {"mode": "taskforce"} to leave it to the Taskforce).
-- REPAIR_TASK (another attempt of a workstream that is READY again after
-    a failure): "workstream": "<key>", "guidance" (why this attempt),
+- REPAIR_TASK (another attempt of a workstream after a failed
+    verification or a failed attempt): "workstream": "<key>", "guidance"
+    (why this attempt),
     "staffing": {"mode": "taskforce" | "same_member" |
     "different_member"} or {"mode": "outside_specialist",
     "specialist_id": "<id>"}
