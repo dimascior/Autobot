@@ -619,6 +619,21 @@ frozen contract it is executing (D-TF-6):
 Every decision is recorded against the assignment and counted in its
 demonstration.
 
+That table is how a provider that asks before every tool use is
+supervised (Claude Code). A provider that runs inside an operating-system
+sandbox asks only to leave it (Codex), and its route declares the sandbox:
+the isolated worktree and the command-gate pending directory are
+writable, nothing else is. Commands inside the sandbox run without a
+request and are still admitted or refused one by one by Helios. A request
+is therefore an escalation, and the policy grants one kind (D-TF-28):
+
+| Request from a sandboxed session | Answer |
+|---|---|
+| run a command outside the sandbox | allowed for SOURCE_MODIFYING work when the command runs in the assignment's workspace and is Git's own bookkeeping for it (`git add`, `commit`, `mv`, `reset`, `restore`, `rm`, `status`, with no option before the subcommand): a linked worktree's index and objects live in the repository's Git directory |
+| a file change the sandbox refused | denied |
+| a change of the session's permissions | denied |
+| any request shape the policy does not know | denied |
+
 ### 6.4 Workspaces
 
 Every specialist works from a frozen source revision — the canonical
@@ -695,6 +710,90 @@ assignment records which results were provided: workstream, sequence,
 attempt, content address. Git is told to ignore the directory (the
 repository's local `info/exclude`), so a SOURCE_MODIFYING worktree still
 reads as clean and the files cannot be staged.
+
+### 6.8 Execution routing
+
+Which provider and model a session runs on is decided last, after every
+engineering and organizational decision, and is part of none of them
+(D-TF-26):
+
+```text
+work requirement    capability, role, objective, constraints, expected output
+        ↓
+staffing            the specialist: a retained member the Taskforce resolves,
+                    or an outside specialist the Project Manager selects
+        ↓
+routing             provider, model, reasoning effort, session arguments
+```
+
+The policy is configuration (`routing.py`, `[routing]`):
+
+| Class | Used for |
+|---|---|
+| `default` | every specialist session |
+| `escalation` | work the organization escalates, and assignments the Project Manager asks to escalate |
+| `fallback` | specialist sessions while the default route is switched off (`enabled = false`), in the declared order; never otherwise |
+| `utility` | lightweight utility work; no engineering seat runs on it |
+
+A route is a name of the organization's own and, inside it, the
+provider's identifiers passed through exactly: `agent`, `model`, `effort`
+and the native session arguments (`provider_args`). A specialist in the
+catalog is a handle and what it offers. It runs on the default route
+unless it names another (`route = "<name>"`) or carries an `agent` and
+`model` of its own.
+
+The Engineer's model is separate configuration (`[engineer] model`, or
+`[models] planner`). No specialist route is the Engineer's.
+
+**What does not change with the route.** The TaskContractRecord (it names
+no provider, model or specialist, and its frozen prompt is the same text
+for every provider). The specialist (its identity is its handle). The
+ProjectAssignment (its identity is the sequence and the attempt ordinal).
+The TaskforceMembership, the TaskforceSeat and every
+CapabilityDemonstration (identities over the specialist, the capability
+and the role, and references to authority records).
+
+**What does.** Each attempt has its own AttemptContract, its own
+ExecutionManifest and its own call. The manifest's `provider_assignment`
+names the provider and the model that attempt runs on. Its schema is
+shared byte for byte with AutoSwarm, so the rest of the route — the
+reasoning effort and the native session arguments — travels beside the
+manifest: the Taskforce stages it for the call and the transport passes
+it to AutoSwarm, whose own call record (the admitted obj-11 witness)
+holds the model and effort it was launched with. The assignment row
+records the whole route with its name when the attempt is dispatched
+(`execution.route`), and a relaunch after a restart repeats exactly that
+route. A specialist whose route is replaced executes its next attempt on
+the new one. Its earlier attempts keep the routes they ran on, so one
+specialist's history can read: attempt 1 on one model, attempt 2 on
+another.
+
+**Escalation** (D-TF-27). Work runs on the escalation route in two ways,
+and neither names a model:
+
+| Who determines it | How |
+|---|---|
+| the organization | `escalate` lists capabilities, or `capability:role` pairs, whose work always runs escalated |
+| the Project Manager, for one assignment | the staffing decision carries `"escalation": "high_context"` or `"deep_reasoning"`, with the reason in its rationale |
+
+The Project Manager's words describe what the engineering problem needs.
+The Taskforce's routing resolves them. The request is recorded with the
+staffing decision and with the assignment; an organization that declares
+no escalation route refuses it, with the reason, instead of running the
+work at standard depth under it. The Engineer is shown that an assignment
+was escalated and never how any assignment is routed (D-TF-22).
+Escalation has no budget of its own: the Engineer is told it is scarce,
+and every ask is a recorded decision with its reason.
+
+**Preflight.** `autobot-authority preflight` resolves the policy without
+spending a model call: the Engineer's model, every route, what each class
+resolves to, how each specialist is routed, and whether AutoSwarm can
+launch each provider. With `--probe` it launches one small real session
+per role — a specialist and an independent reviewer on the default route,
+as two sessions at once, and one on the escalation route — on the
+READ_ONLY contract production work runs on, answers their requests with
+the same supervision policy, and asks the Engineer's model one question.
+A preflight creates no objective, no contract and no attempt.
 
 ## 7. Authority integration
 
@@ -791,6 +890,9 @@ It also adds `objectives.constraints`, `findings.statement` and
 `seats.assignment_id`. The v1 table `seats` keeps its name and is the
 per-attempt execution slot.
 
+Schema v3 adds one column, `assignment_decisions.escalation`: the
+escalation class a staffing decision asked for, or nothing.
+
 No table copies an authority task, attempt, candidate, evidence or
 verification record: each references them by identity. Migration is
 monotonic and runs in one transaction. A store newer than the code is
@@ -825,6 +927,10 @@ refused. The authority database is not touched.
 | D-TF-23 | A member is outside for work it holds no seat for. |
 | D-TF-24 | An attempt that failed at the provider returns its sequence to READY by the registered retry arc (t-s08), which the pump asks for; the next attempt needs the Engineer's word. The provider's own report is recorded with the attempt and shown to the Engineer, uninterpreted. |
 | D-TF-25 | Dependent work is given its predecessors' accepted results through the authority path: the landed revision for a SOURCE_MODIFYING predecessor, and for any predecessor the admitted artifact, placed in the dependent's isolated worktree. |
+| D-TF-26 | Execution routing is a declared policy resolved after staffing: a default route for every specialist session, an escalation route, fallbacks used only while the default is switched off, and a utility route. A route's provider, model and effort are no part of a TaskContractRecord, a requirement, a project, a workstream, a capability, a specialist, a membership, a seat or a demonstration. The Engineer's model is separate configuration. |
+| D-TF-27 | Work is escalated by the organization's rule over capability and role, or by the Project Manager for one assignment in words about the engineering need (`high_context`, `deep_reasoning`) with its rationale. Routing resolves either to the escalation route. Neither names a provider or a model. |
+| D-TF-28 | A provider that runs inside an operating-system sandbox is supervised at the sandbox's edge: its route declares what the sandbox may write, and the only escalation the policy grants is Git's own bookkeeping for a SOURCE_MODIFYING assignment's worktree. Every command still passes Helios. |
+| D-TF-29 | The route an attempt is dispatched on is recorded with that attempt: provider and model in the ExecutionManifest, whose schema stays what AutoSwarm also holds; the whole route, with its name and effort, on the assignment. Effort and session arguments are staged beside the manifest. A relaunch repeats the recorded route. The specialist prompt is one text for every provider. |
 
 ## 12. Findings
 
@@ -848,3 +954,10 @@ refused. The authority database is not touched.
 | F-TF-16 | Found in the same run. The Engineer was not shown why an attempt failed: the provider's error text existed only inside the admitted witness, so a usage-window failure looked like a specialist's failure. | Fixed: the provider's report is recorded with the demonstration and listed with the workstream's failed attempts (section 6.6). The two demonstrations recorded before the fix keep the form they were recorded in; project state reads their reports from the witnesses. |
 | F-TF-17 | Found in the same run. The limits of an objective's budget are the operator's, but once an objective had started the command line had no way to change them. | Fixed: `engineer --objective-id … --max-…` on a resume. |
 | F-TF-18 | Found in production, 2026-11-18 (Pilot 1). The independent review of a READ_ONLY investigation was dispatched without the investigation's accepted result: nothing delivered a READ_ONLY artifact to dependent work, so a dependency ordered execution and carried no content. The reviewer said so in its findings and verified the question from source instead. | Fixed: section 6.7, D-TF-25. |
+| F-TF-19 | The catalog gave each specialist its own provider and model, so the organization had no default route to change; and a route's reasoning effort and session arguments were recorded and never passed to AutoSwarm. | Fixed: the routing policy (section 6.8, D-TF-26). The transport passes the effort and the session arguments. |
+| F-TF-20 | The READ_ONLY specialist contract named one provider's tools (Read, Glob, Grep) and forbade the shell. A provider that reads through a shell could not do READ_ONLY work under it; and the frozen prompt is part of the contract, so it cannot differ by provider. | Fixed: one provider-neutral text (D-TF-29). |
+| F-TF-21 | An assignment row kept the provider and model its specialist had when it was selected. A route replaced between selection and dispatch was used for the launch and then lost: a relaunch after a restart would have asked for the old model under the same call, which AutoSwarm refuses as a different manifest. | Fixed: the dispatched route is recorded at dispatch and repeated (D-TF-29). |
+| F-TF-22 | Found by probing the Codex route, 2026-11-18. Inside a `workspace-write` sandbox a linked worktree cannot stage or commit: its index and objects are in the repository's Git directory, which stays protected even when it is listed as writable. With approvals off, the session stops there. | The route relays approvals, and the supervision policy grants Git bookkeeping for the assignment's own worktree and nothing else (section 6.3, D-TF-28). |
+| F-TF-23 | Reported by Pilot 2's specialists and confirmed in source: `Sequencer.mark_member_stale` (t-a12) has no caller, so a provider session that hangs is never failed and holds every run until `--max-wall-seconds`. | Open. Recorded for operators in [RUNBOOK.md](RUNBOOK.md) section 5.2. |
+| F-TF-24 | Reported by Pilot 2's specialists, read in source, not confirmed by a test: an attempt the Sequencer refuses to start leaves an ABANDONED assignment that `allocate_ready` then skips for good; a non-zero exit of `autoswarm run` escapes as an uncaught error and leaves the attempt DISPATCHED; a negative budget on a fresh run leaves the objective ACTIVE behind a traceback; `--authorize-publication` and `--max-wall-seconds` do more than their help text says. | Open. Recorded for operators in [RUNBOOK.md](RUNBOOK.md). |
+| F-TF-25 | RUNBOOK.md cites source by line, and the routing change moved those lines. | Open at this commit. The references are to be refreshed by SOURCE_MODIFYING work through the organization, not by hand. |

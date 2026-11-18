@@ -137,6 +137,7 @@ python -m intelligence.cli engineer --objective-id <id> --objective "<what you w
 |---|---|
 | `seed` | admits the repository declaration, the delegation and the verifier and transform registrations |
 | `bootstrap` | assembles the runtime, checks every dependency, prints the specialist catalog |
+| `preflight` | resolves the execution routes: the Engineer's model, each route, how each specialist is routed, whether AutoSwarm can launch each provider. `--probe` exercises each route with one small real session and asks the Engineer's model one question |
 | `engineer` | gives the Engineer an objective and runs until the loop is stably quiet. Without `--objective` it resumes the active objectives |
 | `run` | runs one task you name yourself, with no reasoning |
 | `status` | objectives, sequences, active projects and the Taskforce, without taking the lease |
@@ -158,15 +159,29 @@ workspace = '<this checkout>'
 repo_path = '<this checkout>'
 
 [specialists.<handle>]
-agent  = "claude-code"
-model  = "<model>"
 offers = ["research:investigator", "verification:reviewer"]
 
 [taskforce]
 established_threshold = 3
 ```
 
-Each `[specialists.<handle>]` table is one engineering worker — its stable identity, how it is routed, and the capability and role pairs it may do. Being in the catalog makes a specialist available to projects; it does not make it a Taskforce member. `[taskforce]` configures the persistent organization. The Engineer's model is `[engineer] model`, else `[models] planner`.
+Each `[specialists.<handle>]` table is one engineering worker: its stable identity (the handle) and the capability and role pairs it may do. Being in the catalog makes a specialist available to projects; it does not make it a Taskforce member. `[taskforce]` configures the persistent organization.
+
+### Execution routing
+
+Which provider and model a session runs on is decided last, after staffing, by the `[routing]` policy in `config.toml`:
+
+| Who | Runs on |
+|---|---|
+| Engineer, and the Engineer as Project Manager | `[engineer] model`, else `[models] planner` |
+| every specialist session: a retained member, an outside specialist, an independent reviewer in its own session | the `default` route |
+| work the organization escalates, and single assignments the Project Manager asks to escalate | the `escalation` route |
+| specialist sessions while the default route is switched off | the `fallback` routes, in order |
+| lightweight utility work | the `utility` route |
+
+A route is a provider (`agent`), a `model`, an `effort` and native session arguments. Replacing a route changes no task contract and no specialist, membership or seat: the next attempt runs on the new route, and each earlier attempt keeps the route it ran on. A specialist may name a route of its own (`route = "<name>"`).
+
+The Project Manager can ask for escalated execution of one assignment. It says what the engineering problem needs (`"escalation": "high_context"` or `"deep_reasoning"`) and why; the routing policy resolves that to the escalation route. The Engineer never names a provider or a model and is not shown any.
 
 ### Tests
 

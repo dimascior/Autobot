@@ -559,6 +559,103 @@ class WorkspaceIsolationTests(unittest.TestCase):
         self.assertEqual(exclude.read_text(encoding="utf-8").splitlines(),
                          [".autobot/"])
 
+    def _route_manifest(self, provider="codex", model="gpt-6-luna"):
+        manifest = self._manifest("SOURCE_MODIFYING")
+        manifest["provider_assignment"] = {
+            "provider": provider, "model": model,
+            "selected_by": "agent_factory"}
+        return manifest
+
+    def test_the_routes_identifiers_and_arguments_reach_the_provider(self):
+        """The manifest's provider and model are passed to AutoSwarm
+        exactly; the route's reasoning effort and native session
+        arguments, staged by the caller for the call, are passed beside
+        them, with the arguments' placeholders filled from the workspace
+        this session launches in; and they are used for that one launch
+        only."""
+        (self.workspace / ".git").mkdir()
+        gate = Path(self.tmpdir.name) / "gate"
+        (gate / "pending").mkdir(parents=True)
+        self.transport = AutoSwarmTransport(
+            self.store, str(self.home), str(self.workspace),
+            gate_root=str(gate), autoswarm_argv=["autoswarm-x"])
+        self.transport.stage_session(self.call_id, [
+            "--sandbox", "workspace-write", "-c",
+            "roots=['{gate_pending}', '{gate_pending_real}', '{repo_git}',"
+            " '{workspace}']"], effort="max")
+        recorder, cwd = self._launch(self._route_manifest())
+        run = recorder.cli()[0]
+        self.assertEqual(run[:8], ["autoswarm-x", "run", "--agent", "codex",
+                                   "--model", "gpt-6-luna", "--effort",
+                                   "max"])
+        native = [a[len("--provider-arg="):] for a in run
+                  if a.startswith("--provider-arg=")]
+        pending = str(gate / "pending")
+        self.assertEqual(native, [
+            "--sandbox", "workspace-write", "-c",
+            "roots=['%s', '%s', '%s', '%s']" % (
+                pending, os.path.realpath(pending),
+                str(self.workspace / ".git"), cwd)])
+        self.assertLess(run.index("--provider-arg=--sandbox"),
+                        run.index("--no-parent"))
+        self.assertEqual(self.transport._session, {})  # used once
+        again, _cwd = self._launch(self._route_manifest())
+        self.assertFalse([a for a in again.cli()[0]
+                          if a.startswith("--provider-arg=")])
+        self.assertNotIn("--effort", again.cli()[0])
+
+    def test_a_route_with_no_effort_or_arguments_launches_as_before(self):
+        recorder, cwd = self._launch(self._route_manifest(
+            provider="claude-code", model="sonnet"))
+        run = recorder.cli()[0]
+        self.assertEqual(run[:5], ["autoswarm-x", "run", "--agent",
+                                   "claude-code", "--model"])
+        self.assertEqual(run[5:11], ["sonnet", "--no-parent",
+                                     "--background", "--cwd", cwd,
+                                     "--call-id"])
+        self.assertNotIn("--effort", run)
+
+    def test_an_argument_this_session_cannot_fill_stops_the_launch(self):
+        """A route argument naming the command-gate directory cannot be
+        filled by a transport that has none: the provider is never
+        started on a half-filled argument."""
+        self.transport.stage_session(self.call_id, [
+            "-c", "roots=['{gate_pending}']"])
+        recorder = _Recorder()
+        with patch("autobot.autoswarm_transport.subprocess.run", recorder):
+            with self.assertRaises(RuntimeError) as raised:
+                self.transport.launch_manifest(
+                    "sha256:" + "0" * 64, self._route_manifest())
+        self.assertIn("{gate_pending}", str(raised.exception))
+        self.assertEqual(recorder.cli(), [])
+
+    def test_a_route_probe_runs_outside_any_attempt(self):
+        """A preflight session gets the route — provider, model, effort,
+        session arguments, an isolated worktree — and no manifest and no
+        caller-supplied call id, because no attempt stands behind it."""
+        recorder = _Recorder()
+        with patch("autobot.autoswarm_transport.subprocess.run", recorder):
+            launched = self.transport.probe_route(
+                {"provider": "codex", "model": "gpt-6-luna",
+                 "effort": "max",
+                 "provider_args": ["--sandbox", "workspace-write"]},
+                "Read and report.")
+        self.assertEqual(recorder.git()[0][3:6],
+                         ["worktree", "add", "--detach"])
+        self.assertEqual(recorder.git()[0][-1], "refs/heads/main")
+        run = recorder.cli()[0]
+        self.assertEqual(run[:8], ["autoswarm-x", "run", "--agent", "codex",
+                                   "--model", "gpt-6-luna", "--effort",
+                                   "max"])
+        self.assertIn("--provider-arg=workspace-write", run)
+        self.assertNotIn("--manifest", run)
+        self.assertNotIn("--call-id", run)
+        self.assertEqual(run[run.index("--cwd") + 1],
+                         launched["workspace"])
+        self.assertTrue(Path(launched["workspace"]).name.startswith(
+            "autobot-wt-"))
+        self.assertEqual(launched["call_id"], "call_" + "a" * 32)
+
     def test_release_removes_only_its_own_worktree(self):
         task = self.home / "calls" / self.call_id / "task.json"
         mine = self.workspace / "autobot-wt-mine"

@@ -19,15 +19,24 @@ connecting configuration to constructors.
 The specialist catalog comes from configuration:
 
     [specialists.<handle>]
-    agent  = "claude-code"          # the provider AutoSwarm launches
-    model  = "sonnet"
     offers = ["research:investigator", "documentation:builder"]
+
+    [routing]                       # see routing.py
+    default = "luna-6-max"
+
+    [routing.routes.luna-6-max]
+    agent  = "codex"                # the provider AutoSwarm launches
+    model  = "gpt-6-luna"
+    effort = "max"
 
     [taskforce]
     established_threshold = 3
 
 Each ``[specialists.<handle>]`` table is one engineering worker: a stable
-identity, how it is routed, and the (capability, role) pairs it may do.
+identity (its handle) and the (capability, role) pairs it may do. How it
+is executed is routing: the policy's default route, a route it names
+(``route = "<name>"``), or an ``agent`` and ``model`` of its own. Changing
+any of that changes no identity.
 Being in the catalog makes a specialist AVAILABLE to projects — an
 outside specialist a Project Manager can select. It does not make it a
 Taskforce member: membership exists only in ``intelligence.db``, earned
@@ -63,6 +72,7 @@ from .capabilities import CAPABILITIES
 from .compiler import RepositoryEnvironment
 from .driver import ContinuousDriver
 from .planstore import PlanStore, readonly_view
+from .routing import RoutingError, RoutingPolicy
 from .workforce import SpecialistPool
 
 _ROUTE_KEYS = ("agent", "model", "provider_args", "workspace",
@@ -78,6 +88,10 @@ def build_pool(file_config):
     docstring for the accepted forms). Registration order is
     configuration order, so every listing over it is reproducible."""
     pool = SpecialistPool()
+    try:
+        pool.routing = RoutingPolicy.from_config(file_config.get("routing"))
+    except RoutingError as exc:
+        raise ConfigError(str(exc))
     specialists = {}
     for section in (file_config.get("specialists", {}),
                     file_config.get("taskforce", {}).get("specialists",
@@ -89,9 +103,44 @@ def build_pool(file_config):
     for handle, spec in specialists.items():
         if not isinstance(spec, dict):
             continue
+        # How this worker is executed. Three forms, most specific first:
+        # its own agent and model (a route it carries itself), a named
+        # route of the routing policy, or nothing — the policy's default
+        # route. None of it is the worker's identity, which is its handle.
         agent = spec.get("agent") or spec.get("provider")
+        model, effort = spec.get("model"), spec.get("effort")
+        provider_args = spec.get("provider_args", [])
+        route_name = None
+        named = spec.get("route")
+        if named is not None and agent:
+            raise ConfigError(
+                "[specialists.%s] names both a route and an agent; a"
+                " specialist is routed one way" % handle)
         if not agent:
-            raise ConfigError("[specialists.%s] needs an agent" % handle)
+            if pool.routing is None:
+                if named is not None:
+                    raise ConfigError(
+                        "[specialists.%s] names the route %r but no"
+                        " [routing] is configured" % (handle, named))
+                raise ConfigError("[specialists.%s] needs an agent" % handle)
+            try:
+                route = pool.routing.route(named) if named is not None \
+                    else pool.routing.resolve("default")
+            except RoutingError as exc:
+                raise ConfigError("[specialists.%s] %s" % (handle, exc))
+            if not route["enabled"]:
+                raise ConfigError(
+                    "[specialists.%s] is pinned to the route %r, which is"
+                    " disabled" % (handle, route["name"]))
+            agent, model = route["provider"], route["model"]
+            effort = route["effort"]
+            provider_args = route["provider_args"]
+            route_name = route["name"]
+        if not (isinstance(provider_args, list) and all(
+                isinstance(a, str) and a for a in provider_args)):
+            raise ConfigError(
+                "[specialists.%s] provider_args must be a list of strings"
+                % handle)
         offers = spec.get("offers", [])
         if not (isinstance(offers, list) and offers):
             raise ConfigError(
@@ -104,13 +153,14 @@ def build_pool(file_config):
                     "[specialists.%s] offer %r is not \"capability:role\""
                     " over the capability vocabulary" % (handle, offer))
             pool.register(
-                capability, role, agent, model=spec.get("model"),
-                handle=handle, effort=spec.get("effort"),
+                capability, role, agent, model=model,
+                handle=handle, effort=effort,
                 tool_requirements=spec.get("tool_requirements", ()),
                 context_budget=spec.get("context_budget"),
                 expected_output=spec.get("expected_output", "artifacts"),
                 origin=spec.get("origin", "outside_pool"),
-                max_concurrent=int(spec.get("max_concurrent", 1)))
+                max_concurrent=int(spec.get("max_concurrent", 1)),
+                provider_args=provider_args, route_name=route_name)
     routes = file_config.get("authority_routes",
                              file_config.get("routes", {}))
     for route_name, route_config in routes.items():
@@ -660,6 +710,52 @@ class AuthorityRuntime:
     # The name this method had before the organizational model was
     # aligned.
     chief_engineer_policy = engineer_policy
+
+    def preflight(self, probe=False, reasoner=None, timeout_seconds=900,
+                  on_event=None):
+        """Resolve — and with ``probe`` exercise — every execution route
+        production will use (see preflight.py). Creates no objective, no
+        contract and no attempt. Returns the report; ``report["ok"]``
+        says whether every route resolved and, when probed, answered."""
+        from . import preflight as _preflight
+        providers, listing_problem = None, None
+        lister = getattr(self.transport, "providers", None)
+        if lister is not None:
+            try:
+                providers = lister()
+            except Exception as exc:
+                listing_problem = "AutoSwarm's provider listing failed: %s" \
+                    % exc
+        report = _preflight.routing_report(
+            self.pool, self.engineer_model, providers)
+        if listing_problem:
+            report["problems"].append(listing_problem)
+        if probe and not report["problems"]:
+            if reasoner is None and self.engineer_model:
+                from .policy import ClaudeCliReasoner
+                reasoner = ClaudeCliReasoner(self.engineer_model)
+            gate_root = getattr(self.transport, "_gate_root", None)
+            report["probes"] = _preflight.probe_routes(
+                self.pool, self.transport, self.engineer_model,
+                reasoner=reasoner,
+                gate_root=str(gate_root) if gate_root else None,
+                repo_path=self._repo_path,
+                timeout_seconds=timeout_seconds, on_event=on_event)
+            for record in report["probes"]:
+                if not record["ok"]:
+                    report["problems"].append(
+                        "the %s probe did not complete: %s" % (
+                            record["label"],
+                            record.get("error") or record.get("answer")
+                            or record.get("outcome")))
+            independent = _preflight.independent_sessions(report["probes"])
+            report["independent_sessions"] = independent
+            if independent is False:
+                report["problems"].append(
+                    "the specialist and the independent reviewer did not"
+                    " run as two distinct sessions")
+        report["ok"] = not report["problems"]
+        return report
 
     def taskforce_report(self):
         """The persistent organization's state report (query layer)."""

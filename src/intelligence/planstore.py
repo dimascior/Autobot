@@ -28,7 +28,7 @@ from contextlib import contextmanager
 
 from .proposals_util import canonical_json_digest
 
-PLAN_SCHEMA_VERSION = 2
+PLAN_SCHEMA_VERSION = 3
 
 # The objective-scoped engineering-work budget applied when you set none
 # (cap-47: the limits are yours; these are only the conservative default).
@@ -470,7 +470,15 @@ _DDL_V2 = (
     "ALTER TABLE seats ADD COLUMN assignment_id TEXT",
 )
 
-_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2}
+# v3 (additive): the Project Manager's staffing decision may ask for
+# escalated execution of that one assignment. The column holds the
+# escalation class it asked for (routing.ESCALATION_CLASSES) or NULL; it
+# is a word about the engineering need, never a provider or a model.
+_DDL_V3 = (
+    "ALTER TABLE assignment_decisions ADD COLUMN escalation TEXT",
+)
+
+_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3}
 
 
 class PlanStoreTooNew(Exception):
@@ -750,10 +758,12 @@ class PlanStore:
 
     def record_assignment_decision(self, cur, decision_id, objective_id,
                                    project_id, sequence_id, attempt_ordinal,
-                                   mode, specialist_id, now):
+                                   mode, specialist_id, now,
+                                   escalation=None):
         """Record the Project Manager's staffing decision for a
         workstream's next attempt. The latest decision wins: an earlier
-        one still OPEN for the sequence is superseded."""
+        one still OPEN for the sequence is superseded. ``escalation`` is
+        the escalation class the decision asked for, if any."""
         cur.execute(
             "UPDATE assignment_decisions SET status = 'SUPERSEDED',"
             " resolved_utc = ?, note = ? WHERE sequence_id = ? AND status"
@@ -763,10 +773,10 @@ class PlanStore:
         cur.execute(
             "INSERT OR IGNORE INTO assignment_decisions (decision_id,"
             " objective_id, project_id, sequence_id, attempt_ordinal,"
-            " mode, specialist_id, status, decided_utc)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)",
+            " mode, specialist_id, status, decided_utc, escalation)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)",
             (decision_id, objective_id, project_id, sequence_id,
-             attempt_ordinal, mode, specialist_id, now))
+             attempt_ordinal, mode, specialist_id, now, escalation))
         return cur.rowcount == 1
 
     def open_staffing_decision(self, sequence_id):

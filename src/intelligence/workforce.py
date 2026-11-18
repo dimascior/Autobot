@@ -178,6 +178,10 @@ class SpecialistPool:
     def __init__(self):
         self._profiles = {}
         self._order = []
+        # The organization's execution-routing policy (routing.py), when
+        # configuration declares one. None: every worker carries its own
+        # route and nothing is escalated.
+        self.routing = None
 
     @staticmethod
     def default_handle(provider, model=None):
@@ -187,7 +191,7 @@ class SpecialistPool:
                  tool_requirements=(), context_budget=None,
                  expected_output="artifacts", completion_policy=None,
                  handle=None, effort=None, origin="outside_pool",
-                 max_concurrent=1):
+                 max_concurrent=1, provider_args=(), route_name=None):
         if capability not in CAPABILITIES:
             raise WorkforceError(
                 "capability %r is not in the registered vocabulary"
@@ -215,6 +219,11 @@ class SpecialistPool:
                 "effort": effort,
                 "origin": origin,
                 "max_concurrent": max_concurrent,
+                # Native session arguments of the route, and the name the
+                # routing policy gives it (None for a worker that carries
+                # its own route).
+                "provider_args": list(provider_args or ()),
+                "route_name": route_name,
             }
             self._profiles[handle] = profile
             self._order.append(handle)
@@ -241,9 +250,11 @@ class SpecialistPool:
         elif model is not None:
             profile["model"] = model
         for key in ("tool_requirements", "context_budget",
-                    "expected_output", "effort"):
+                    "expected_output", "effort", "route_name"):
             if key in route:
                 profile[key] = route[key]
+        if "provider_args" in route:
+            profile["provider_args"] = list(route["provider_args"] or ())
         return profile
 
     def profiles(self):
@@ -265,12 +276,19 @@ class SpecialistPool:
 
 
 def _route_of(profile):
-    return {"tool_requirements": profile["tool_requirements"],
-            "context_budget": profile["context_budget"],
-            "expected_output": profile["expected_output"],
-            "completion_policy": profile["completion_policy"],
-            "effort": profile["effort"],
-            "max_concurrent": profile["max_concurrent"]}
+    route = {"tool_requirements": profile["tool_requirements"],
+             "context_budget": profile["context_budget"],
+             "expected_output": profile["expected_output"],
+             "completion_policy": profile["completion_policy"],
+             "effort": profile["effort"],
+             "max_concurrent": profile["max_concurrent"]}
+    # Present only when set, so a worker that carries neither keeps the
+    # route text it has always had.
+    if profile.get("provider_args"):
+        route["provider_args"] = list(profile["provider_args"])
+    if profile.get("route_name"):
+        route["route_name"] = profile["route_name"]
+    return route
 
 
 def _offered_role(specialist, capability, role):
@@ -777,28 +795,46 @@ class TaskforceRoster:
                 (project_id, specialist_id))
 
     def bind_execution(self, assignment_id, attempt_id, call_id, now,
-                       execution=None):
+                       execution=None, route=None):
         """Record the authority-minted attempt and call identity the
-        assignment is executing under (references, never copies)."""
+        assignment is executing under (references, never copies).
+
+        ``route`` is the execution route the attempt is DISPATCHED on
+        (provider, model, effort, the route's name). It is recorded once,
+        with the first binding that carries it: the assignment row then
+        says what this attempt actually ran on, whatever its specialist
+        is routed to later, and a relaunch after a restart repeats exactly
+        that route."""
         with self.plan.transaction() as cur:
             row = cur.execute(
-                "SELECT status, execution FROM project_assignments"
-                " WHERE assignment_id = ?", (assignment_id,)).fetchone()
+                "SELECT status, execution, provider, model FROM"
+                " project_assignments WHERE assignment_id = ?",
+                (assignment_id,)).fetchone()
             if row is None:
                 raise WorkforceError(
                     "assignment %s does not exist" % assignment_id)
             merged = _loads(row["execution"], {})
             merged.update(execution or {})
+            provider, model = row["provider"], row["model"]
+            if route and "route" not in merged:
+                merged["route"] = {
+                    key: route.get(key)
+                    for key in ("name", "provider", "model", "effort",
+                                "served_as")
+                    if route.get(key) is not None}
+                provider = route.get("provider") or provider
+                model = route.get("model")
             status = row["status"]
             if status == "SELECTED" and call_id is not None:
                 status = "DISPATCHED"
             cur.execute(
                 "UPDATE project_assignments SET attempt_id ="
                 " COALESCE(?, attempt_id), call_id = COALESCE(?, call_id),"
-                " execution = ?, status = ? WHERE assignment_id = ?",
+                " execution = ?, status = ?, provider = ?, model = ?"
+                " WHERE assignment_id = ?",
                 (attempt_id, call_id,
                  json.dumps(merged, sort_keys=True) if merged else None,
-                 status, assignment_id))
+                 status, provider, model, assignment_id))
 
     def set_assignment_status(self, cur, assignment_id, status, now,
                               outcome=None):
@@ -816,11 +852,41 @@ class TaskforceRoster:
         decision; none of it is contract identity."""
         specialist = self.specialist(row["specialist_id"])
         route = _loads(specialist["route"], {}) if specialist else {}
+        execution = _loads(row["execution"], {})
         # Provider and model are read from the specialist AS IT IS ROUTED
         # NOW for work not yet dispatched (a rerouted worker executes its
-        # next attempt on the new route); the assignment row keeps what
-        # was selected at the time.
+        # next attempt on the new route). Once an attempt is dispatched
+        # the assignment row holds the route it was dispatched on, and
+        # that is what a relaunch repeats.
         live = row["status"] == "SELECTED" and specialist is not None
+        provider = specialist["provider"] if live else row["provider"]
+        model = specialist["model"] if live else row["model"]
+        effort = route.get("effort")
+        provider_args = list(route.get("provider_args") or [])
+        route_name = route.get("route_name")
+        served_as = "default" if route_name else None
+        routing = getattr(self.pool, "routing", None)
+        dispatched = execution.get("route") if not live else None
+        if dispatched:
+            effort = dispatched.get("effort")
+            route_name = dispatched.get("name")
+            served_as = dispatched.get("served_as")
+            if routing is not None and route_name in routing.names():
+                provider_args = routing.route(route_name)["provider_args"]
+        elif live and routing is not None and (
+                execution.get("escalation")
+                or routing.class_for(row["capability"],
+                                     row["role"]) == "escalation"):
+            # Escalated execution: the Project Manager asked for it for
+            # this assignment, or the organization escalates this kind of
+            # work. Either way it runs on the escalation route, whoever
+            # was staffed, and no identity changes.
+            escalated = routing.resolve("escalation")
+            provider, model = escalated["provider"], escalated["model"]
+            effort = escalated["effort"]
+            provider_args = escalated["provider_args"]
+            route_name = escalated["name"]
+            served_as = escalated["served_as"]
         return {
             "assignment_id": row["assignment_id"],
             "project_id": row["project_id"],
@@ -829,13 +895,16 @@ class TaskforceRoster:
             "handle": specialist["handle"] if specialist else None,
             "capability": row["capability"],
             "role": row["role"],
-            "provider": specialist["provider"] if live else row["provider"],
-            "model": specialist["model"] if live else row["model"],
+            "provider": provider,
+            "model": model,
             "tool_requirements": route.get("tool_requirements", []),
             "context_budget": route.get("context_budget"),
             "expected_output": route.get("expected_output") or "artifacts",
             "completion_policy": route.get("completion_policy"),
-            "effort": route.get("effort"),
+            "effort": effort,
+            "provider_args": provider_args,
+            "route_name": route_name,
+            "served_as": served_as,
             "selected_by": STAFFING_PRINCIPAL,
             "staffed_by": STAFFING_FUNCTION,
             "selection_path": row["selection_path"],

@@ -38,7 +38,7 @@ names is a function, split along the model's own line:
 |---|---|
 | which **retained member** takes a capability request | the Taskforce (`TaskforceSeatResolver.resolve`) |
 | which **outside specialist** joins a project | the Engineer as Project Manager (`ASSIGN_SPECIALIST`) |
-| which **provider and model** execute the assignment | nobody decides it per task: it is the assigned specialist's route in the catalog, read when the attempt is dispatched |
+| which **provider and model** execute the assignment | nobody names them per task: the routing policy you declare (`[routing]`) resolves the route when the attempt is dispatched — the default route, or the escalation route when your rule or the Project Manager's ask (a word about the need, never a model) calls for it |
 
 `agent_factory` is the identity all three are recorded under on the wire,
 because every manifest already admitted carries it.
@@ -52,12 +52,15 @@ chooses its own model.
 That is exactly as true now as when it was frozen:
 
 - A specialist never takes part in its own staffing. It receives a
-  manifest; the provider and the model in it were read from the catalog
-  by deterministic code.
+  manifest; the provider, the model and the effort in it were resolved
+  from the routing policy by deterministic code.
 - The Engineer names a *specialist* for a project assignment. It never
   names a provider or a model — `validate_proposal` refuses either in a
   work requirement and in an assignment — and it is not even shown them:
-  handles, providers and models are removed from what it reasons over.
+  handles, providers, models and routes are removed from what it reasons
+  over. When it asks for escalated execution of one assignment it says
+  what the problem needs (`high_context`, `deep_reasoning`); which route
+  that means is the policy's, and yours.
 - A work requirement, and so every TaskContractRecord, names no provider,
   no model and no specialist.
 

@@ -163,7 +163,12 @@ def review_authors(plan, ro, work):
 
 
 def _assignment_summary(row):
-    return {"assignment_id": row["assignment_id"],
+    execution = _loads(row["execution"], {}) or {}
+    return {"escalation": execution.get("escalation"),
+            # The execution route the attempt was dispatched on (routing
+            # detail: removed from what the Engineer reasons over).
+            "route": execution.get("route"),
+            "assignment_id": row["assignment_id"],
             "project_id": row["project_id"],
             "workstream_id": row["workstream_id"],
             "attempt_ordinal": row["attempt_ordinal"],
@@ -1165,11 +1170,13 @@ def project_state(plan, ro, project_id, roster=None, store=None):
                  "selection_path": a["selection_path"],
                  "decided_by": a["decided_by"],
                  "standing_at_assignment": a["standing_at_assignment"],
+                 "escalation": a.get("escalation"),
                  "status": a["status"], "outcome": a["outcome"]}
                 for a in entry["assignments"]],
             "assignment_decisions": [
                 {"decision_id": d["decision_id"], "mode": d["mode"],
                  "specialist_id": d["specialist_id"],
+                 "escalation": d.get("escalation"),
                  "status": d["status"], "note": d["note"]}
                 for d in plan.assignment_decisions(
                     sequence_id=sequence_id)] if sequence_id else [],

@@ -71,6 +71,7 @@ import re
 
 from .capabilities import CAPABILITIES
 from .proposals_util import canonical_json_digest
+from .routing import ESCALATION_CLASSES
 from .workforce import RELEASE_REASONS, STAFFING_MODES
 
 PROPOSAL_CLASSES = (
@@ -215,9 +216,18 @@ def validate_staffing(staffing, what):
              and staffing.get("mode") in STAFFING_MODES,
              "%s staffing.mode must be one of %r" % (what, STAFFING_MODES))
     _refuse_routing(staffing, "%s staffing" % what)
-    _require(set(staffing) <= {"mode", "specialist_id"},
-             "%s staffing carries a mode and, for an outside specialist,"
-             " the specialist_id — nothing else" % what)
+    _require(set(staffing) <= {"mode", "specialist_id", "escalation"},
+             "%s staffing carries a mode, for an outside specialist the"
+             " specialist_id, and at most an escalation — nothing else"
+             % what)
+    if "escalation" in staffing:
+        # The Project Manager's ask for more than standard execution
+        # depth on THIS assignment. A word about the engineering need;
+        # how it is routed is resolved downstream.
+        _require(staffing["escalation"] in ESCALATION_CLASSES,
+                 "%s staffing.escalation must be one of %r: it states"
+                 " what the problem needs and never names a provider or"
+                 " a model" % (what, ESCALATION_CLASSES))
     if staffing["mode"] == "outside_specialist":
         _require(isinstance(staffing.get("specialist_id"), str)
                  and staffing["specialist_id"],
@@ -391,6 +401,10 @@ def proposal_identity(proposal, contract_digest=None):
             core["staffing"] = {"mode": staffing["mode"],
                                 "specialist_id":
                                     staffing.get("specialist_id")}
+            if staffing.get("escalation"):
+                # Asking for escalated execution is part of the decision
+                # too (absent, the identity is what it always was).
+                core["staffing"]["escalation"] = staffing["escalation"]
         if proposal.get("attempt_ordinal") is not None:
             core["attempt_ordinal"] = proposal["attempt_ordinal"]
         workforce = provenance.get("workforce") or {}

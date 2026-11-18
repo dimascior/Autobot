@@ -96,9 +96,13 @@ are the projections `EngineerService.build_view` puts into the
 | `taskforce.recent_demonstrations` | the latest demonstrations with their criteria |
 | `taskforce.retention_candidates` | outside specialists with qualifying demonstrations no decision has considered |
 
-The production policy removes handles, providers and models from all of
-it before a model sees it: routing is not something the Engineer reasons
-over.
+The production policy removes handles, providers, models and routes from
+all of it before a model sees it: routing is not something the Engineer
+reasons over. An assignment's `route` (the route its attempt was
+dispatched on: name, provider, model, effort) is in the operator's view
+and never in the Engineer's. What the Engineer does see is whether an
+assignment was escalated, in its own word (`escalation`: `high_context`
+or `deep_reasoning`), because asking for that is its decision.
 
 Semantic retrieval is not part of this model. The state is relational and
 every answer above is an exact read.
