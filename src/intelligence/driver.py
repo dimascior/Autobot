@@ -86,7 +86,8 @@ class ContinuousDriver:
             max_proposals_per_cycle=max_proposals_per_cycle,
             store=store if freeze_prompts else None,
             roster=self.taskforce.roster,
-            repository_context=repository_context)
+            repository_context=repository_context,
+            evidence=store)
         # The attribute this service was reached by before the
         # organizational model was aligned.
         self.chief = self.engineer

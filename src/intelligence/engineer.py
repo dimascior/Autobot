@@ -268,13 +268,15 @@ def _workstreams(authority):
 class EngineerService:
     def __init__(self, plan, registry, environment, clock, policy,
                  max_proposals_per_cycle=16, store=None, roster=None,
-                 repository_context=None):
+                 repository_context=None, evidence=None):
         """``store`` (the content store) turns on prompt freezing: every
         contract this service submits declares its composed specialist
         prompt as a specification input. ``roster`` is the Taskforce
         roster the workforce view is read from and workforce decisions
         are applied to; without one the Engineer sees no workforce and may
-        make no staffing or workforce decision."""
+        make no staffing or workforce decision. ``evidence`` is the
+        content store as a READ source for the view: with it, a failed
+        attempt carries what the provider itself reported."""
         self.plan = plan
         self.registry = registry
         self.environment = environment
@@ -282,6 +284,7 @@ class EngineerService:
         self.policy = policy
         self.max_proposals_per_cycle = max_proposals_per_cycle
         self.store = store
+        self.evidence = evidence if evidence is not None else store
         self.roster = roster
         # Read-only over the roster: used to CHECK a Project Manager's
         # explicit selection, never to make one.
@@ -318,7 +321,8 @@ class EngineerService:
             engineering=query.engineering_view(
                 self.plan, ro_conn, objectives),
             projects=query.project_views(
-                self.plan, ro_conn, objectives, self.roster))
+                self.plan, ro_conn, objectives, self.roster,
+                store=self.evidence))
 
     def run_cycle(self, ro_conn, project_state_fn, now):
         """One planning cycle over the read-only authority view. Returns
@@ -789,6 +793,12 @@ class EngineerService:
         return {"proposal_id": proposal_id, "class": proposal["class"],
                 "status": "REJECTED", "note": note}
 
+    def _pending_authorization(self, sequence_id):
+        """The Engineer's word already given for a workstream's next
+        attempt and not yet used, or None. There is at most one: a
+        REPAIR_TASK for an attempt that is already ordered is refused."""
+        return self.plan.open_authorization(sequence_id)
+
     def _dispose_seat(self, proposal, cycle_id, ro_conn, now):
         """REPAIR_TASK authorizes another attempt of existing work;
         ASSIGN_SPECIALIST is the Project Manager's staffing decision for a
@@ -873,6 +883,20 @@ class EngineerService:
                     proposal_id, cycle_id, proposal, refusal,
                     "outside_specialists", now)
         if cls == "REPAIR_TASK":
+            already = self._pending_authorization(sequence_id)
+            if already is not None:
+                # One word per attempt. The next attempt of this
+                # workstream is already authorized; a second
+                # authorization would outlive it and start a later
+                # attempt nobody ordered. Changing WHO does the pending
+                # attempt is a staffing decision, not another order.
+                return self._reject_decision(
+                    proposal_id, cycle_id, proposal,
+                    "the next attempt of %s is already authorized (by %s);"
+                    " to change who does it, decide the assignment"
+                    " (ASSIGN_SPECIALIST)"
+                    % (sequence_id, already["authorized_by_proposal"]),
+                    now)
             refusal = self._budget_refusal(proposal, "repairs")
             if refusal is not None:
                 return self._refuse_for_budget(

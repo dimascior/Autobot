@@ -34,7 +34,7 @@ safe beside a running organization. `query` output is JSON.
 | Query | `query` kind | Function | Answers |
 |---|---|---|---|
 | by objective | `objective <objective_id>` | `objective_state` | status, constraints, budget and usage, its projects, tasks and their states, dependencies, decisions, findings, accepted results, open questions, risks |
-| by project | `project <project_id>` | `project_state` | the solution it realizes, its workstreams with their dependencies and state, every assignment and who decided it, staffing decisions, the team and whether each participation is open |
+| by project | `project <project_id>` | `project_state` | the solution it realizes, its workstreams with their dependencies and state, each workstream's failed attempts with what the provider itself reported, every assignment and who decided it, staffing decisions, the team and whether each participation is open |
 | every project | `projects` | `projects_report` | each project on record with its team |
 | by task or contract | `sequence <sequence_id>` | `by_sequence` | the decision that created it, its frozen identity, state, attempts, assignments, verification, findings, demonstrations, repair decisions |
 | by attempt | `attempt <attempt_id>` | `by_attempt` | the call, the assignment, witnesses, receipts, candidate, verification rows, supervision decisions, findings |
@@ -81,7 +81,7 @@ are the projections `EngineerService.build_view` puts into the
 
 | View field | Built from |
 |---|---|
-| `projects[objective]` | `project_state` of the current project: solution, workstreams, dependencies, assignments, team |
+| `projects[objective]` | `project_state` of the current project: solution, workstreams, dependencies, failed attempts and the provider's report on each, assignments, team |
 | `projects[objective].needs_staffing` | `staffing_needs`: READY workstreams no available retained seat can take, each with its cause and the outside specialists that could be selected |
 | `engineering[objective].accepted_results` | `accepted_results` |
 | `engineering[objective].failed_assertions` | verification rows that are FAIL or INCONCLUSIVE |

@@ -32,6 +32,9 @@ from .runtime import AuthorityRuntime, ConfigError
 EVIDENCE_PROFILE_CHOICES = ["READ_ONLY_REPORT", "READ_ONLY_GOVERNED",
                             "SOURCE_MODIFYING_GOVERNED", "BY_CLASS"]
 
+BUDGET_KEYS = ("max_contracts", "max_attempts", "max_outside_specialists",
+               "max_repairs", "max_retention_decisions")
+
 
 def _project_root():
     here = Path(__file__).resolve()
@@ -158,6 +161,21 @@ def _open_read_only(args):
     return PlanStore(intelligence_db), readonly_view(authority_db)
 
 
+def _evidence_store(args):
+    """The content store as a read source for the reporting commands (a
+    failed attempt then shows what the provider itself reported), or None
+    when there is none yet."""
+    from autobot import Store
+    project_root = args.root or _project_root()
+    config = _load_seed_config(project_root)
+    authority_section = config.get("authority", {})
+    data_dir = Path(authority_section.get("data_dir", str(project_root)))
+    store_root = data_dir / authority_section.get("store_root", "store")
+    if not (store_root / "objects").is_dir():
+        return None
+    return Store(store_root)
+
+
 def _taskforce_lines(report):
     """The persistent organization, in a few lines."""
     members = [m for m in report["members"] if m["status"] == "ACTIVE"]
@@ -211,6 +229,13 @@ def _project_lines(projects):
                          % (workstream["workstream"],
                             workstream["state"], workstream["capability"],
                             workstream["role"], staffed))
+            for failed in workstream.get("failed_attempts", []):
+                reported = failed.get("provider_report") or {}
+                lines.append("    attempt %s %s%s"
+                             % (failed["attempt_id"], failed["state"],
+                                ": the provider reported %r"
+                                % reported["error"][:160]
+                                if reported.get("error") else ""))
         for member in project["team"]:
             lines.append(
                 "  team %s (%s): joined as %s, participation %s%s;"
@@ -301,8 +326,10 @@ def cmd_status(args):
             "SELECT COUNT(*) AS n FROM sequences WHERE state ="
             " 'COMPLETED'").fetchone()["n"]
         print("completed sequences: %d" % completed)
-        active_projects = [p for p in query.projects_report(plan, ro)
-                           if p["status"] == "ACTIVE"]
+        active_projects = [
+            p for p in query.projects_report(plan, ro,
+                                             _evidence_store(args))
+            if p["status"] == "ACTIVE"]
         for line in _project_lines(active_projects):
             print(line)
         for line in _taskforce_lines(query.taskforce_report(plan)):
@@ -342,6 +369,9 @@ def _progress(report):
         parts.append("verification %s: %s"
                      % (entry["attempt_id"][:12], entry["result"]))
     arcs = sweep["arcs"]
+    if arcs.get("retried"):
+        parts.append("ready again after a failed attempt %d"
+                     % len(arcs["retried"]))
     for key in ("finalized", "accepted", "completed"):
         if arcs[key]:
             parts.append("%s %d" % (key, len(arcs[key])))
@@ -526,7 +556,9 @@ def cmd_engineer(args):
     findings feed the next reasoning cycle.
 
     Without --objective the command RESUMES: it runs the loop over the
-    objectives already active (after a timeout or a restart)."""
+    objectives already active (after a timeout, a restart, or attempts
+    the provider failed). A resume may change one active objective's
+    budget: name it with --objective-id and give the budget flags."""
     try:
         rt = AuthorityRuntime.bootstrap(
             project_root=args.root, evidence_profile=args.evidence_profile)
@@ -539,9 +571,7 @@ def cmd_engineer(args):
             objective_id = objective_id or (
                 "obj-eng-%s" % rt.clock.now().strftime("%Y%m%d%H%M%S"))
             budget = {}
-            for key in ("max_contracts", "max_attempts",
-                        "max_outside_specialists", "max_repairs",
-                        "max_retention_decisions"):
+            for key in BUDGET_KEYS:
                 value = getattr(args, key)
                 if value is not None:
                     budget[key] = value
@@ -549,6 +579,29 @@ def cmd_engineer(args):
                              constraints=args.constraints, budget=budget)
             print("objective added: %s" % objective_id)
         else:
+            # The limits are yours (cap-47): a resumed objective's budget
+            # may be changed — work lost to a provider failure spends
+            # attempts through no fault of the plan.
+            budget = {}
+            for key in BUDGET_KEYS:
+                value = getattr(args, key)
+                if value is not None:
+                    budget[key] = value
+            if budget:
+                if not objective_id:
+                    print("--objective-id names the objective whose budget"
+                          " changes", file=sys.stderr)
+                    return 1
+                try:
+                    limits = rt.set_objective_budget(objective_id, budget)
+                except ConfigError as exc:
+                    print("cannot change the budget: %s" % exc,
+                          file=sys.stderr)
+                    return 1
+                print("budget set for %s: %s" % (
+                    objective_id, ", ".join(
+                        "%s=%d" % (key, limits[key])
+                        for key in sorted(limits))))
             # A resume is news to the Engineer: it reasons again over the
             # current state rather than staying quiet.
             resumed = rt.signal_resume()
@@ -605,7 +658,8 @@ def cmd_engineer(args):
             print("attempts still in flight: %s" % result["in_flight"])
         ro = readonly_view(rt._authority_db_path)
         try:
-            projects = [query.project_state(rt.plan, ro, p["project_id"])
+            projects = [query.project_state(rt.plan, ro, p["project_id"],
+                                            store=rt.store)
                         for oid in active for p in rt.plan.projects(oid)]
         finally:
             ro.close()
@@ -751,7 +805,8 @@ def cmd_taskforce(args):
                      entry["standing_at_assignment"],
                      entry["outcome"] or entry["status"]))
         print("projects and their teams:")
-        for line in _project_lines(query.projects_report(plan, ro)):
+        for line in _project_lines(query.projects_report(
+                plan, ro, _evidence_store(args))):
             print("  " + line)
     finally:
         ro.close()
@@ -771,9 +826,10 @@ def cmd_query(args):
         if kind == "objective":
             result = query.objective_state(plan, ro, value)
         elif kind == "project":
-            result = query.project_state(plan, ro, value)
+            result = query.project_state(plan, ro, value,
+                                         store=_evidence_store(args))
         elif kind == "projects":
-            result = query.projects_report(plan, ro)
+            result = query.projects_report(plan, ro, _evidence_store(args))
         elif kind == "sequence":
             result = query.by_sequence(plan, ro, value)
         elif kind == "attempt":
@@ -850,7 +906,9 @@ def main():
                        help="objective text (omit to resume the active"
                             " objectives)")
     eng_p.add_argument("--objective-id", default=None,
-                       help="objective id (default: auto-generated)")
+                       help="objective id (default: auto-generated); on a"
+                            " resume, the active objective the budget"
+                            " flags apply to")
     eng_p.add_argument("--constraint", action="append", default=None,
                        dest="constraints",
                        help="a design constraint stated with the"

@@ -28,8 +28,10 @@ ships with.
 
 ## The Engineer, projects and the Taskforce
 
-Not yet run in production as of this commit. This section is replaced by
-the pilot records once they have run.
+The production pilots began on 2026-11-18 from `main` at `3b03b6a` and
+are in progress as of this commit; this section is replaced by their
+records when they complete. The first of them found F-TF-15 to F-TF-17
+([ARCHITECTURE.md](ARCHITECTURE.md)), which this commit fixes.
 
 What exists is the deterministic proof: the suites in
 [README.md](README.md#tests) drive the real Registry, Sequencer,
@@ -39,7 +41,7 @@ sentence per test. They establish the logic. They do not establish that a
 real specialist, a real reasoning model and the real AutoSwarm behave as
 scripted, which is what the production pilots are for.
 
-Production's plan store is still at schema v1 when this is committed: it
-holds no project, no Taskforce member and no seat. The first member will
-be earned the way every later one is — verified work by an outside
-specialist, then an explicit retention decision.
+Production's plan store was migrated to schema v2 on 2026-11-18 with
+nobody in the organization. Its first member was earned that day the way
+every later one is — verified work by an outside specialist, then an
+explicit retention decision; the record follows with the pilots'.
