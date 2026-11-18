@@ -25,7 +25,7 @@ from autobot.witness_semantics import extract_facts
 from autobot.witnesses import WITNESS_KINDS
 from contract_library import content_address
 from intelligence import (
-    AgentFactory,
+    SpecialistPool,
     ChiefEngineerPolicy,
     ContinuousDriver,
     PlanStore,
@@ -154,8 +154,8 @@ class PilotFidelityTests(unittest.TestCase):
         self.rt.sequencer.acquire_lease(ttl_seconds=360000)
         self.env = support.intelligence_environment()
         self.plan = PlanStore(self.dir / "intelligence.db")
-        self.factory = AgentFactory()
-        self.factory.register("research", "builder", "codex")
+        self.pool = SpecialistPool()
+        self.pool.register("research", "builder", "codex")
 
     def tearDown(self):
         self.plan.close()
@@ -174,7 +174,7 @@ class PilotFidelityTests(unittest.TestCase):
         return ContinuousDriver(
             self.plan, self.rt.registry, self.rt.sequencer, self.rt.store,
             self.env, self.clock, policy, transport,
-            runner, self.factory,
+            runner, self.pool,
             self.dir / "autobot.db",
             holder="pilot-fidelity-test")
 
@@ -327,8 +327,8 @@ class PilotFidelityTests(unittest.TestCase):
         """The vector-checker assertion FAILs. The sequence cannot
         reach VERIFIED, ACCEPTED or COMPLETED."""
         transport = self._make_transport()
-        self.factory = AgentFactory()
-        self.factory.register("research", "builder", "codex")
+        self.pool = SpecialistPool()
+        self.pool.register("research", "builder", "codex")
 
         class FailPolicy(ChiefEngineerPolicy):
             def __init__(self):

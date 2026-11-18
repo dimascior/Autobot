@@ -1,10 +1,10 @@
 """Production-bootstrap tests for the authority runtime.
 
 Proves: config -> runtime assembly -> lease acquisition -> readonly
-intelligence view -> AgentFactory registration -> AutoSwarmTransport
-configured -> ProductionVerifierRunner configured -> ContinuousDriver
-constructed. One smoke path instantiates the full system without
-launching a provider.
+intelligence view -> specialist-catalog registration ->
+AutoSwarmTransport configured -> ProductionVerifierRunner configured ->
+ContinuousDriver constructed. One smoke path instantiates the full system
+without launching a provider.
 """
 import json
 import tempfile
@@ -16,12 +16,14 @@ from autobot import Database, ManualClock, Store, SystemClock
 from autobot.autoswarm_transport import AutoSwarmTransport
 from autobot.verifier_runner import ProductionVerifierRunner
 from intelligence import (
-    AgentFactory,
     AuthorityRuntime,
     ChiefEngineerPolicy,
     ConfigError,
     ContinuousDriver,
     PlanStore,
+    SpecialistPool,
+    TaskforceRoster,
+    TaskforceSeatResolver,
     readonly_view,
 )
 from intelligence.runtime import (
@@ -77,15 +79,15 @@ class BootstrapAssemblyTests(unittest.TestCase):
                 support.live_transform_registration("identity-projection")],
             defaults=env.defaults)
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         transport = AutoSwarmTransport(
             rt.store, str(self.autoswarm_home), str(self.workspace),
             gate_root=str(self.gate_root))
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=self.clock,
             authority_db_path=self.dir / "autobot.db",
@@ -105,7 +107,7 @@ class BootstrapAssemblyTests(unittest.TestCase):
             self.assertIsInstance(runtime.registry, type(_rt.registry))
             self.assertIsInstance(runtime.sequencer, type(_rt.sequencer))
             self.assertIsInstance(runtime.plan, PlanStore)
-            self.assertIsInstance(runtime.factory, AgentFactory)
+            self.assertIsInstance(runtime.pool, SpecialistPool)
             self.assertIsInstance(runtime.transport, AutoSwarmTransport)
             self.assertIsInstance(runtime.runner,
                                  ProductionVerifierRunner)
@@ -141,17 +143,89 @@ class BootstrapAssemblyTests(unittest.TestCase):
             runtime.close()
 
     # ================================================================
-    # 4. AgentFactory registrations
+    # 4. Specialist-catalog registrations
     # ================================================================
 
-    def test_factory_resolves_research_builder(self):
+    def test_the_catalog_offers_research_builder_to_a_project(self):
+        """The runtime's catalog has a research/builder worker. Nobody is
+        retained in a fresh organization, so the Taskforce resolves
+        nobody for the capability; the worker can be selected for a
+        project as an OUTSIDE specialist."""
         runtime, _rt = self._seed_and_build()
         try:
-            assignment = runtime.factory.select("research", "builder")
-            self.assertEqual(assignment["provider"], "codex")
-            self.assertEqual(assignment["selected_by"], "agent_factory")
+            self.assertTrue(runtime.pool.can_source("research", "builder"))
+            roster = TaskforceRoster(runtime.plan, runtime.pool)
+            roster.sync_pool("2026-11-09T12:00:00.000Z")
+            resolver = TaskforceSeatResolver(roster)
+            self.assertIsNone(resolver.resolve("research", role="builder"))
+            candidate = resolver.outside_candidates("research",
+                                                    "builder")[0]
+            self.assertTrue(candidate["eligible"])
+            selection = resolver.resolve(
+                "research", role="builder", directive={
+                    "mode": "outside_specialist",
+                    "specialist_id": candidate["specialist_id"]})
+            self.assertEqual(selection["specialist"]["provider"], "codex")
+            self.assertEqual(selection["reason"]["path"],
+                             "OUTSIDE_SPECIALIST")
+            self.assertEqual(roster.memberships(), [])
         finally:
             runtime.close()
+
+    def test_a_resume_is_a_stimulus_for_the_engineer(self):
+        """Resuming the loop tells the Engineer so: one workforce event
+        per active objective, which is not routine — a loop that went
+        quiet with a decision still open reasons again."""
+        from intelligence.policy import ROUTINE_WORKFORCE_EVENTS
+        runtime, _rt = self._seed_and_build()
+        try:
+            self.assertEqual(runtime.signal_resume(), [])  # nothing active
+            runtime.add_objective("obj-r", "Resume me.")
+            self.assertEqual(runtime.signal_resume(), ["obj-r"])
+            events = runtime.plan.unconsumed_workforce_events()
+            self.assertEqual(
+                [(e["event_kind"], e["subject_id"]) for e in events],
+                [("operator_resumed", "obj-r")])
+            self.assertNotIn("operator_resumed", ROUTINE_WORKFORCE_EVENTS)
+        finally:
+            runtime.close()
+
+    def test_the_catalog_is_read_from_configuration(self):
+        """[specialists.<handle>] is the catalog; the two earlier
+        spellings are still read, and the current one wins on a clash.
+        Being listed is availability, not membership — nothing here
+        touches a membership table."""
+        from intelligence.runtime import build_pool
+        pool = build_pool({
+            "specialists": {"a": {
+                "agent": "claude-code", "model": "m1",
+                "offers": ["research:investigator",
+                           "verification:reviewer"]}},
+            "taskforce": {
+                "established_threshold": 3,
+                "specialists": {
+                    "b": {"agent": "codex",
+                          "offers": ["verification:reviewer"]},
+                    "a": {"agent": "other",
+                          "offers": ["research:investigator"]}}},
+            "authority_routes": {
+                "legacy": {"agent": "codex", "research": "builder"}}})
+        self.assertEqual([p["handle"] for p in pool.profiles()],
+                         ["a", "b", "legacy"])
+        self.assertEqual((pool.profile("a")["provider"],
+                          pool.profile("a")["model"]),
+                         ("claude-code", "m1"))
+        self.assertEqual(sorted(pool.profile("a")["offers"]),
+                         [["research", "investigator"],
+                          ["verification", "reviewer"]])
+        self.assertEqual(pool.profile("legacy")["offers"],
+                         [["research", "builder"]])
+        for broken in ({"x": {"agent": "claude-code",
+                              "offers": ["nonsense"]}},
+                       {"x": {"offers": ["research:investigator"]}},
+                       {"x": {"agent": "claude-code", "offers": []}}):
+            with self.assertRaises(ConfigError):
+                build_pool({"specialists": broken})
 
     # ================================================================
     # 5. Transport configured
@@ -249,8 +323,8 @@ class BootstrapAssemblyTests(unittest.TestCase):
     # 11. Bootstrap validates pilot readiness
     # ================================================================
 
-    def test_bootstrap_validates_factory_seat(self):
-        """Bootstrap fails when research/builder seat is missing."""
+    def test_bootstrap_validates_the_specialist_catalog(self):
+        """Bootstrap fails when no specialist exists to assign."""
         rt = support.make_runtime(self.dir, self.clock)
         support.seed_bound_objects(rt)
         graph = support.load_fixture("graph.json")
@@ -259,21 +333,21 @@ class BootstrapAssemblyTests(unittest.TestCase):
         rt.sequencer.acquire_lease(ttl_seconds=360000)
         env = support.intelligence_environment()
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()  # no registrations
+        pool = SpecialistPool()  # no registrations
         transport = AutoSwarmTransport(
             rt.store, str(self.autoswarm_home), str(self.workspace),
             gate_root=str(self.gate_root))
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=self.clock,
             authority_db_path=self.dir / "autobot.db",
             holder="bootstrap-test")
         with self.assertRaises(ConfigError) as cm:
             runtime._validate_pilot_readiness()
-        self.assertIn("research/builder", str(cm.exception))
+        self.assertIn("specialist catalog", str(cm.exception))
         runtime.close()
 
     def test_bootstrap_validates_gate_root(self):
@@ -286,15 +360,15 @@ class BootstrapAssemblyTests(unittest.TestCase):
         rt.sequencer.acquire_lease(ttl_seconds=360000)
         env = support.intelligence_environment()
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         transport = AutoSwarmTransport(
             rt.store, str(self.autoswarm_home), str(self.workspace),
             gate_root=None)  # no gate root
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=self.clock,
             authority_db_path=self.dir / "autobot.db",
@@ -315,15 +389,15 @@ class BootstrapAssemblyTests(unittest.TestCase):
         env = _environment_from_ledger(
             rt.db, rt.store, "autobot", defaults={})  # empty defaults
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         transport = AutoSwarmTransport(
             rt.store, str(self.autoswarm_home), str(self.workspace),
             gate_root=str(self.gate_root))
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=self.clock,
             authority_db_path=self.dir / "autobot.db",
@@ -343,8 +417,8 @@ class BootstrapAssemblyTests(unittest.TestCase):
         rt.sequencer.acquire_lease(ttl_seconds=360000)
         env = support.intelligence_environment()
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         bad_workspace = self.dir / "nonexistent_ws"
         transport = AutoSwarmTransport(
             rt.store, str(self.autoswarm_home), str(bad_workspace),
@@ -352,7 +426,7 @@ class BootstrapAssemblyTests(unittest.TestCase):
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=self.clock,
             authority_db_path=self.dir / "autobot.db",
@@ -381,15 +455,15 @@ class BootstrapAssemblyTests(unittest.TestCase):
                 support.live_transform_registration("identity-projection")],
             defaults=support.intelligence_environment().defaults)
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         transport = AutoSwarmTransport(
             rt.store, str(self.autoswarm_home), str(self.workspace),
             gate_root=str(self.gate_root))
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=self.clock,
             authority_db_path=self.dir / "autobot.db",
@@ -421,15 +495,15 @@ class BootstrapAssemblyTests(unittest.TestCase):
                 support.live_transform_registration("identity-projection")],
             defaults=support.intelligence_environment().defaults)
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         transport = AutoSwarmTransport(
             rt.store, str(self.autoswarm_home), str(self.workspace),
             gate_root=str(self.gate_root))
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=self.clock,
             authority_db_path=self.dir / "autobot.db",
@@ -457,15 +531,15 @@ class BootstrapAssemblyTests(unittest.TestCase):
                 support.live_transform_registration("identity-projection")],
             defaults=support.intelligence_environment().defaults)
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         transport = AutoSwarmTransport(
             rt.store, str(self.autoswarm_home), str(self.workspace),
             gate_root=str(self.gate_root))
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=self.clock,
             authority_db_path=self.dir / "autobot.db",
@@ -498,15 +572,15 @@ class BootstrapAssemblyTests(unittest.TestCase):
         rt.sequencer.acquire_lease(ttl_seconds=360000)
         env = support.intelligence_environment()
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         transport = AutoSwarmTransport(
             rt.store, str(self.autoswarm_home), str(self.workspace),
             gate_root=str(self.gate_root))
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=self.clock,
             authority_db_path=self.dir / "autobot.db",
@@ -729,8 +803,8 @@ class DelegationSelectionTests(unittest.TestCase):
                 support.live_transform_registration("identity-projection")],
             defaults=support.intelligence_environment().defaults)
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         ws = self.dir / "ws"; ws.mkdir(exist_ok=True)
         ah = self.dir / "ah"; ah.mkdir(exist_ok=True)
         gr = self.dir / "gr"; gr.mkdir(exist_ok=True)
@@ -739,7 +813,7 @@ class DelegationSelectionTests(unittest.TestCase):
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=SystemClock(),
             authority_db_path=self.dir / "autobot.db",
@@ -771,8 +845,8 @@ class DelegationSelectionTests(unittest.TestCase):
                 support.live_transform_registration("identity-projection")],
             defaults=support.intelligence_environment().defaults)
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         ws = self.dir / "ws"; ws.mkdir(exist_ok=True)
         ah = self.dir / "ah"; ah.mkdir(exist_ok=True)
         gr = self.dir / "gr"; gr.mkdir(exist_ok=True)
@@ -781,7 +855,7 @@ class DelegationSelectionTests(unittest.TestCase):
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=SystemClock(),
             authority_db_path=self.dir / "autobot.db",
@@ -813,8 +887,8 @@ class DelegationSelectionTests(unittest.TestCase):
                 support.live_transform_registration("identity-projection")],
             defaults=support.intelligence_environment().defaults)
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         ws = self.dir / "ws"; ws.mkdir(exist_ok=True)
         ah = self.dir / "ah"; ah.mkdir(exist_ok=True)
         gr = self.dir / "gr"; gr.mkdir(exist_ok=True)
@@ -823,7 +897,7 @@ class DelegationSelectionTests(unittest.TestCase):
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=SystemClock(),
             authority_db_path=self.dir / "autobot.db",
@@ -891,8 +965,8 @@ class EnvironmentFromLedgerEdgeCases(unittest.TestCase):
                 support.live_transform_registration("identity-projection")],
             defaults=support.intelligence_environment().defaults)
         plan = PlanStore(self.dir / "intelligence.db")
-        factory = AgentFactory()
-        factory.register("research", "builder", "codex")
+        pool = SpecialistPool()
+        pool.register("research", "builder", "codex")
         ws = self.dir / "ws"; ws.mkdir(exist_ok=True)
         ah = self.dir / "ah"; ah.mkdir(exist_ok=True)
         gr = self.dir / "gr"; gr.mkdir(exist_ok=True)
@@ -901,7 +975,7 @@ class EnvironmentFromLedgerEdgeCases(unittest.TestCase):
         runner = ProductionVerifierRunner(rt.sequencer, rt.store)
         runtime = AuthorityRuntime(
             db=rt.db, store=rt.store, registry=rt.registry,
-            sequencer=rt.sequencer, plan=plan, factory=factory,
+            sequencer=rt.sequencer, plan=plan, pool=pool,
             transport=transport, runner=runner, environment=env,
             clock=support.manual_clock(),
             authority_db_path=self.dir / "autobot.db",

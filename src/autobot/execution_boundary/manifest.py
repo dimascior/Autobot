@@ -2,9 +2,11 @@
 
 Every authority-bearing field is re-read from the Sequencer's ledger,
 never accepted as a parameter. The provider assignment comes from the
-Agent Factory result because that is exactly what the factory owns.
-The manifest grants nothing and transitions nothing — it describes
-an already-authorized execution.
+Taskforce's staffing decision because seat, route and model selection
+(cap-14) is exactly what staffing owns; ``selected_by`` carries the
+registered cap-14 principal id (``agent_factory``), which stays the wire
+identity of that function. The manifest grants nothing and transitions
+nothing — it describes an already-authorized execution.
 """
 
 import json
@@ -34,13 +36,14 @@ def manifest_schema():
     return _SCHEMA_CACHE[0]
 
 
-def build_execution_manifest(sequencer, attempt_id, factory_assignment,
+def build_execution_manifest(sequencer, attempt_id, staffing_assignment,
                              capability, parent_call_id=None):
     """Build from durable ledger state after t-a02.
 
-    ``factory_assignment`` is the Agent Factory's selection result
-    (provider, model, selected_by, role, expected_output). The
-    manifest re-reads every other field from the ledger.
+    ``staffing_assignment`` is the Taskforce staffing decision for this
+    attempt (provider, model, selected_by, role, expected_output, and the
+    frozen source revision when the work has one). The manifest re-reads
+    every other field from the ledger.
 
     Returns ``(canonical_bytes, content_address)``."""
     db = sequencer.db.conn
@@ -91,9 +94,9 @@ def build_execution_manifest(sequencer, attempt_id, factory_assignment,
         "capability": capability,
         "provider_assignment": _omit_none({
             "provider": call["provider"],
-            "model": factory_assignment.get("model"),
-            "selected_by": factory_assignment.get("selected_by",
-                                                   "agent_factory"),
+            "model": staffing_assignment.get("model"),
+            "selected_by": staffing_assignment.get("selected_by",
+                                                    "agent_factory"),
         }),
         "constraints": {
             "finalization_class": record["finalization_class"],
@@ -101,7 +104,7 @@ def build_execution_manifest(sequencer, attempt_id, factory_assignment,
                 "evidence_requirements", []),
         },
     }
-    source_rev = factory_assignment.get("source_revision")
+    source_rev = staffing_assignment.get("source_revision")
     if source_rev is not None:
         artifact["constraints"]["source_revision"] = source_rev
     target = record.get("source_domain", {}).get("target_ref")

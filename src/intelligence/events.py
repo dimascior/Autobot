@@ -1,5 +1,5 @@
 """Planning events: the durable changes that legitimately wake the
-Chief Engineer, derived from the authoritative TransitionRecord journal.
+Engineer, derived from the authoritative TransitionRecord journal.
 
 Event identity IS journal identity: ``planning_events.journal_seq`` is
 the journal's own monotonic seq (PRIMARY KEY), so one durable transition
@@ -10,7 +10,7 @@ only the plan store.
 
 Not every journal row is a planning event: attempt plumbing (t-a01..06,
 witness admissions, reservations) is Taskforce progress the pump drives
-directly; the Chief Engineer wakes for the registered decision points
+directly; the Engineer wakes for the registered decision points
 below. Two intelligence-plane events — a new objective (cap-01) and an
 admitted specialist finding — live as unconsumed rows of their own
 tables rather than journal derivations.

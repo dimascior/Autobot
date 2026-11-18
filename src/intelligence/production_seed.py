@@ -25,6 +25,16 @@ EVIDENCE_PROFILES = {
         "COMMAND_GOVERNANCE", "EXECUTION_LIFECYCLE"],
 }
 
+# The engineering-organization profile: an objective whose workstreams
+# mix finalization classes takes each contract's evidence requirements
+# from its own class — READ_ONLY work that runs no command is witnessed by
+# its execution lifecycle, SOURCE_MODIFYING work is always governed.
+BY_CLASS_PROFILE = "BY_CLASS"
+EVIDENCE_BY_CLASS = {
+    "READ_ONLY": EVIDENCE_PROFILES["READ_ONLY_REPORT"],
+    "SOURCE_MODIFYING": EVIDENCE_PROFILES["SOURCE_MODIFYING_GOVERNED"],
+}
+
 SEED_EPOCH = "2026-11-16T00:00:00.000Z"
 
 LIVE_LOCK = b"# autobot live verifier dependency lock: stdlib only\\n"
@@ -213,11 +223,14 @@ def production_defaults(project_root=None, evidence_profile="READ_ONLY_REPORT"):
         }
     }
     delegation = pilot_delegation()
-    return {
+    by_class = evidence_profile == BY_CLASS_PROFILE
+    defaults = {
         "acceptance_assertions": assertions,
         "allowed_scope": delegation["allowed_scope"],
         "capability_requirements": record["capability_requirements"],
-        "evidence_requirements": EVIDENCE_PROFILES[evidence_profile],
+        "evidence_requirements": (
+            EVIDENCE_BY_CLASS["READ_ONLY"] if by_class
+            else EVIDENCE_PROFILES[evidence_profile]),
         "retry_policy": {"max_retries": 2},
         "repair_policy": {"max_repairs": 1},
         "reuse_policy": {"mode": "NEVER"},
@@ -226,3 +239,7 @@ def production_defaults(project_root=None, evidence_profile="READ_ONLY_REPORT"):
         "role_transform_id": "identity-projection",
         "specification_inputs": record.get("specification_inputs", {}),
     }
+    if by_class:
+        defaults["evidence_requirements_by_class"] = {
+            key: list(value) for key, value in EVIDENCE_BY_CLASS.items()}
+    return defaults

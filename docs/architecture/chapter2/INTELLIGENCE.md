@@ -1,5 +1,18 @@
 # The engineering intelligence plane (M7 — Chief Engineer / Taskforce integration, 2026-11-11)
 
+> **Superseded in part (2026-11-18).** This is the record of milestone M7
+> as it was built. Since then the organizational model has been aligned:
+> the reasoning intelligence is the **Engineer** (called the Chief
+> Engineer below), which acts as Project Manager when a solution needs
+> coordinated work; a project and its team are temporary; the Taskforce is
+> the persistent retained organization; the Agent Factory is not a
+> component. The model-backed Engineer policy exists, and F-CE-2 (the
+> objective work budget) is closed. The current description is
+> [../orchestration/ARCHITECTURE.md](../orchestration/ARCHITECTURE.md);
+> how the frozen `planner` and `agent_factory` principals map onto it is
+> [../orchestration/PRINCIPALS.md](../orchestration/PRINCIPALS.md). The
+> text below is left as written.
+
 The first continuously operating loop over the committed Chapter 2
 authority runtime:
 

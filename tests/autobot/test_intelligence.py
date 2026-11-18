@@ -23,11 +23,13 @@ from autobot import project_state
 from autobot.models import ConflictError, instant
 from autobot.projection import project_prompt
 from intelligence import (
-    AgentFactory,
     ChiefEngineerPolicy,
     ChiefEngineerService,
     PlanStore,
     PlanningView,
+    SpecialistPool,
+    TaskforceRoster,
+    TaskforceSeatResolver,
     admit_finding,
     compile_proposal,
     proposal_identity,
@@ -38,7 +40,7 @@ from intelligence import (
 from intelligence.chief import SUBMITTING_PRINCIPAL, PlanningBudget
 from intelligence.planstore import DriverBusy
 from intelligence.proposals import ProposalError
-from intelligence.roles import AgentFactoryError
+from intelligence.workforce import STAFFING_PRINCIPAL, WorkforceError
 
 GUIDANCE = "Work strictly inside the frozen requirement's scope."
 
@@ -313,8 +315,8 @@ class ProposalLifecycleTests(IntelligenceTestCase):
 
 class BoundaryTests(IntelligenceTestCase):
     def test_authority_reads_are_physically_read_only(self):
-        """The plane's own handle on autobot.db cannot write: the Chief
-        Engineer and Taskforce mutate authority only through the public
+        """The plane's own handle on autobot.db cannot write: the Engineer
+        and the Taskforce mutate authority only through the public
         Registry/Sequencer APIs (D-63; cap-43/cap-51 forbiddances)."""
         with self.assertRaises(sqlite3.OperationalError):
             self.ro.execute("UPDATE sequences SET state = 'ACCEPTED'")
@@ -334,20 +336,55 @@ class BoundaryTests(IntelligenceTestCase):
         self.plan.acquire_driver_lease(
             "chief-b", instant(later), instant(later + timedelta(hours=1)))
 
-    def test_agent_factory_owns_seat_selection(self):
-        factory = AgentFactory()
-        factory.register("software_implementation", "builder", "autoswarm",
-                         model="claude")
-        factory.register("software_implementation", "builder", "fake",
-                         model=None)
-        first = factory.select("software_implementation")
-        self.assertEqual(first["provider"], "autoswarm")
-        self.assertEqual(first["selected_by"], "agent_factory")
-        narrowed = factory.select("software_implementation",
-                                  providers=["fake"])
-        self.assertEqual(narrowed["provider"], "fake")
-        with self.assertRaises(AgentFactoryError):
-            factory.select("security_review")
+    def test_staffing_names_a_specialist_and_routing_stays_downstream(self):
+        """cap-14: the request names a capability and nobody. With nobody
+        retained the Taskforce resolves NOBODY — it never goes outside —
+        and lists who a Project Manager could select, in catalog order.
+        An explicit selection names a SPECIALIST; its route (provider,
+        model) is read from the catalog afterwards. A runtime
+        availability narrowing changes WHO is available (never the
+        request), and the wire identity of the staffing function stays
+        the registered cap-14 principal."""
+        pool = SpecialistPool()
+        pool.register("software_implementation", "builder", "autoswarm",
+                      model="claude")
+        pool.register("software_implementation", "builder", "fake",
+                      model=None)
+        roster = TaskforceRoster(self.plan, pool)
+        roster.sync_pool(self._now())
+        resolver = TaskforceSeatResolver(roster)
+        self.assertIsNone(resolver.resolve("software_implementation"))
+        candidates = resolver.outside_candidates("software_implementation")
+        self.assertEqual([c["handle"] for c in candidates],
+                         ["autoswarm/claude", "fake"])
+
+        def select(candidate):
+            return resolver.resolve(
+                "software_implementation", directive={
+                    "mode": "outside_specialist",
+                    "specialist_id": candidate["specialist_id"]})
+
+        first = select(candidates[0])
+        self.assertEqual(first["specialist"]["provider"], "autoswarm")
+        self.assertEqual(first["reason"]["path"], "OUTSIDE_SPECIALIST")
+        self.assertEqual(first["decided_by"], "PROJECT_MANAGER")
+        self.assertEqual(STAFFING_PRINCIPAL, "agent_factory")
+        roster.available_providers = ["fake"]
+        self.assertIsNone(select(candidates[0]))  # its provider is down
+        self.assertEqual(
+            [c["available"] for c in
+             resolver.outside_candidates("software_implementation")],
+            [False, True])
+        self.assertEqual(select(candidates[1])["specialist"]["provider"],
+                         "fake")
+        # Nobody offers it: nobody can be selected, the request waits.
+        self.assertEqual(resolver.outside_candidates("security_review"),
+                         [])
+        self.assertIsNone(resolver.resolve("security_review"))
+        with self.assertRaises(WorkforceError):
+            resolver.resolve("not_a_capability")
+        with self.assertRaises(WorkforceError):
+            pool.register("not_a_capability", "builder", "fake")
 
     def test_planner_authors_and_the_service_submits(self):
         """The CORR-15 principal handoff, adversarially pinned: the
