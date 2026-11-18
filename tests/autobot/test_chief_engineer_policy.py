@@ -948,6 +948,7 @@ class PolicyUnitTests(unittest.TestCase):
         prompt = policy.build_prompt(self._view())
         for needle in ("failed_attempts", "provider_report",
                        "release nobody for it", "retry_exhausted",
+                       ".autobot/inputs/",
                        'ASSIGN_SPECIALIST for it with {"mode": "taskforce"}'):
             self.assertIn(needle, prompt)
 

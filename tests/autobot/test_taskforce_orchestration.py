@@ -2160,6 +2160,64 @@ class IsolationAndIndependenceTests(WorkforceTestCase):
         self.assertEqual(self.transport.released, calls)
 
 
+# ================================================== predecessor results
+
+class StagingTransport(EchoTransport):
+    """An echo provider with the surface for a call's predecessor
+    results: it records what the pump stages for each call."""
+
+    def __init__(self, store):
+        EchoTransport.__init__(self, store)
+        self.staged = {}
+
+    def stage_inputs(self, call_id, files):
+        self.staged[call_id] = list(files)
+
+
+class PredecessorResultTests(WorkforceTestCase):
+    def test_a_review_receives_the_accepted_result_it_examines(self):
+        """Dependent work consumes its predecessors' ACCEPTED results
+        through the authority path. The pump reads the artifact authority
+        admitted for the accepted attempt from the content store and
+        hands exactly those bytes to the transport for the dependent's
+        workspace; the frozen prompt says where to look; the assignment
+        records which result was provided. Work with no predecessor gets
+        nothing."""
+        self.pool.register("verification", "reviewer", "fake",
+                           handle="beta")
+        self.transport = StagingTransport(self.rt.store)
+        self.transport.scripts = {
+            "investigator": [result(artifact=b"the accepted trace\n")],
+            "reviewer": [result()]}
+        self._objective()
+        self.driver = self._driver(ReviewPolicy(), runner=None,
+                                   freeze_prompts=True)
+        self.driver.run_until_stable()
+        self.assertEqual(set(self._states().values()), {"COMPLETED"})
+        work, review = self._assignments()
+        key = self._rows("SELECT workstream_key FROM project_workstreams"
+                         " ORDER BY created_utc, rowid")[0]["workstream_key"]
+        self.assertNotIn(work["call_id"], self.transport.staged)
+        self.assertNotIn(prompts.INPUTS_DIR,
+                         self.transport.prompts[work["call_id"]])
+        self.assertEqual(self.transport.staged[review["call_id"]],
+                         [(key, b"the accepted trace\n")])
+        self.assertIn(prompts.INPUTS_DIR,
+                      self.transport.prompts[review["call_id"]])
+        provided = json.loads(review["execution"])["predecessor_inputs"]
+        address = self.rt.db.conn.execute(
+            "SELECT content_sha256 FROM attempt_artifacts WHERE attempt_id"
+            " = ?", (work["attempt_id"],)).fetchone()["content_sha256"]
+        self.assertEqual(provided, [{
+            "workstream": key, "sequence_id": work["sequence_id"],
+            "attempt_id": work["attempt_id"], "content_sha256": address}])
+        # Both were launched on their frozen prompts (INV-49 holds).
+        checks = [r["outcome"] for r in self.rt.db.conn.execute(
+            "SELECT outcome FROM attempt_verifications WHERE assertion_id"
+            " LIKE 'role-transform/%' ORDER BY rowid").fetchall()]
+        self.assertEqual(checks, ["PASS", "PASS"])
+
+
 # ========================================================== query layer
 
 class QueryLayerTests(WorkforceTestCase):

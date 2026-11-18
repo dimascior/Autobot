@@ -677,6 +677,25 @@ reasons again over the state as it stands. A resume may also change the
 objective's budget (`--objective-id` with the budget flags): attempts the
 provider failed spend budget through no fault of the plan.
 
+### 6.7 What dependent work is given
+
+Work that depends on other work — through a frozen predecessor edge, or
+as the review of a record — consumes its predecessors' ACCEPTED results,
+and it gets them through the authority path (D-TF-25):
+
+| Predecessor | How the dependent sees it |
+|---|---|
+| SOURCE_MODIFYING | the accepted commit is in the frozen revision the dependent's worktree is created at (section 6.4) |
+| any, READ_ONLY in particular | the artifact authority admitted for the accepted attempt is read from the content store by the ledger's address and placed in the dependent's isolated worktree as `.autobot/inputs/<predecessor workstream>.md` |
+
+Only predecessors authority has released are delivered
+(`released_edges`). The frozen prompt of dependent work says where the
+files are, so the launched prompt is still exactly the frozen one. The
+assignment records which results were provided: workstream, sequence,
+attempt, content address. Git is told to ignore the directory (the
+repository's local `info/exclude`), so a SOURCE_MODIFYING worktree still
+reads as clean and the files cannot be staged.
+
 ## 7. Authority integration
 
 ```text
@@ -805,6 +824,7 @@ refused. The authority database is not touched.
 | D-TF-22 | The Engineer is not shown routing: handles, providers and models are removed from what it reasons over. |
 | D-TF-23 | A member is outside for work it holds no seat for. |
 | D-TF-24 | An attempt that failed at the provider returns its sequence to READY by the registered retry arc (t-s08), which the pump asks for; the next attempt needs the Engineer's word. The provider's own report is recorded with the attempt and shown to the Engineer, uninterpreted. |
+| D-TF-25 | Dependent work is given its predecessors' accepted results through the authority path: the landed revision for a SOURCE_MODIFYING predecessor, and for any predecessor the admitted artifact, placed in the dependent's isolated worktree. |
 
 ## 12. Findings
 
@@ -827,3 +847,4 @@ refused. The authority database is not touched.
 | F-TF-15 | Found in production, 2026-11-18. The provider's usage window ran out while Pilot 1's first two specialists were starting; both sessions failed. Authority recorded the attempts FAILED and accepted nothing, correctly — but the pump never asked for the registered retry arc (t-s08), so both sequences stayed EXECUTING and no further attempt could be ordered. | Fixed: the pump asks for t-s08 every sweep (section 6.6, D-TF-24). |
 | F-TF-16 | Found in the same run. The Engineer was not shown why an attempt failed: the provider's error text existed only inside the admitted witness, so a usage-window failure looked like a specialist's failure. | Fixed: the provider's report is recorded with the demonstration and listed with the workstream's failed attempts (section 6.6). The two demonstrations recorded before the fix keep the form they were recorded in; project state reads their reports from the witnesses. |
 | F-TF-17 | Found in the same run. The limits of an objective's budget are the operator's, but once an objective had started the command line had no way to change them. | Fixed: `engineer --objective-id … --max-…` on a resume. |
+| F-TF-18 | Found in production, 2026-11-18 (Pilot 1). The independent review of a READ_ONLY investigation was dispatched without the investigation's accepted result: nothing delivered a READ_ONLY artifact to dependent work, so a dependency ordered execution and carried no content. The reviewer said so in its findings and verified the question from source instead. | Fixed: section 6.7, D-TF-25. |
