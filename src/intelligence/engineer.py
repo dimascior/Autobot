@@ -886,6 +886,19 @@ class EngineerService:
                 return self._refuse_for_budget(
                     proposal_id, cycle_id, proposal, refusal,
                     "outside_specialists", now)
+        if (staffing or {}).get("escalation"):
+            # The ask is recorded with the assignment and resolved by
+            # routing. Where the organization declares no escalation
+            # route there is nothing to resolve it to, and saying so now
+            # is better than silently running the work at standard depth.
+            routing = getattr(getattr(self.roster, "pool", None),
+                              "routing", None)
+            if routing is None or routing.escalation is None:
+                return self._reject_decision(
+                    proposal_id, cycle_id, proposal,
+                    "this organization declares no escalation route: the"
+                    " assignment can only run at standard execution depth",
+                    now, "assignment_refused")
         if cls == "REPAIR_TASK":
             already = self._pending_authorization(sequence_id)
             if already is not None:
@@ -931,7 +944,8 @@ class EngineerService:
                 self.plan.record_assignment_decision(
                     cur, proposal_id, proposal["objective_id"],
                     project.get("project_id"), sequence_id, ordinal, mode,
-                    staffing.get("specialist_id"), now)
+                    staffing.get("specialist_id"), now,
+                    escalation=staffing.get("escalation"))
         self.plan.set_proposal_status(proposal_id, "APPLIED", now,
                                       sequence_id=sequence_id,
                                       note=seat_id)

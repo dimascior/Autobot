@@ -67,6 +67,7 @@ class AutoSwarmTransport(Transport):
                  gate_root=None, session_export_dir=None,
                  autoswarm_argv=None):
         self._staged = {}
+        self._session = {}
         self._store = store
         self._home = Path(autoswarm_home)
         self._workspace = Path(workspace)
@@ -182,18 +183,26 @@ class AutoSwarmTransport(Transport):
             staged = self._staged.pop(call_id, None)
             if staged and self._is_own_worktree(Path(workspace)):
                 self._write_inputs(Path(workspace), staged)
-            args = [
-                "run",
-                "--agent", provider,
+            # The rest of the route — its reasoning effort and its native
+            # session arguments (a sandbox mode, an approval policy) — is
+            # session configuration the caller staged for this call. The
+            # arguments' placeholders are filled from the workspace this
+            # session is actually launched in.
+            effort, session_args = self._session_config(call_id, workspace)
+            args = ["run", "--agent", provider]
+            if model:
+                args += ["--model", model]
+            if effort:
+                args += ["--effort", effort]
+            for native in session_args:
+                args.append("--provider-arg=" + native)
+            args += [
                 "--no-parent",
                 "--background",
                 "--cwd", workspace,
                 "--call-id", call_id,
                 "--manifest", str(manifest_file),
                 "--input", "-"]
-            if model:
-                args.insert(args.index("--no-parent"), "--model")
-                args.insert(args.index("--no-parent"), model)
             info = self._cli(args, stdin_text=prompt)
         finally:
             try:
@@ -213,6 +222,100 @@ class AutoSwarmTransport(Transport):
         Held in memory until that call's launch."""
         self._staged[call_id] = [(str(name), bytes(data))
                                  for name, data in files]
+
+    # Placeholders a route's native arguments may carry. The command-gate
+    # pending directory has two: the path as configured and the path it
+    # resolves to (the gate root may sit behind a junction, and a sandbox
+    # compares resolved paths).
+    SESSION_PLACEHOLDERS = ("{repo_git}", "{gate_pending}",
+                            "{gate_pending_real}", "{workspace}")
+
+    def stage_session(self, call_id, provider_args=(), effort=None):
+        """Accept the session configuration of the execution route one
+        call is dispatched on — the route's reasoning effort and its
+        native session arguments — to be passed to the provider when that
+        call's session is launched. It configures the session (how deeply
+        the model reasons, a sandbox mode, an approval policy); it is no
+        part of the manifest or of any contract. Held in memory until
+        that call's launch."""
+        self._session[call_id] = {
+            "effort": str(effort) if effort else None,
+            "args": [str(arg) for arg in provider_args or []]}
+
+    def _session_config(self, call_id, workspace):
+        staged = self._session.pop(call_id, None) or {}
+        return staged.get("effort"), self._expand_session_args(
+            staged.get("args") or [], workspace)
+
+    def probe_route(self, route, prompt, source_rev="refs/heads/main"):
+        """Launch one session on an execution route OUTSIDE any attempt:
+        a route preflight. The session gets what a production session on
+        that route gets — the provider, model, effort and native session
+        arguments, an isolated worktree at ``source_rev`` — and no
+        manifest, because there is no attempt behind it. Nothing it
+        returns is evidence of engineering work. Returns the AutoSwarm
+        call id and the worktree; ``release_workspace`` removes the
+        worktree."""
+        import tempfile
+        worktree = Path(tempfile.mkdtemp(
+            prefix=self.WORKTREE_PREFIX, dir=str(self._workspace)))
+        subprocess.run(
+            ["git", "-C", str(self._workspace), "worktree", "add",
+             "--detach", str(worktree), source_rev],
+            capture_output=True, text=True, check=True)
+        args = ["run", "--agent", route["provider"]]
+        if route.get("model"):
+            args += ["--model", route["model"]]
+        if route.get("effort"):
+            args += ["--effort", route["effort"]]
+        for native in self._expand_session_args(
+                route.get("provider_args") or [], str(worktree)):
+            args.append("--provider-arg=" + native)
+        args += ["--no-parent", "--background", "--cwd", str(worktree),
+                 "--input", "-"]
+        info = self._cli(args, stdin_text=prompt)
+        return {"call_id": info["call_id"], "workspace": str(worktree)}
+
+    def probe_result(self, call_id):
+        """AutoSwarm's own result record of one call, or None while the
+        call has not ended."""
+        return _read_json(self._call_dir(call_id) / "result.json")
+
+    def providers(self):
+        """Which providers AutoSwarm reports it can launch:
+        {provider: bool}."""
+        data = self._cli(["agents", "--json"])
+        rows = data if isinstance(data, list) else (
+            (data.get("agents") or data.get("providers") or [])
+            if isinstance(data, dict) else [])
+        return {row["provider"]: bool(row.get("available"))
+                for row in rows
+                if isinstance(row, dict) and row.get("provider")}
+
+    def _expand_session_args(self, staged, workspace):
+        values = {
+            "{workspace}": str(workspace),
+            "{repo_git}": str(self._workspace / ".git")
+            if (self._workspace / ".git").is_dir() else None,
+            "{gate_pending}": str(self._gate_root / "pending")
+            if self._gate_root is not None else None,
+            "{gate_pending_real}": os.path.realpath(
+                str(self._gate_root / "pending"))
+            if self._gate_root is not None else None,
+        }
+        out = []
+        for arg in staged:
+            for placeholder in self.SESSION_PLACEHOLDERS:
+                if placeholder in arg:
+                    value = values.get(placeholder)
+                    if value is None:
+                        raise RuntimeError(
+                            "route argument %r needs %s, which this"
+                            " transport has no value for"
+                            % (arg, placeholder))
+                    arg = arg.replace(placeholder, value)
+            out.append(arg)
+        return out
 
     def _is_own_worktree(self, path):
         return path.name.startswith(self.WORKTREE_PREFIX) \

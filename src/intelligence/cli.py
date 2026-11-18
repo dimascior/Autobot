@@ -280,10 +280,20 @@ def cmd_bootstrap(args):
         print("  engineer:    model %s" % rt.engineer_model)
         print("  specialists: %d in the catalog"
               % len(rt.pool.profiles()))
+        routing = rt.pool.routing
+        if routing is not None:
+            print("  routing:     default %s, escalation %s, fallback %s,"
+                  " utility %s"
+                  % (routing.default, routing.escalation,
+                     routing.fallback or "none", routing.utility))
         for profile in rt.pool.profiles():
-            print("    %-16s %s/%s  offers %s"
+            print("    %-16s %s/%s%s%s  offers %s"
                   % (profile["handle"], profile["provider"],
                      profile["model"],
+                     " effort %s" % profile["effort"]
+                     if profile["effort"] else "",
+                     " (route %s)" % profile["route_name"]
+                     if profile.get("route_name") else "",
                      ", ".join("%s:%s" % tuple(o)
                                for o in profile["offers"])))
         st = rt.status()
@@ -295,6 +305,88 @@ def cmd_bootstrap(args):
     finally:
         rt.close()
     return 0
+
+
+def _route_text(route):
+    if not route:
+        return "none"
+    return "%s  provider=%s model=%s effort=%s" % (
+        route.get("name") or "-", route.get("provider"),
+        route.get("model"), route.get("effort"))
+
+
+def cmd_preflight(args):
+    """Resolve every execution route production will use and, with
+    --probe, exercise each with one small real session. Creates no
+    objective, no contract and no attempt."""
+    try:
+        rt = AuthorityRuntime.bootstrap(project_root=args.root)
+    except ConfigError as exc:
+        print("preflight FAILED: %s" % exc, file=sys.stderr)
+        return 1
+    try:
+        def progress(text):
+            print("  " + text)
+            sys.stdout.flush()
+        if args.probe:
+            print("probing the routes with real sessions...")
+        report = rt.preflight(probe=args.probe,
+                              timeout_seconds=args.timeout,
+                              on_event=progress)
+        print("engineer:      provider=claude-code model=%s (Engineer and"
+              " Project Manager)" % report["engineer"]["model"])
+        policy = report["policy"]
+        if policy is None:
+            print("routing:       no [routing] policy; every specialist"
+                  " carries its own route")
+        else:
+            for route_class in ("default", "escalation", "utility"):
+                print("%-14s %s" % (
+                    route_class + ":",
+                    _route_text(report["resolved"].get(route_class))))
+            print("fallback:      %s" % (", ".join(policy["fallback"])
+                                         or "none"))
+            print("escalate:      %s" % (", ".join(policy["escalate"])
+                                         or "nothing"))
+            for route in policy["routes"]:
+                print("  route %-14s provider=%s model=%s effort=%s"
+                      " enabled=%s serves %s"
+                      % (route["name"], route["provider"], route["model"],
+                         route["effort"], route["enabled"],
+                         ", ".join(route["classes"]) or "nothing"))
+        print("specialists:")
+        for specialist in report["specialists"]:
+            print("  %-16s %s  route=%s provider=%s model=%s effort=%s"
+                  % (specialist["handle"], specialist["specialist_id"],
+                     specialist["route"] or "(its own)",
+                     specialist["provider"], specialist["model"],
+                     specialist["effort"]))
+        if report["providers"] is not None:
+            print("providers:     %s" % ", ".join(
+                "%s=%s" % (name, "available" if up else "UNAVAILABLE")
+                for name, up in sorted(report["providers"].items())
+                if up or name in {s["provider"]
+                                  for s in report["specialists"]}))
+        for record in report.get("probes", []):
+            print("probe %-22s %s  %ss  call=%s session=%s launched_with=%s"
+                  % (record["label"], "OK" if record["ok"] else "FAILED",
+                     record.get("seconds"), record.get("call_id"),
+                     record.get("native_session_id"),
+                     record.get("launched_with")
+                     or record.get("served_by")))
+        if "independent_sessions" in report:
+            print("independent sessions: %s"
+                  % report["independent_sessions"])
+        for problem in report["problems"]:
+            print("PROBLEM: %s" % problem)
+        if args.report:
+            with open(str(args.report), "w", encoding="utf-8") as fh:
+                json.dump(report, fh, indent=1, sort_keys=True, default=str)
+            print("report: %s" % args.report)
+        print("preflight %s" % ("OK" if report["ok"] else "FAILED"))
+        return 0 if report["ok"] else 1
+    finally:
+        rt.close()
 
 
 def cmd_status(args):
@@ -898,6 +990,18 @@ def main():
                    help="validate assembly and print readiness")
     sub.add_parser("status",
                    help="show objectives, sequences and the Taskforce")
+    pre_p = sub.add_parser(
+        "preflight", help="resolve the execution routes; with --probe,"
+                          " exercise each with one small real session")
+    pre_p.add_argument("--probe", action="store_true",
+                       help="spend one small session per route role and"
+                            " one Engineer call")
+    pre_p.add_argument("--timeout", type=float, default=900.0,
+                       help="seconds to wait for the probe sessions"
+                            " (default: 900)")
+    pre_p.add_argument("--report", type=Path, default=None,
+                       help="write the preflight report as JSON to this"
+                            " file")
 
     eng_p = sub.add_parser(
         "engineer", help="give the Engineer an objective and run"
@@ -980,6 +1084,7 @@ def main():
     commands = {
         "seed": cmd_seed,
         "bootstrap": cmd_bootstrap,
+        "preflight": cmd_preflight,
         "status": cmd_status,
         "engineer": cmd_engineer,
         "run": cmd_run,

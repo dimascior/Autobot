@@ -43,6 +43,56 @@ stale_threshold_minutes = 120
 # a gpt/codex planner would have to route through `autoswarm run --agent codex`.
 planner = "claude-opus-4-6[1m]"
 
+# Execution routing for the authority runtime's specialists: which provider,
+# model and reasoning effort a specialist session runs on. Routing is
+# execution state, resolved after staffing; it is no part of any task
+# contract, project, specialist, membership or seat (docs/architecture/
+# orchestration/ARCHITECTURE.md, section 6.8). Check it with
+# `python -m intelligence.cli preflight` (add --probe to exercise each route).
+#
+#   default     every specialist session: a retained member's, an outside
+#               specialist's, an independent reviewer's (its own session)
+#   escalation  work the organization escalates (`escalate`), and single
+#               assignments the Project Manager asks to escalate
+#   fallback    specialist sessions only while the default route is switched
+#               off (`enabled = false` on it), in this order
+#   utility     lightweight utility work; never an engineering seat
+#
+# The Engineer and Project Manager reason on [models] planner above.
+[routing]
+default = "luna-6-max"
+escalation = "opus-4-6-1m"
+fallback = ["sonnet"]
+utility = "haiku"
+# Capabilities (or "capability:role") whose work always runs escalated.
+escalate = []
+
+# GPT-6-Luna at its top reasoning effort. Luna has no `ultra`.
+# The session runs in a sandbox that can write its own worktree and the
+# command-gate pending directory (the Helios handshake) and nothing else,
+# and it asks before leaving the sandbox; the supervision policy answers.
+[routing.routes.luna-6-max]
+agent = "codex"
+model = "gpt-6-luna"
+effort = "max"
+provider_args = [
+    "--sandbox", "workspace-write",
+    "--ask-for-approval", "on-request",
+    "-c", "sandbox_workspace_write.writable_roots=['{gate_pending}', '{gate_pending_real}']",
+]
+
+[routing.routes.opus-4-6-1m]
+agent = "claude-code"
+model = "claude-opus-4-6[1m]"
+
+[routing.routes.sonnet]
+agent = "claude-code"
+model = "sonnet"
+
+[routing.routes.haiku]
+agent = "claude-code"
+model = "haiku"
+
 # Dispatch routes: each maps to a subscription CLI via `autoswarm run --agent`.
 # No API keys anywhere -- codex uses the codex CLI, claude uses the claude CLI.
 [routes.luna]

@@ -66,6 +66,7 @@ from .proposals import (
     ProposalError,
     validate_proposal,
 )
+from .routing import ESCALATION_CLASSES
 from .workforce import RELEASE_REASONS, STAFFING_MODES
 
 POLICY_ID = "reasoning-engineer/v1"
@@ -212,6 +213,22 @@ The project team is temporary; the Taskforce is persistent
 - retry_exhausted means the frozen contract allows that workstream no
   further attempt: the work can continue only as a new workstream.
 
+Execution depth
+- Specialists work at the organization's standard execution depth. That
+  is right for almost all work, and you say nothing about it.
+- When ONE assignment's engineering problem genuinely needs more, ask
+  for it in that workstream's staffing decision with "escalation":
+  "high_context" when the problem spans more of the system than standard
+  work holds in view (architecture across many modules, a review of a
+  large or subtle change), "deep_reasoning" when it needs deeper
+  reasoning (a hard defect, a subtle design, a repair after standard
+  work failed verification). Say in the rationale what about the problem
+  requires it. The Taskforce resolves how the assignment is executed:
+  you never name a provider or a model, and you are shown none.
+- Escalation is scarce and slower. Do not ask for it for routine
+  investigation, documentation or review, and never for every workstream
+  of a project. A workstream shown with "escalation" already has it.
+
 Completion
 - Propose PROJECT_COMPLETE only when every workstream of the project is
   COMPLETED, nothing needs follow-up, and you propose no further work for
@@ -270,13 +287,15 @@ Classes and their extra fields:
 - ASSIGN_SPECIALIST (Project Manager: who executes a workstream's next
     attempt): "workstream": "<key>",
     "staffing": {"mode": "outside_specialist", "specialist_id": "<id>"}
-    (or {"mode": "taskforce"} to leave it to the Taskforce).
+    (or {"mode": "taskforce"} to leave it to the Taskforce). Either form
+    may add "escalation": one of %(escalation_classes)s (see Execution
+    depth).
 - REPAIR_TASK (another attempt of a workstream after a failed
     verification or a failed attempt): "workstream": "<key>", "guidance"
     (why this attempt),
     "staffing": {"mode": "taskforce" | "same_member" |
     "different_member"} or {"mode": "outside_specialist",
-    "specialist_id": "<id>"}
+    "specialist_id": "<id>"}, each optionally with "escalation"
 - RETAIN_SPECIALIST: "specialist_id", "capability", "role",
     "demonstrations": [demonstration_id, ...]
 - RELEASE_SPECIALIST: "specialist_id", "capability", "role", "reason":
@@ -375,6 +394,11 @@ class ClaudeCliReasoner:
                 key: envelope.get(key) for key in (
                     "session_id", "duration_ms", "num_turns", "is_error",
                     "subtype") if key in envelope}
+            # The model identifiers the provider itself reports having
+            # served this call with (the configured name may be an alias).
+            usage = envelope.get("modelUsage")
+            if isinstance(usage, dict) and usage:
+                self.last_meta["models"] = sorted(usage)
             if envelope.get("is_error"):
                 raise ReasonerError(
                     "claude CLI reported an error result: %s"
@@ -781,8 +805,16 @@ class ReasoningEngineerPolicy(EngineerPolicy):
             errors.append("%s: staffing.mode %r is not one of %s"
                           % (label, mode, list(STAFFING_MODES)))
             return None
+        escalation = staffing.get("escalation")
+        if escalation is not None and escalation not in ESCALATION_CLASSES:
+            errors.append(
+                "%s: staffing.escalation %r is not one of %s; it states"
+                " what the problem needs and never names a provider or a"
+                " model" % (label, escalation, list(ESCALATION_CLASSES)))
+            return None
+        extra = {"escalation": escalation} if escalation else {}
         if mode != "outside_specialist":
-            return {"mode": mode}
+            return dict({"mode": mode}, **extra)
         specialist_id = staffing.get("specialist_id")
         offering = [
             s["specialist_id"] for s in (view.taskforce or {}).get(
@@ -803,7 +835,7 @@ class ReasoningEngineerPolicy(EngineerPolicy):
                 " staffed independently of its subject"
                 % (label, specialist_id))
             return None
-        return {"mode": mode, "specialist_id": specialist_id}
+        return dict({"mode": mode, "specialist_id": specialist_id}, **extra)
 
     def _convert(self, raw, view, index, errors, batch):
         label = "proposal %d" % index
@@ -1060,6 +1092,7 @@ class ReasoningEngineerPolicy(EngineerPolicy):
         projection = render_projection(view, self.context)
         header = INSTRUCTIONS % {
             "release_reasons": list(RELEASE_REASONS),
+            "escalation_classes": list(ESCALATION_CLASSES),
             "capabilities": list(CAPABILITIES),
             "finding_classes": list(FINDING_CLASSES),
         }

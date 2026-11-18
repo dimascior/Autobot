@@ -92,6 +92,13 @@ def build_execution_manifest(sequencer, attempt_id, staffing_assignment,
         "projection_address": call["projection_address"],
         "role": call["role"],
         "capability": capability,
+        # The execution route of THIS attempt: the provider the ledger
+        # bound at dispatch and the provider's own model identifier
+        # exactly as routing resolved it. A later attempt of the same
+        # work may carry a different route; nothing here is part of the
+        # frozen contract. (This schema is shared byte for byte with
+        # AutoSwarm's vendored copy, so the route's reasoning effort and
+        # session arguments travel beside the manifest, not in it.)
         "provider_assignment": _omit_none({
             "provider": call["provider"],
             "model": staffing_assignment.get("model"),

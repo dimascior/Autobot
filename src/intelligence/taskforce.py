@@ -296,6 +296,9 @@ class Taskforce:
                 decision["specialist_id"] if decision else None,
             "staffing_decision":
                 decision["decision_id"] if decision else None,
+            # The escalation class that decision asked for, if any: an
+            # execution-routing input, recorded with the assignment.
+            "escalation": decision.get("escalation") if decision else None,
             "authorization": authorization,
             "authorized_by": authorized_by,
             "objective_id": origin["objective_id"] if origin else None,
@@ -456,6 +459,8 @@ class Taskforce:
         source_revision = self._source_revision(record)
         if source_revision:
             execution["source_revision"] = source_revision
+        if request.get("escalation"):
+            execution["escalation"] = request["escalation"]
         assignment, _created = self.roster.open_assignment(
             sequence_id, ordinal, selection, objective_id,
             request["authorized_by"], now, execution=execution or None,
@@ -491,9 +496,17 @@ class Taskforce:
                 (attempt_id, call_id, view["role"], view["provider"],
                  view["model"], view["selected_by"], projection,
                  assignment["assignment_id"], now, slot_id))
+        # The execution route this attempt is dispatched on is recorded
+        # with the assignment (execution-routing state, never contract
+        # identity): what ran is then a fact of the row, whatever the
+        # specialist is routed to afterwards.
         self.roster.bind_execution(
             assignment["assignment_id"], attempt_id, call_id, now,
-            execution={"projection_address": projection})
+            execution={"projection_address": projection},
+            route={"name": view.get("route_name"),
+                   "provider": view["provider"], "model": view["model"],
+                   "effort": view.get("effort"),
+                   "served_as": view.get("served_as")})
         return slot_id
 
     def predecessor_inputs(self, record):
@@ -557,6 +570,19 @@ class Taskforce:
                 {"workstream": i["name"], "sequence_id": i["sequence_id"],
                  "attempt_id": i["attempt_id"],
                  "content_sha256": i["content_sha256"]} for i in inputs]})
+
+    def _stage_session(self, call_id, view):
+        """Hand the transport the part of the route the manifest does not
+        carry: the reasoning effort and the native session arguments.
+        (The manifest names the provider and the model; its schema is
+        shared byte for byte with the execution substrate.)"""
+        stage = getattr(self.transport, "stage_session", None)
+        if stage is None:
+            return
+        effort = view.get("effort")
+        provider_args = view.get("provider_args") or []
+        if effort or provider_args:
+            stage(call_id, provider_args, effort=effort)
 
     def _drive(self, seq_row, assignment, request, ordinal, now):
         """Carry one staffed attempt from whatever durable stage it has
@@ -628,6 +654,7 @@ class Taskforce:
                 launch["source_revision"] = source_revision
             self._stage_predecessor_inputs(record, assignment, attempt_id,
                                            call_id, now)
+            self._stage_session(call_id, view)
             self._launched.add(call_id)
             launch_with_manifest(
                 self.sequencer, self.transport, attempt_id, launch,

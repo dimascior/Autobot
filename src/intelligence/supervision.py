@@ -29,6 +29,29 @@ fact by the candidate scope check and the verifier; supervision only
 stops an out-of-contract action from happening at all, and records every
 decision so a demonstration can show how the specialist behaved inside
 its environment.
+
+Two providers' request shapes are understood; any other shape is denied.
+
+Claude Code asks before every tool use it has not been pre-authorized
+for (``can_use_tool``): the table above is applied to each one.
+
+Codex runs inside an operating-system sandbox and asks only to LEAVE it.
+The route's sandbox already holds everything a contract may write (the
+isolated worktree and the command-gate pending directory), and every
+command it runs there is still admitted or refused by Helios. So a Codex
+request is an escalation, and the policy grants exactly one kind:
+
+    a command escalation   allowed for SOURCE_MODIFYING work when the
+                           command runs in the assignment's workspace and
+                           is Git's own bookkeeping for it (add, commit,
+                           mv, reset, restore, rm, status, with no option
+                           that points Git anywhere else): a linked
+                           worktree's index and objects live in the
+                           repository's Git directory, outside the sandbox
+    a file change          denied: a write the sandbox refused is a write
+                           outside the assignment's environment
+    a permissions change   denied: an assignment's permissions are fixed
+                           by its contract for the whole session
 """
 
 import os
@@ -39,6 +62,19 @@ SHELL_TOOLS = ("Bash", "PowerShell")
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 
 GATE_SUFFIX = ".gate.json"
+
+# Codex (app-server) permission requests, by method.
+CODEX_COMMAND = "item/commandExecution/requestApproval"
+CODEX_FILE_CHANGE = "item/fileChange/requestApproval"
+CODEX_PERMISSIONS = "item/permissions/requestApproval"
+# The names these are recorded under (beside Claude Code's tool names).
+CODEX_TOOLS = {CODEX_COMMAND: "codex.command",
+               CODEX_FILE_CHANGE: "codex.fileChange",
+               CODEX_PERMISSIONS: "codex.permissions"}
+# Git subcommands that write only the worktree's own index, HEAD and
+# objects: the bookkeeping a specialist-owned candidate commit needs.
+GIT_BOOKKEEPING = ("add", "commit", "mv", "reset", "restore", "rm",
+                   "status")
 
 
 def _norm(path):
@@ -106,6 +142,70 @@ def _target_path(tool_input):
     return None
 
 
+def _git_bookkeeping(command):
+    """The Git subcommand when ``command`` is plain Git bookkeeping
+    (``git <subcommand> ...`` with a subcommand from GIT_BOOKKEEPING and
+    nothing between ``git`` and it), else None. An option before the
+    subcommand (-C, --git-dir, --work-tree, -c) points Git somewhere
+    else or reconfigures it, and is never bookkeeping."""
+    if not isinstance(command, str):
+        return None
+    tokens = command.split()
+    if len(tokens) < 2:
+        return None
+    program = tokens[0].strip("\"'").replace("\\", "/").rsplit("/", 1)[-1]
+    if program.lower() not in ("git", "git.exe"):
+        return None
+    return tokens[1] if tokens[1] in GIT_BOOKKEEPING else None
+
+
+def _decide_codex(native, context):
+    """A Codex session asking to leave its sandbox (see the module
+    docstring)."""
+    method = native.get("method")
+    tool = CODEX_TOOLS[method]
+    if method == CODEX_PERMISSIONS:
+        return {"decision": "deny", "tool": tool, "subject": None,
+                "reason": "an assignment's permissions are fixed by its"
+                          " contract; nothing widens them during a"
+                          " session"}
+    if method == CODEX_FILE_CHANGE:
+        return {"decision": "deny", "tool": tool,
+                "subject": native.get("grantRoot"),
+                "reason": "the sandbox already holds every location this"
+                          " assignment may write (its worktree and the"
+                          " command-gate pending directory); a write it"
+                          " refused is outside the assignment"}
+    actions = native.get("commandActions")
+    commands = [action.get("command") for action in actions
+                if isinstance(action, dict)] \
+        if isinstance(actions, list) else []
+    subject = "; ".join(c for c in commands if isinstance(c, str)) \
+        or native.get("command")
+    if not context.get("shell_allowed") or \
+            context.get("finalization_class") != "SOURCE_MODIFYING":
+        return {"decision": "deny", "tool": tool, "subject": subject,
+                "reason": "this assignment grants no command outside the"
+                          " sandbox; run commands that only read, inside"
+                          " it"}
+    workspace = context.get("workspace")
+    cwd = native.get("cwd")
+    if not (workspace and isinstance(cwd, str)
+            and _relative_inside(cwd, workspace) is not None):
+        return {"decision": "deny", "tool": tool, "subject": subject,
+                "reason": "a command may leave the sandbox only from"
+                          " inside the assignment's own workspace"}
+    if not commands or any(_git_bookkeeping(c) is None for c in commands):
+        return {"decision": "deny", "tool": tool, "subject": subject,
+                "reason": "only Git's own bookkeeping for this worktree"
+                          " may leave the sandbox (git %s, with no option"
+                          " before the subcommand)"
+                          % " | ".join(GIT_BOOKKEEPING)}
+    return {"decision": "allow", "tool": tool, "subject": subject,
+            "reason": "Git bookkeeping for the assignment's own worktree;"
+                      " the command was admitted by Helios (cap-20)"}
+
+
 def decide(request, context):
     """One permission request -> one decision.
 
@@ -118,6 +218,8 @@ def decide(request, context):
                 "reason": "a native question or form, not a permission:"
                           " left unanswered"}
     native = request.get("native_request") or {}
+    if native.get("method") in CODEX_TOOLS:
+        return _decide_codex(native, context)
     if native.get("subtype") != "can_use_tool":
         return {"decision": "deny", "tool": None, "subject": None,
                 "reason": "unrecognized native permission request shape"
