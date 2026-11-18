@@ -14,6 +14,7 @@ a v1 store forward untouched.
 """
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -1223,6 +1224,47 @@ class SupervisionPolicyTests(unittest.TestCase):
             content="x"), "deny")
         self.assertEqual(self._decide(ctx, "Bash", command="git add ."),
                          "allow")
+
+    def test_a_location_is_judged_by_where_it_resolves(self):
+        """A link inside the worktree that leads out of it is outside;
+        another spelling of the worktree is the worktree."""
+        elsewhere = Path(self.tmp.name) / "elsewhere"
+        elsewhere.mkdir()
+        way_out = self.workspace / "docs" / "out"
+        repo_way_out = self.repo / "src" / "out"
+        alias = Path(self.tmp.name) / "alias"
+        try:
+            for link, target in ((way_out, elsewhere),
+                                 (repo_way_out, elsewhere),
+                                 (alias, self.workspace)):
+                if os.name == "nt":
+                    import _winapi
+                    _winapi.CreateJunction(str(target), str(link))
+                else:
+                    os.symlink(str(target), str(link),
+                               target_is_directory=True)
+        except (OSError, ImportError, AttributeError):
+            self.skipTest("this platform would not create a directory"
+                          " link")
+        ctx = self._context(fin="SOURCE_MODIFYING",
+                            evidence=("COMMAND_GOVERNANCE",
+                                      "EXECUTION_LIFECYCLE"),
+                            scope=("docs",))
+        # Spelled inside the worktree and the frozen scope; somewhere
+        # else on disk.
+        self.assertEqual(self._decide(
+            ctx, "Write", file_path=str(way_out / "x.md"), content="x"),
+            "deny")
+        self.assertEqual(self._decide(
+            ctx, "Read", file_path=str(repo_way_out / "secret.txt")),
+            "deny")
+        # Spelled somewhere else; the worktree on disk.
+        self.assertEqual(self._decide(
+            ctx, "Write", file_path=str(alias / "docs" / "guide.md"),
+            content="x"), "allow")
+        self.assertEqual(self._decide(
+            ctx, "Read", file_path=str(alias / "docs" / "guide.md")),
+            "allow")
 
     def test_unknown_requests_fail_closed(self):
         ctx = self._context(fin="SOURCE_MODIFYING")

@@ -619,20 +619,46 @@ frozen contract it is executing (D-TF-6):
 Every decision is recorded against the assignment and counted in its
 demonstration.
 
+"Inside" always means where a path resolves, never how it is spelled
+(D-TF-30): a junction and its target are one place, and a link under the
+workspace that leads out of it is outside.
+
 That table is how a provider that asks before every tool use is
 supervised (Claude Code). A provider that runs inside an operating-system
 sandbox asks only to leave it (Codex), and its route declares the sandbox:
 the isolated worktree and the command-gate pending directory are
 writable, nothing else is. Commands inside the sandbox run without a
 request and are still admitted or refused one by one by Helios. A request
-is therefore an escalation, and the policy grants one kind (D-TF-28):
+is therefore an escalation — the command it names would run with no
+sandbox around it — and the policy grants one kind (D-TF-28):
 
 | Request from a sandboxed session | Answer |
 |---|---|
-| run a command outside the sandbox | allowed for SOURCE_MODIFYING work when the command runs in the assignment's workspace and is Git's own bookkeeping for it (`git add`, `commit`, `mv`, `reset`, `restore`, `rm`, `status`, with no option before the subcommand): a linked worktree's index and objects live in the repository's Git directory |
+| run a command outside the sandbox | allowed for SOURCE_MODIFYING work, for the two commands a specialist-owned candidate commit needs and nothing else: `git add [--] <path in the frozen scope>...` and `git commit -m <message>`. A linked worktree's index and objects live in the repository's Git directory, which the sandbox cannot write |
 | a file change the sandbox refused | denied |
 | a change of the session's permissions | denied |
 | any request shape the policy does not know | denied |
+
+The command is judged as what would run, not as the provider describes
+it. All of these must hold, and the refusal says which did not:
+
+- the request is a shell the operating system supplies, started to run
+  exactly one script, and the provider's own description of the request
+  is that same script;
+- the script is one plain command: no second command, pipe, redirection,
+  substitution, variable, wildcard or escaped quote. Quoted text may hold
+  anything a shell would not expand;
+- the command is `git add` or `git commit`, written as `git` and not as a
+  path to a program, with only the options above; every path it names is
+  a plain path inside the frozen scope (`git add .` and `git add -A` name
+  none and are refused);
+- it runs from the root of the assignment's worktree;
+- the worktree is still the one the repository made: its `.git` is the
+  pointer file into the repository's own worktree registry, so Git reads
+  the repository's configuration and hooks and not ones the session
+  wrote.
+
+What this does not close is recorded with F-TF-26.
 
 ### 6.4 Workspaces
 
@@ -929,8 +955,9 @@ refused. The authority database is not touched.
 | D-TF-25 | Dependent work is given its predecessors' accepted results through the authority path: the landed revision for a SOURCE_MODIFYING predecessor, and for any predecessor the admitted artifact, placed in the dependent's isolated worktree. |
 | D-TF-26 | Execution routing is a declared policy resolved after staffing: a default route for every specialist session, an escalation route, fallbacks used only while the default is switched off, and a utility route. A route's provider, model and effort are no part of a TaskContractRecord, a requirement, a project, a workstream, a capability, a specialist, a membership, a seat or a demonstration. The Engineer's model is separate configuration. |
 | D-TF-27 | Work is escalated by the organization's rule over capability and role, or by the Project Manager for one assignment in words about the engineering need (`high_context`, `deep_reasoning`) with its rationale. Routing resolves either to the escalation route. Neither names a provider or a model. |
-| D-TF-28 | A provider that runs inside an operating-system sandbox is supervised at the sandbox's edge: its route declares what the sandbox may write, and the only escalation the policy grants is Git's own bookkeeping for a SOURCE_MODIFYING assignment's worktree. Every command still passes Helios. |
+| D-TF-28 | A provider that runs inside an operating-system sandbox is supervised at the sandbox's edge: its route declares what the sandbox may write, and the only escalation the policy grants is the pair of Git commands a specialist-owned candidate commit needs (`git add` of paths in the frozen scope, `git commit -m`), as one plain command run by the system shell from the root of the assignment's own, untampered worktree. The command that would run is what is judged. Every command still passes Helios. (Narrowed after F-TF-26; as first written it granted seven Git subcommands by their first two words.) |
 | D-TF-29 | The route an attempt is dispatched on is recorded with that attempt: provider and model in the ExecutionManifest, whose schema stays what AutoSwarm also holds; the whole route, with its name and effort, on the assignment. Effort and session arguments are staged beside the manifest. A relaunch repeats the recorded route. The specialist prompt is one text for every provider. |
+| D-TF-30 | Supervision judges a location by where it resolves. A path is inside a root when its resolved location lies inside the root's resolved location; the spelling of either decides nothing. |
 
 ## 12. Findings
 
@@ -957,7 +984,11 @@ refused. The authority database is not touched.
 | F-TF-19 | The catalog gave each specialist its own provider and model, so the organization had no default route to change; and a route's reasoning effort and session arguments were recorded and never passed to AutoSwarm. | Fixed: the routing policy (section 6.8, D-TF-26). The transport passes the effort and the session arguments. |
 | F-TF-20 | The READ_ONLY specialist contract named one provider's tools (Read, Glob, Grep) and forbade the shell. A provider that reads through a shell could not do READ_ONLY work under it; and the frozen prompt is part of the contract, so it cannot differ by provider. | Fixed: one provider-neutral text (D-TF-29). |
 | F-TF-21 | An assignment row kept the provider and model its specialist had when it was selected. A route replaced between selection and dispatch was used for the launch and then lost: a relaunch after a restart would have asked for the old model under the same call, which AutoSwarm refuses as a different manifest. | Fixed: the dispatched route is recorded at dispatch and repeated (D-TF-29). |
-| F-TF-22 | Found by probing the Codex route, 2026-11-18. Inside a `workspace-write` sandbox a linked worktree cannot stage or commit: its index and objects are in the repository's Git directory, which stays protected even when it is listed as writable. With approvals off, the session stops there. | The route relays approvals, and the supervision policy grants Git bookkeeping for the assignment's own worktree and nothing else (section 6.3, D-TF-28). |
+| F-TF-22 | Found by probing the Codex route, 2026-11-18. Inside a `workspace-write` sandbox a linked worktree cannot stage or commit: its index and objects are in the repository's Git directory, which stays protected even when it is listed as writable. With approvals off, the session stops there. | The route relays approvals, and the supervision policy grants the two Git commands a candidate commit needs and nothing else (section 6.3, D-TF-28). |
 | F-TF-23 | Reported by Pilot 2's specialists and confirmed in source: `Sequencer.mark_member_stale` (t-a12) has no caller, so a provider session that hangs is never failed and holds every run until `--max-wall-seconds`. | Open. Recorded for operators in [RUNBOOK.md](RUNBOOK.md) section 5.2. |
 | F-TF-24 | Reported by Pilot 2's specialists, read in source, not confirmed by a test: an attempt the Sequencer refuses to start leaves an ABANDONED assignment that `allocate_ready` then skips for good; a non-zero exit of `autoswarm run` escapes as an uncaught error and leaves the attempt DISPATCHED; a negative budget on a fresh run leaves the objective ACTIVE behind a traceback; `--authorize-publication` and `--max-wall-seconds` do more than their help text says. | Open. Recorded for operators in [RUNBOOK.md](RUNBOOK.md). |
-| F-TF-25 | RUNBOOK.md cites source by line, and the routing change moved those lines. | Open at this commit. The references are to be refreshed by SOURCE_MODIFYING work through the organization, not by hand. |
+| F-TF-25 | RUNBOOK.md cites source by line, and the routing change moved those lines. | Fixed through the organization, 2026-11-18 (Pilot 4): commit `606663ade00219a4b2c1baef0df0aa81dc510067`, written by the retained documentation builder from two verified investigations and published by authority. All 104 references of the earlier text carry through the line shifts of the routing change (75 moved, 29 did not); the commit also adds the `preflight` command and an execution-routing subsection. [PRODUCTION_PROOF.md](PRODUCTION_PROOF.md) section 19. |
+| F-TF-26 | Reported by Pilot 3's reviewers, 2026-11-18 (three findings, significance high), and confirmed in source. The sandbox-edge rule of D-TF-28 as first written read the provider's description of a command by its first two words. A script that chained a second command after `git status` would have been approved to run outside the sandbox; any program named `git` was accepted; path-capable Git commands (`rm`, `mv`, `reset`, `restore`) were granted without looking at their paths; and the working directory only had to be spelled inside the workspace. | Fixed: the rule of section 6.3 (D-TF-28 as narrowed, D-TF-30). No production request used the gap. The only two requests production had raised (Pilot 4: `git add docs/architecture/orchestration/RUNBOOK.md` and `git commit -m "docs: update orchestration runbook"`) are replayed in the tests as recorded and are still granted. Not closed by a policy that decides before a command runs: the checks are made at decision time and the command runs afterwards; Git reads the repository's own configuration and hooks, which are trusted as the operator's; and inside the sandbox a session can still write any file of its worktree, in scope or not, which the candidate scope check refuses afterwards. |
+| F-TF-27 | Reported by Pilot 1's specialists and again by Pilot 3's: `_relative_inside` accepted a path when either its written or its resolved spelling lay inside the root, while its documentation said both were judged. A link inside a worktree that leads out of it counted as inside, for reads, for writes and for the sandbox-edge working directory. | Fixed: resolved containment (D-TF-30). |
+| F-TF-28 | Reported by Pilot 3's specialists, read in source, not confirmed by a test. The route of an attempt is recorded when its execution slot is bound, after dispatch: a stop between the two, followed by a routing change, would relaunch on the new route and record that one. A relaunch takes a route's session arguments from the live policy, not from the assignment. Staged session arguments are keyed by call id alone. A placeholder that is not lower-case letters in braces passes validation and stays literal in the arguments. | Open. Each needs a routing change or a configuration error between a stop and a restart. |
+| F-TF-29 | Found in production, 2026-11-18 (Pilot 4). The reviewer of a SOURCE_MODIFYING change is given the builder's accepted result and a worktree at the landed revision, but is not told that its worktree holds the reviewed change, and is not given the results the builder worked from. Pilot 4's reviewer verified the new sections, spot-checked the references and reported that it could not compare exhaustively. | Open. The review was accepted as what it was; the exhaustive comparison was made outside the organization and is recorded in the production proof. |
