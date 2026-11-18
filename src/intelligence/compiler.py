@@ -1,6 +1,6 @@
 """The deterministic proposal -> TaskContractRecord compiler (cap-07).
 
-Sits between Chief Engineer proposals and Registry admission: it
+Sits between Engineer proposals and Registry admission: it
 translates one contract-class proposal into the canonical Chapter 1
 TaskContractRecord shape, producing candidate values for the
 requirement text, dependency edges, roles and transforms, completion
@@ -11,9 +11,9 @@ SEM-05-derived finalization requirements.
 It is a PURE function of (proposal, environment, clock): no database
 handle, no store handle, no network. The Registry remains responsible
 for canonical validation, identity and freeze (cap-08) — the compiler
-proposes bytes; admission decides. Proposal provenance (why the Chief
-Engineer created this contract) is recorded in the plan store, never
-inside the frozen payload, which keeps answering only "what exactly was
+proposes bytes; admission decides. Proposal provenance (why the Engineer
+created this contract) is recorded in the plan store, never inside the
+frozen payload, which keeps answering only "what exactly was
 authorized?".
 
 The environment is the planner's standing authority context: the bound
@@ -50,7 +50,7 @@ class RepositoryEnvironment:
     admitted (their object hashes are RECOMPUTED here, never caller-
     claimed); ``verifier_registrations`` / ``transform_registrations``
     are the registered payloads the candidate binds; ``defaults`` carry
-    the engineering profile the Chief Engineer does not restate per
+    the engineering profile the Engineer does not restate per
     proposal (assertions, scope, policies, protocol capability ids,
     evidence requirements, the role transform)."""
 
@@ -77,6 +77,19 @@ class RepositoryEnvironment:
         floors = self.delegation.get("mandatory_floors", {})
         entry = floors.get(self.repository_id, {}).get(finalization_class, [])
         return _sorted_set(entry)
+
+
+def evidence_requirements_for(environment, finalization_class):
+    """The evidence requirements a contract of this class is compiled
+    with. The engineering profile may state them per finalization class
+    (``evidence_requirements_by_class``): a READ_ONLY investigation that
+    runs no command has no command governance to witness, while
+    SOURCE_MODIFYING work is always governed. Absent that, the profile's
+    single ``evidence_requirements`` applies to every class."""
+    defaults = environment.defaults
+    by_class = defaults.get("evidence_requirements_by_class") or {}
+    return list(by_class.get(finalization_class)
+                or defaults["evidence_requirements"])
 
 
 def compile_proposal(proposal, environment, clock):
@@ -138,7 +151,7 @@ def compile_proposal(proposal, environment, clock):
         "capability_requirements": _sorted_set(
             defaults["capability_requirements"]),
         "evidence_requirements": _sorted_set(
-            defaults["evidence_requirements"]),
+            evidence_requirements_for(environment, fin_class)),
         "acceptance_assertions": {
             "ids_and_environment_constraints": _sorted_assertions(
                 assertions["ids_and_environment_constraints"]),

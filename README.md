@@ -1,490 +1,209 @@
 # Autobot
 
-Autobot (the `swarm-coordinator` package) is the layer that starts and tracks agent runs, so nobody has to launch them by hand. It reads a curated backlog, has Claude decide what runs, launches each run through **AutoSwarm**, and parks the result for a human to close.
+Autobot is an autonomous engineering and orchestration system.
 
-It uses the agent CLIs' own subscription logins, never API keys, and it launches nothing until you turn dry-run off.
-
-**If you're an agent, read [Read this first](#read-this-first) before you do anything else.** Most mistakes made in this system came from an agent drawing the wrong picture of it and then building confidently on that picture.
-
-**Status:** the launch chain below has run live twice, each from one `--once` cycle. The second run had [Remote Control](#follow-a-run-with-remote-control) on both Claude sessions. The timer loop has not run live, and the [known limits](#known-limits) still apply.
-
-## Read this first
-
-### The picture
+The Engineer solves problems and may become the Project Manager needed to realize a solution. A project may use both retained Taskforce members and outside specialists. Project participation is temporary; Taskforce membership is persistent and earned through explicit evidence-backed retention. Autobot coordinates the project, **AutoSwarm** executes the sessions, and the authority plane independently determines what work becomes accepted system state.
 
 ```text
-you or a timer
- └─ coordinator --once                        Autobot: backlog, ledger, safety caps
-     ├─ claude -p                             planner: picks tasks, writes each prompt
-     └─ autoswarm run --agent claude-code     Autobot's Claude session (route "opus")
-         ├─ autoswarm run --agent codex --input <prompt file>    worker, e.g. Luna
-         └─ autoswarm run --agent claude-code --input -          monitor
+AUTOBOT
+    │
+    Engineer
+    │
+    ├── technical problem solving
+    │
+    └── Project Manager role when coordination is required
+            │
+            ├── project/work graph
+            ├── retained Taskforce participants
+            └── outside project-specific specialists
+
+Taskforce
+    ├── persistent retained membership
+    ├── retained seats
+    ├── capability demonstrations
+    ├── availability
+    └── organizational learning
+
+AutoSwarm
+    └── execution substrate
+
+Authority Plane
+    └── independently verifies and accepts work
 ```
 
-Each layer has one job:
+It uses the agent CLIs' own subscription logins, never API keys.
 
-- **Autobot** decides a task should run and starts a session for it. It doesn't do the task, and it only tracks the session it started.
-- **Autobot's Claude session** is the orchestrator. It's an AutoSwarm child, not an interactive session. For a long run it starts the worker and a separate monitor session through AutoSwarm. Then it stays connected until the worker's call ends, so you can reach it over Remote Control for the whole run. It never monitors the worker; the monitor session does that.
-- **AutoSwarm** runs each child. With `--input <file>` it reads the prompt file and sends the text as the child's first message.
+## Status
 
-The point of this arrangement is that a run starts with **no manual step** once Autobot is running. AutoSwarm on its own is already proven. Autobot starting the run is what this repo adds.
+| Part | Status |
+|---|---|
+| Authority plane, READ_ONLY | Live end to end. First production proof 2026-11-16. |
+| Authority plane, SOURCE_MODIFYING | Live end to end. Production proof 2026-11-17: a specialist created the candidate commit in an isolated worktree, and it was published by local ref compare-and-swap as `05e3d1a`. Record: [docs/implementation/source_modifying_pilot.md](docs/implementation/source_modifying_pilot.md). |
+| Engineer, projects, Taskforce, the loop | See [docs/architecture/orchestration/PRODUCTION_PROOF.md](docs/architecture/orchestration/PRODUCTION_PROOF.md) for what has run in production and what has only run in the test suite. |
+| Legacy coordinator | Preserved. See [The legacy coordinator](#the-legacy-coordinator). |
 
-### Mistakes already made here
+## The parts
 
-Each of these was made by an agent that was sure it understood the system.
+### Engineer
 
-| If you're about to... | Stop, because... | Do this instead |
-|---|---|---|
-| Run `autoswarm run` yourself for a backlog task | That's AutoSwarm alone. Autobot plans nothing and records nothing | Add a backlog task and run a cycle |
-| Give the user commands to paste | That's the manual step Autobot exists to remove | Put the steps in a task file that Autobot's Claude session reads |
-| Start a new session to "run the coordinator" | A wrapper session isn't the coordinator, and it may be on the wrong model | Start `coordinator` directly from a terminal or a timer |
-| Add code so Autobot sends your long prompt | Autobot's job ends at starting the session | Point the task at a file, and let AutoSwarm read prompts with `--input` |
-| Pick a model yourself | The models are part of the design | Use `[routes.*]` and `[models]` in `config.toml` |
-| Tell a cold Codex session to read its instructions from a file | Its shell is gated and it doesn't yet know the gate | Send the whole prompt as message text |
-| Move helpers into a file to shrink a prompt | The prompt that worked cold carried everything itself, and a file read added a new way to fail | Keep it self-contained until a file read is proven in that runtime |
-| Offer to watch the worker yourself, or give Autobot's session check-ins | Watching is the monitor session's job. Autobot's session launches the worker and the monitor | Leave watching to the monitor. Autobot's session only waits for the worker's call to end |
-| Believe a monitor's diagnosis | A monitor called a harmless cleanup error a write failure, and a fix was built for a problem that never happened | Check the session records yourself ([Reading a run](#reading-a-run)) |
-| Assume a local `.command-gate` means ungated | That workspace's own hook runs the gate | See [The gate](#the-gate) |
-| Say "ready" after reading the code | Reading proves nothing about a live path | Run the tests and a cycle, and say what you ran |
+The technical problem-solving intelligence. It consumes structured state: objectives, the current project, the work that exists and its authority state, dependencies, findings, verified results, failed attempts, the Taskforce's retained capabilities and the outside specialists a project may draw on. It investigates, develops the solution, weighs tradeoffs and determines the work the solution requires.
 
-When the user corrects your picture, stop and restate it in their words before you change anything. Search the earlier sessions if you need to. Their words about what the system is for outrank what you infer from the code.
+When realizing a solution needs coordinated work, the Engineer acts as its **Project Manager**: it opens the project, lays out the workstreams and their dependencies, and composes a temporary team.
 
-### Before you answer "is it ready?"
+It answers only with typed proposals. It never selects a provider or a model, never certifies its own conclusions, and cannot change authority state. The production policy reasons with a model that is given no tools and is not shown how any specialist is routed.
 
-1. Say what you mean by ready: a dry cycle, one live task, or the timer loop.
-2. Run the [checks](#run-it) and report their results.
-3. Separate what you ran from what you only read.
+### Projects and their teams
+
+A project is temporary. Each of its workstreams is one piece of work, frozen as a TaskContractRecord that names a capability and a role and never a provider, a model or a specialist. Who executes a workstream is a project assignment, decided on one of two paths:
+
+- **Request the capability from the Taskforce.** The work is proposed and nobody is named. The Taskforce resolves an available retained member that holds a seat for that capability and role.
+- **Explicitly select an outside specialist.** The Project Manager names the specialist for that workstream. The assignment is specific to the project.
+
+The Taskforce never brings an outside specialist onto a project: when no retained seat can take a workstream, it says so and the work waits for the Project Manager.
+
+An assignment creates no Taskforce membership. When the project completes, every participation ends.
+
+### Taskforce
+
+The persistent engineering organization: retained membership, retained seats, capability history, availability, and the resolution of retained capabilities.
+
+```text
+outside specialist
+→ verified work
+→ CapabilityDemonstration
+→ RETAIN_SPECIALIST
+→ TaskforceMembership
+→ retained seat
+```
+
+Successful work does not retain anyone by itself. Verified work becomes a capability demonstration that belongs to the specialist; only an explicit retention decision that binds qualifying demonstrations creates membership and a seat. A specialist can equally be let go after a task, with no membership change at all. A seat with repeated verified work becomes established, which ranks it higher.
+
+Retention changes who is staffed and nothing else. A retained member's work goes through the same contract, attempt, evidence, verification and permit as anyone's.
+
+### AutoSwarm
+
+The execution substrate. Autobot hands it an execution manifest built from the ledger; AutoSwarm verifies it, claims the call and launches the specialist's session. Provider and model are read from the assigned specialist's route at that point. Each specialist works in an isolated Git worktree at a frozen revision.
+
+### The authority plane
+
+| Component | Role |
+|---|---|
+| Registry | admits and freezes TaskContractRecords; nothing runs without one |
+| Sequencer | owns every state transition, attempt, fence, permit and effect intent |
+| Collector | classifies the evidence of an attempt into an ExecutionReceipt |
+| Verifiers | registered deterministic programs; their receipts are the only verification |
+| Git | the source of truth for candidate trees and the canonical ref |
+| HELIOS | the command gate: admits or denies every shell command a specialist runs, and records it |
+
+The authority plane decides whether work may proceed and whether a result can be trusted. It is specified in [docs/architecture](docs/architecture) (Chapters 0 to 4) and does not depend on anything above it.
+
+### READ_ONLY and SOURCE_MODIFYING
+
+Every contract has a finalization class.
+
+- **READ_ONLY** work investigates or reviews. Its result is a report and structured findings. It is accepted when verification passes.
+- **SOURCE_MODIFYING** work changes the repository. The specialist commits in its worktree; the candidate is checked against the frozen scope, verified, and published by a ref compare-and-swap only inside a publication permit that you grant.
+
+## How a run goes
+
+```text
+objective
+  -> the Engineer reasons: the solution, and the work it requires
+  -> as Project Manager it opens the project and proposes the workstreams
+  -> Registry admits and freezes each contract
+  -> each ready workstream is staffed: a retained member the Taskforce resolves,
+     or an outside specialist the Project Manager selected
+  -> AutoSwarm launches the specialist; its permission requests are answered by policy
+  -> evidence is collected; registered verifiers run; the Sequencer concludes
+  -> READ_ONLY: accepted.  SOURCE_MODIFYING: your permit, then the ref moves
+  -> the result becomes a capability demonstration; findings are admitted
+  -> the Engineer reasons again: follow-up work, retention or release, completion
+  -> the project completes: its team is dissolved, Taskforce membership stays
+  -> the loop is stable when nothing is left to do and nothing is in flight
+```
 
 ## Run it
 
-You need Python 3.11+, `uv`, the `autoswarm` CLI, and the agent CLIs your routes use (`claude`, `codex`), each logged in to its subscription.
-
-From the checkout root, in PowerShell:
+You need Python 3.8 or newer (the legacy coordinator needs 3.11), the `autoswarm` CLI, and the `claude` CLI logged in to its subscription. From the checkout root, in PowerShell:
 
 ```powershell
 $env:PYTHONPATH = 'src'
-$env:AUTOSWARM_HOME = '<your AutoSwarm home>'
-uv run --no-project --python 3.12 python -m unittest discover -s tests
-uv run --no-project --python 3.12 python -m coordinator.discover --check
-uv run --no-project --python 3.12 python -m coordinator.loop --once --dry-run
+python -m intelligence.cli seed
+python -m intelligence.cli bootstrap
+python -m intelligence.cli engineer --objective-id <id> --objective "<what you want engineered>"
 ```
 
-Or run `pip install -e .` and use the console scripts in [Entry points](#entry-points).
-
-- **Set `AUTOSWARM_HOME` explicitly.** Inside a packaged desktop app, the default home can be redirected, so runs land where a normal terminal can't see them.
-- **In a `.cmd` script, write `call uv ...`.** `uv` can be a batch shim, and without `call` the script ends after the first `uv` line.
-- **Dry cycles count.** They use up `max_cycles_per_hour` and `daily_ceiling`, so don't run many.
-
-Copy `backlog.example.toml` to `backlog.toml` (gitignored) for your own tasks. Machine paths are discovered, so `config.local.toml` (also gitignored) is only for overrides.
-
-## Start a long run through Autobot
-
-This is the full chain from [the picture](#the-picture).
-
-### 1. Write the prompts
-
-Follow [Writing a prompt for a cold session](#writing-a-prompt-for-a-cold-session) and [Writing a monitor prompt](#writing-a-monitor-prompt). Keep them as plain ASCII files.
-
-### 2. Write a task file for Autobot's Claude session
-
-```text
-You are the swarm orchestrator for one run. Autobot started you through AutoSwarm, with
-Remote Control on. You start the worker and a separate monitor session, then stay
-connected until the worker's call ends. You don't monitor the worker; the monitor does.
-
-You run headless: a reply without a tool call ends this session. Until the final
-report, every reply makes a tool call. Don't ask questions.
-
-When the user messages you over Remote Control, answer in a few lines and make your
-next tool call in the same reply. Do what they ask. To stop the run, cancel the
-worker's call and the monitor's: autoswarm cancel <call id>
-
-Your shell is gated. Each command returns a gate template the first time. Complete it
-for that command. If a command is refused for any other reason, stop and report the text.
-
-1. Confirm the services the worker needs are answering. If not, stop and report.
-
-2. Start the worker. AutoSwarm reads the prompt file and sends it as message text:
-   autoswarm run --agent codex --model <model> --effort <effort> --cwd <worker workspace> --background --no-parent --input <worker prompt file> --provider-arg=--sandbox --provider-arg=danger-full-access --provider-arg=--ask-for-approval --provider-arg=never
-   The call ID is at .data.call_id. If there is none, stop and report.
-
-3. Start the monitor, with the call ID on the first line of its prompt:
-   ("WORKER_CALL_ID=<call id>`r`n" + (Get-Content -Raw '<monitor prompt file>')) | autoswarm run --agent claude-code --model <model> --cwd <gate-bearing workspace> --background --no-parent --provider-arg=--dangerously-skip-permissions --remote-control=<monitor name> --input -
-
-4. Confirm calls/<call id>/handle.json exists for both. In the monitor's, read
-   remote_control.state and remote_control.response.session_url.
-
-5. Until calls/<worker call id>/result.json exists: note whether the monitor's call
-   has a result.json, then run Start-Sleep -Seconds 180 with a tool timeout of
-   200000 ms. Each sleep needs a new gate with a new correlation_id. Stop after 30 sleeps.
-
-6. End with the worker's outcome from its result.json, the monitor's state and link,
-   each message from the user and what you did about it, and any step that failed.
-```
-
-Leave out `--remote-control=<monitor name>` if you don't want to follow the monitor from claude.ai. Autobot's own session gets Remote Control from its route's `remote_control`, not from this file. See [Follow a run with Remote Control](#follow-a-run-with-remote-control).
-
-- **Concurrency:** while the session waits, its dispatch stays `running` and counts against `max_concurrent`.
-- **Staleness:** keep the sleep cap under `stale_threshold_minutes`, 120 by default, so a long wait isn't marked stale.
-- **After it ends:** if it stops at the cap, the worker and the monitor keep running.
-- **Environment:** `AUTOSWARM_HOME` is inherited from Autobot.
-
-### 3. Add one backlog task
-
-```toml
-[[task]]
-id = "my-long-run"
-domain = "example"
-title = "Start the worker and its monitor through AutoSwarm"
-description = "You are the swarm orchestrator. Read the file <path to task file> with your file-reading tool and carry out its steps exactly, in order. Keep this instruction and that file path word for word in the prompt."
-task_class = "investigate"
-route = "opus"
-priority = 10
-evidence = "Why this run exists."
-depends_on = []
-```
-
-In a live cycle the planner rewrites the prompt from this text, so ask for the path to be kept word for word. Double any backslashes, because this is TOML.
-
-### 4. Hold everything else back
-
-Every open, unblocked task can launch in the same cycle. To hold one, add your task to its `depends_on`. It stays blocked until your task is closed.
-
-Removing a task from `backlog.toml` doesn't retire it, because the ledger keeps it. See [Known limits](#known-limits).
-
-### 5. Make a one-cycle live config
-
-Copy `config.toml` to `config.<name>-run.toml` (gitignored) and change these values:
-
-```toml
-[caps]
-max_concurrent = 1
-max_dispatches_per_cycle = 1
-
-[safety]
-dry_run = false
-
-[routes.opus]
-remote_control = true   # optional: follow Autobot's Claude session from claude.ai
-```
-
-`config.toml` stays dry, so nothing else goes live by accident. `config.local.toml` still layers on top. The copy doesn't layer over `config.toml`, so set `remote_control` inside the copy's existing `[routes.opus]` table. A second `[routes.opus]` table is a TOML error.
-
-### 6. Preview, then run
-
-```powershell
-uv run --no-project --python 3.12 python -m coordinator.loop --once --dry-run --config config.<name>-run.toml
-uv run --no-project --python 3.12 python -m coordinator.loop --once --config config.<name>-run.toml
-```
-
-A healthy live summary reads `Status: completed`, `Dry run: False`, `Dispatched: 1`. `Parked` counts approval-class tasks, which don't launch.
-
-### 7. Confirm it came up
-
-Use the log line `dispatched <task> -> call_id=<id>`, then check [the run's records](#reading-a-run).
-
-- **Autobot's Claude session:** read its `handle.json`. Its `result.json` appears only when the session ends: after the worker's call ends, or at the sleep cap.
-- **Worker and monitor:** confirm a new call folder exists for each.
-- **Links:** each Claude session's link is at `remote_control.response.session_url` in its `handle.json`.
-
-### 8. Close it
-
-Autobot tracks only the session it dispatched. With the step 2 template, that session ends with the worker's outcome, but Autobot's verdict doesn't check it. Read the worker's own `result.json` first.
-
-```powershell
-uv run --no-project --python 3.12 python -m coordinator.loop --once --dry-run
-uv run --no-project --python 3.12 python -m coordinator.authorize --list
-uv run --no-project --python 3.12 python -m coordinator.authorize --resolution <n> --authority <who> --approve
-```
-
-The first command reads the result and proposes a verdict. Only an authority's approval closes a task, and closing it unblocks whatever you held back in step 4.
-
-### Run it again with new prompts
-
-The prompts reach AutoSwarm through four layers. Each layer names the next, so you only edit the layer that changed:
-
-1. **The backlog task's `description`** gives the path of the task file that Autobot's Claude session reads.
-2. **`[routes.opus]`** sets how Autobot starts that session: model, folder, flags, and `remote_control`.
-3. **The task file** (step 2) holds the exact `autoswarm run` lines. Each child's prompt file is named in its `--input`, and its flags sit on the same line. This is where you point at new prompts.
-4. **The prompt files** hold the work itself.
-
-For a run with new prompts, update the `--input` paths in the task file. Then add a backlog task with a new `id`. Once a task has run, Autobot doesn't dispatch it again, even after it's closed.
-
-## Follow a run with Remote Control
-
-Claude Code's Remote Control mirrors a running session to claude.ai/code and the Claude app. You can read it there and send it messages.
-
-### Why AutoSwarm needed a change
-
-AutoSwarm runs its Claude children headless, as `claude -p` with stream-json input. `claude`'s `--remote-control` flag only starts an interactive session, so passing it with `--provider-arg` doesn't do anything. A headless session turns Remote Control on only when the program running it sends a `remote_control` control message, the way VS Code does. So the switch had to go into AutoSwarm itself.
-
-The public docs don't cover headless sessions. This comes from the strings in the `claude` 2.1.318 binary, which also show that the `remoteControlAtStartup` setting doesn't apply to them.
-
-### What each layer does
-
-- **AutoSwarm:**
-  - `autoswarm run --remote-control=NAME` sends that message after the handshake and before the first prompt, so the mirror starts with the prompt. It works only for claude-code children.
-  - The result goes into the call's `handle.json` as `remote_control`, with state `requested`, `enabled` or `failed`. A refusal doesn't stop the run.
-  - Resumed calls and children woken by mail keep the setting.
-  - The change is in `native.py`, plus `cli.py`, `engine.py` and `messages.py`, with new tests and a matching test fixture. Upstream HKUDS/AutoSwarm doesn't have it yet.
-- **Autobot:**
-  - A `claude-code` route can set `remote_control = true`. Dispatch then adds `--remote-control=autobot <task id>`, so the session shows up under that name on claude.ai. A string value replaces the `autobot` prefix.
-  - It's off in `config.toml`. Turn it on in your run config (step 5).
-- **Task file:** start the monitor with `--remote-control=<name>`, report whether it connected, and keep Autobot's session connected until the worker's call ends. The template in step 2 does all three.
-- **Monitor prompt:** if you message the monitor from claude.ai, it must answer and make its next tool call in the same reply. A reply with no tool call ends a headless session, which is how an earlier monitor ended.
-- **Codex workers:** Codex has no Remote Control. AutoSwarm refuses `--remote-control` for a codex child. Dispatch skips the setting on a codex route and logs a warning.
-
-### Install the AutoSwarm change
-
-`uv tool install` copies the package, so edits to an AutoSwarm checkout don't reach the installed `autoswarm` until you reinstall. Use `--reinstall`. It rebuilds the package, where `--force` alone can install a wheel uv built earlier from the same folder.
-
-```powershell
-uv tool install --reinstall --python 3.12 <path to your AutoSwarm checkout>
-autoswarm run --help
-```
-
-The help should list `--remote-control [NAME]`. Until then, a launch that passes the flag fails with `unrecognized arguments: --remote-control`, and Autobot logs that error and releases the task.
-
-On Windows, `--reinstall` removes the old package before it copies the new one. If a file is in use (os error 32), it can stop halfway and leave `autoswarm` broken. Run the same command again, then check the help.
-
-### Requirements
-
-- An installed AutoSwarm whose `run` has `--remote-control`.
-- A claude.ai login (Pro, Max, Team or Enterprise). Remote Control refuses API keys, so `ANTHROPIC_API_KEY` must not be set for the child.
-- The one-time Remote Control confirmation, accepted once in an interactive session on the machine. A headless child can't show that dialog. `~/.claude.json` has `"remoteDialogSeen": true` once it's done.
-- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` unset, because it turns Remote Control off.
-
-### Reading it
-
-The call's `handle.json` has a `remote_control` field:
-
-- `requested`: still connecting.
-- `enabled`: connected. `response` holds what Claude Code returned: `session_url` is the link to open on claude.ai, along with `connect_url`, `environment_id`, `bridge_epoch` and `bridge_session_id`.
-- `failed`: refused. `error` holds Claude Code's reason.
-
-A refusal doesn't stop the run. It just goes on without the mirror.
-
-What changes for a headless child:
-
-- Its mirror goes offline when the child ends. That's why the step 2 template keeps Autobot's session waiting until the worker ends, instead of ending after it launches.
-- A message sent from claude.ai arrives as a user message. The child still ends the moment it replies without a tool call, so a monitor prompt must tell it to answer and make its next tool call in the same reply.
-- Anyone who can open your claude.ai account can type into the session, so treat it like the terminal.
-
-### Status
-
-Tested on 2026-11-05 with `claude` 2.1.318:
-
-- **AutoSwarm suite:** 210 tests, and the four new ones pass. The only two failures, both Kimi tests, also fail without the change.
-- **Autobot:** 41 of 41 tests pass.
-- **Live run:** one `claude-code` child started directly with `autoswarm run --remote-control` reached `enabled`, with a `session_url`, before its 18-second turn ended. The run completed normally.
-
-An Autobot cycle on 2026-11-06 dispatched Autobot's session with `--remote-control=autobot <task id>`. That session and the monitor it started both reached `enabled`. The session then ended 3.5 minutes in, after launching both, and its mirror went offline. That's why the step 2 template now keeps it connected. The monitor's session ended at 02:18 UTC, 24 minutes before the worker's call completed: its turn was interrupted during a `Monitor` timer call, and AutoSwarm recorded the call as failed. Where the interrupt came from hasn't been traced.
-
-Not tried yet: the stay-connected template.
-
-## Writing a prompt for a cold session
-
-A child starts with no conversation and no memory. Don't count on the environment to fill that in: `~/.codex/AGENTS.md` may be empty, and codex-handoff's `SessionStart` hook fires only on compact or resume, not on a fresh start. **The message has to carry everything.**
-
-**Deliver it as text.** Use `autoswarm run --input <file>`. Pasting through rendered Markdown can strip backslashes and backticks, and curl your quotes.
-
-**Give exact commands.** A form the hook has already admitted beats a description. A cold run that had to work these out took several rejections:
-
-- **Chain:** every gate after the first needs `previous_correlation_id` set to the last *admitted* ID, or it's rejected with `CHAIN LINKAGE`.
-- **Terminal writes:** the body must be a PowerShell hashtable so the hook can read `enter`, or it's rejected with `WRITE FIELD`:
-  ```powershell
-  -Body (ConvertTo-Json -Compress @{
-  data='your command here'
-  enter=(1 -eq 1)
-  })
-  ```
-- **Pipes:** a pipe in the outer command is `UNDECLARED CHAINING`. Pipes are fine inside `data='...'`.
-- **Terminal reads:** `(Invoke-RestMethod -Uri '<url>/read?tail=N' -Method Get).buffer` prints the raw buffer. A bare call prints a table that hides it.
-- **IDs:** put the time in the prefix and take numbers from one helper. The hook refuses an ID that already has evidence.
-- **ASCII only:** the hook misreads non-ASCII, so such a command can never match its gate.
-
-**State the runtime.** Codex's `exec` JavaScript has no `require`, `crypto`, `TextEncoder` or `process`. Give it any function it needs, such as SHA-256. If `exec` answers `Script running with cell ID N`, it must call `wait` and not start another `exec`.
-
-**Tell it how to judge results:**
-
-- A command was rejected only if the call throws or the output starts with `Command blocked by PreToolUse hook`. Terminal buffers can quote gate text, so searching the whole output miscounts.
-- A closing marker also appears in the terminal's echo of the command, so test for it alone on a line.
-- A failed delete of a rejected gate with `Failed to read ... cannot find the file` is harmless, because the hook already moved it.
-
-**Use full-access flags for Codex workers.** Gate files live outside the worker's folder. On the default sandbox, the first write stalls on an approval that nobody answers, so pass `--sandbox danger-full-access --ask-for-approval never`.
-
-**Watch the size.** A full eight-part investigation ended at 92% of a 258k window with a 21k-character prompt, just under compaction near 95%. Code the model retypes costs context twice and picks up typos, so give retyped code a self-test.
-
-## Writing a monitor prompt
-
-A monitor is a Claude Code child that only reads. Monitors have failed in each of these ways:
-
-- **It ended itself.** A headless session ends the moment it replies without calling a tool, and nothing wakes it. One replied "next check-in in 3 minutes" and was gone. Tell it to write check-ins to a log file and reply only when finished. With Remote Control on, also tell it to answer a message from the user and make its next tool call in the same reply.
-- **It watched the wrong run.** `result.json` appears only when a call ends, so "the newest `result.json`" belongs to some older call. Pass the worker's call ID on the prompt's first line.
-- **It read old artifacts.** Old findings files can look finished. Compare them with `started_at` in the worker's `handle.json`.
-- **It stopped too soon.** One gave up after 30 minutes and reported a stall, while the worker finished 26 minutes later. Set stop conditions: the call's `result.json` exists, the deliverable is complete, or a long period passes with no progress.
-- **It matched its own prompt.** A prompt contains words like `GATE_REJECTED`, so search for strings only a real event contains, such as `Command blocked by PreToolUse hook: HELIOS/1 DENY`.
-- **It miscounted gates.** Rejected gates never reach `evidence/`, so count verdicts in the session ledger.
-- **Its sleep failed.** A monitor's shell is gated too, so `Start-Sleep` needs its own gate each time, plus a tool timeout longer than the sleep. Allow that one exception in the prompt.
-
-File tools aren't gated, so do everything else with them.
-
-## The gate
-
-If your routes run under the Helios command gate, every `Bash` and `PowerShell` call in every child goes through a `PreToolUse` hook.
-
-**Who's gated:**
-
-| Child | How it reaches the gate | Hook limit |
-|---|---|---|
-| Codex | `~/.codex/hooks.json` | Set there (60 s on the proven setup) |
-| Claude Code, workspace with its own `.command-gate` | The global wrapper hands off to that workspace's `.claude/settings.json` hook | Set there (15 s on the proven setup) |
-| Claude Code, any other workspace | The wrapper in `~/.claude/settings.json` runs the global gate | Set there (15 s on the proven setup) |
-| Autobot's own `subprocess` launch | Not gated, and its children still are | n/a |
-
-A "defer" in the global wrapper only passes the call to the workspace's hook. It doesn't mean ungated. Run `coordinator-verify` to see the verdict for each route.
-
-**The handshake:**
-
-1. Run your command. The hook answers `GATE REQUIRED` with a template, the detected tier and the file path.
-2. Write the gate to that path with `command_sha256` empty, then retry.
-3. The hook answers `GATE REJECTED` with the expected SHA. Patch it in and retry.
-
-Gates are single-use, so a repeat run needs a new ID. `helios gate version` and `helios gate scaffold` are virtual commands: they consume no gate, and `scaffold` gives you prefilled segments when a pipe makes them hard to write.
-
-**Traps:**
-
-- A session's first command can take about 14 s against a 15 s limit, and a timed-out hook can fail open. Make the first command harmless, such as `helios gate version`.
-- After a Helios Reset, every older session is denied with `INTEGRITY_DRIFT`, including for gates that are correct. The denial suggests running Reset, which won't clear it. Use a new session. File tools keep working.
-- Never edit your own baseline, and don't route around a denial through another tool. Tell the user and let them choose.
-
-## Reading a run
-
-Check the records yourself before you believe anyone's summary, including your own.
-
-| Question | Where to look |
+| Command | Does |
 |---|---|
-| What was launched, and with which prompt? | `$AUTOSWARM_HOME/calls/<id>/task.json` |
-| Is it running? Which session is it? | `calls/<id>/handle.json`: `started_at`, `native_session_id`, `phase` |
-| How did it end? | `calls/<id>/result.json`: `outcome`, `content`. Written only when the call ends |
-| Gates admitted and rejected | `<gate_root>/session/session-ledger-<native_session_id>.jsonl`: `"verdict":"ALLOW"` and `"verdict":"DENY"` |
-| What a Claude child did | `~/.claude/projects/<slug>/<native_session_id>.jsonl`. The slug follows the real path, through any junctions |
-| What a Codex child did | Codex Claude DevTools, below |
+| `seed` | admits the repository declaration, the delegation and the verifier and transform registrations |
+| `bootstrap` | assembles the runtime, checks every dependency, prints the specialist catalog |
+| `engineer` | gives the Engineer an objective and runs until the loop is stably quiet. Without `--objective` it resumes the active objectives |
+| `run` | runs one task you name yourself, with no reasoning |
+| `status` | objectives, sequences, active projects and the Taskforce, without taking the lease |
+| `objectives` | lists objectives; `--close <id>` closes one of yours once all its work is COMPLETED |
+| `taskforce` | the persistent organization: members, seats and the evidence behind each, outside specialists, assignment history, projects and their teams |
+| `query` | the query layer, as JSON |
 
-**Codex Claude DevTools** normalizes Codex rollouts, including the operations nested inside `exec` cells. Its web API is off in the desktop app until you turn on Settings → General → **Enable server mode**. Then, on port 3456:
+`engineer` and `run` take `--authorize-publication`, which is your publication permit for the verified SOURCE_MODIFYING work of that run, and `--max-wall-seconds`, which bounds how long the loop waits for specialists.
 
-- `GET /api/codex/sessions` lists sessions. Each `id` looks like `yyyy/mm/dd/rollout-*.jsonl`.
-- `GET /api/codex/session?id=<id>` returns the session.
+### Configuration
 
-The useful fields are:
+Machine paths and the specialist catalog live in `config.local.toml` (gitignored):
 
-- `timeline`: agent messages and executions with status and output.
-- `stats`: commands, failures and files written.
-- `tokenUsage.lastTurn.inputTokens`: how full the context is.
-- `runtime.turns[0].settings`: the real model, effort, sandbox and approval policy.
+```toml
+[authority]
+repository_id = "autobot"
+delegation_id = "<your delegation>"
+workspace = '<this checkout>'
+repo_path = '<this checkout>'
 
-Reasoning is encrypted, so read the agent messages for the why. Responses are large, so summarize them rather than printing them. Without the API, `scripts/codex-export.ts` in that repo gives the same data.
+[specialists.<handle>]
+agent  = "claude-code"
+model  = "<model>"
+offers = ["research:investigator", "verification:reviewer"]
 
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| A Codex child stalls at its first gate write | Default sandbox asks for an approval nobody answers | Use the full-access flags in `routes.luna` |
-| `autoswarm calls` shows nothing | The run landed in another AutoSwarm home | Set `AUTOSWARM_HOME` everywhere |
-| `INTEGRITY_DRIFT` on every command | The session is older than the last Reset | Use a new session |
-| `CHAIN LINKAGE` | The gate has no `previous_correlation_id` | Set it to the last admitted ID |
-| `WRITE FIELD: cannot extract enter` | The write body is a JSON string | Use the hashtable form |
-| `UNDECLARED CHAINING` | A pipe or `;` in the outer command | Move it inside `data='...'` |
-| `correlation_id already used` | That ID already has evidence | Use a new number |
-| `Failed to read ... .gate.json` from `apply_patch` | The hook already moved that gate | Ignore it during cleanup |
-| A monitor ended after one check-in | It replied without calling a tool | See [Writing a monitor prompt](#writing-a-monitor-prompt) |
-| `cycle cap` or `daily cap` | Dry cycles count too | Wait, or run fewer cycles |
-| `concurrent cap` on every cycle | Dispatches are still active | See the dead-child limit below |
-| A script stops after its first `uv` line | `uv` is a batch shim | Write `call uv ...` |
-| `tomllib` import error | Python older than 3.11 | Use `uv run --python 3.12` |
-
-## Known limits
-
-- **Backlog prompts cold-start.** A task with no task file gets a one-paragraph prompt from the planner, with no gate or terminal instructions. That's fine for a Claude session, which can read files, but it isn't enough for a cold Codex worker. Don't route such tasks to Codex and expect them to finish.
-- **A dead child holds its slot.** A dispatch leaves `running` only through `result.json`. If a child dies without one, it counts against `max_concurrent` until someone fixes the ledger.
-- **Parked tasks can't be released.** The approval queue has no approve command, and `authorize` only handles resolutions.
-- **Removed tasks stay open.** Deleting a task from `backlog.toml` leaves it `open` in the ledger, so it can still launch unless it's approval-class.
-- **Verdicts are crude.** A `resolved` proposal means the run completed and a findings file appeared after dispatch, even one from an unrelated run. A `review` verdict can't be closed through `authorize` yet.
-- **The timer loop is unproven.** Only one-shot `--once` cycles have run live.
-- **Remote Control has run in one Autobot cycle.** Both Claude sessions connected, but the monitor's session ended early on an interrupt, and the stay-connected task file in step 2 hasn't run yet.
-
-## How a cycle works
-
-Entry: `coordinator` → `load_config()` (merges `config.toml` and `config.local.toml`, then fills paths through `discover.apply_to_config()`) → `run_loop()` → `one_cycle()`. Each cycle, in order:
-
-1. **`dispatch.sync_active_dispatches`:** reads `calls/<id>/result.json` for active dispatches. A completed run parks its task at `awaiting_resolution`, and a failed one goes to `failed`. This comes first so a full cap can't block reading results.
-2. **`safety.run_safety_checks`:** `STOP` file, concurrency cap, cycles per hour, daily ceiling. Returns the free slots, or halts the cycle.
-3. **`ingest.ingest`:** sweeps `backlog.toml` (the only dispatchable tasks), plus AutoSwarm calls, findings files and gate folders as evidence. Malformed JSON is quarantined.
-4. **`resolve.evaluate_awaiting`:** proposes a verdict for each parked task. It never closes one.
-5. **`state.compute_state`:** applies staleness and blocking, then ranks the dispatchable tasks.
-6. **`planner.plan`:** drafts the batch through the `claude` CLI in a live cycle, or by rules in a dry one.
-7. **Validation in `loop.one_cycle`:** drops unknown, non-task and non-open items, and trims auto items to the free slots.
-8. **`safety.gate_batch`:** parks `modify`, `rebaseline`, `reset` and `rewrite` tasks.
-9. **`dispatch.dispatch_batch`:** reserves a dispatch row before launching, so a restart can't launch twice, then runs `autoswarm run`. A dry run logs the intent and launches nothing.
-10. **`ledger.complete_cycle`:** records the counts, and the summary is printed.
-
-No cycle stage marks a task `completed`. Only `authorize`, driven by a named authority, does that.
-
-## Reference
-
-### Entry points
-
-`pyproject.toml` installs four console scripts, each also runnable as `python -m coordinator.<module>`:
-
-| Command | Module | Purpose |
-|---|---|---|
-| `coordinator` | `loop:main` | Run the cycle: `--once`, `--dry-run`, `--config` |
-| `coordinator-discover` | `discover:main` | Dependency readiness: `--check`, `--json`, `--no-config` |
-| `coordinator-authorize` | `authorize:main` | Close tasks: `--list`, `--resolution N --authority <id> --approve/--reject` |
-| `coordinator-verify` | `verify_enforcement:main` | Report whether each route's shell calls reach the gate |
-
-### Layout
-
-```text
-swarm-coordinator/
-├── pyproject.toml         # package and console scripts
-├── config.toml            # committed config: dry by default, machine paths blank
-├── config.local.toml      # gitignored: optional machine overrides
-├── config.*-run.toml      # gitignored: one-cycle live configs
-├── backlog.example.toml   # sample tasks; copy to backlog.toml (gitignored)
-├── coordinator.db         # gitignored: the ledger
-├── docs/                  # ARCHITECTURE.md, SYSTEMS.md, ROUTES.md
-├── src/coordinator/
-│   ├── loop.py                # the cycle and entry point
-│   ├── ingest.py              # backlog and evidence sweep
-│   ├── ledger.py  state.py    # durable state, staleness, ranking
-│   ├── planner.py             # picks the batch and writes prompts
-│   ├── safety.py  authorize.py  # caps, approval parking, task closure
-│   ├── dispatch.py            # autoswarm run, restart safety, result sync
-│   ├── resolve.py             # proposes verdicts, never closes a task
-│   ├── discover.py            # resolves dependencies per route
-│   └── verify_enforcement.py  # per-route gate report
-└── tests/test_coordinator.py
+[taskforce]
+established_threshold = 3
 ```
 
-### Systems it depends on
+Each `[specialists.<handle>]` table is one engineering worker — its stable identity, how it is routed, and the capability and role pairs it may do. Being in the catalog makes a specialist available to projects; it does not make it a Taskforce member. `[taskforce]` configures the persistent organization. The Engineer's model is `[engineer] model`, else `[models] planner`.
 
-Autobot discovers these at runtime and vendors none of them. What's required depends on your enabled routes:
+### Tests
 
-| Program | Role | Required when |
-|---|---|---|
-| AutoSwarm | Execution engine (`autoswarm run`) | Always |
-| `claude` / `codex` CLI | The route's agent | That route is enabled |
-| codex-handoff | Restores Codex state across compaction | A codex route is enabled |
-| Codex Claude DevTools | `codex-export.v1` reader and session API | A codex route is enabled |
-| Helios command gate | Gates every shell command | Always (the gate is on) |
-| CODEAPI, Akashic, hdb/HeliosEvidenceCatalog | Terminal routing, gate installer, evidence database | Reported, never block |
+```powershell
+$env:PYTHONPATH = 'src'
+python -m pytest tests/autobot -q
+python -m pytest tests/test_coordinator.py -q
+```
 
-A route's workspace is the child's `--cwd`, not a dependency. It's resolved at runtime: a `claude-code` route uses the parent of `gate_root`, and a `codex` route uses the latest AutoSwarm session's `cwd`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/SYSTEMS.md](docs/SYSTEMS.md) and [docs/ROUTES.md](docs/ROUTES.md).
+## Documentation
 
-### Safety
+| Read | For |
+|---|---|
+| [docs/architecture/orchestration](docs/architecture/orchestration/README.md) | the Engineer, projects and teams, the Taskforce, staffing, supervision, the query model |
+| [docs/architecture/chapter0](docs/architecture/chapter0/README.md) to [chapter4](docs/architecture/chapter4/README.md) | the authority plane: principals, capabilities, contracts, the runtime, receipts, verification |
+| [docs/implementation](docs/implementation) | production pilot records and phase handoffs |
+| [docs/LEGACY_COORDINATOR.md](docs/LEGACY_COORDINATOR.md) | the legacy coordinator |
 
-Dispatch is off until `safety.dry_run = false`. Even then, caps (`max_concurrent`, `max_dispatches_per_cycle`, `max_cycles_per_hour`, `daily_ceiling`), a `STOP` file and approval parking bound what a cycle can do. `require_approval` task classes never launch on their own.
+## Layout
+
+```text
+src/intelligence/      the Engineer, projects, the Taskforce, the query layer, the production runtime
+src/autobot/           the authority plane
+src/contract_library/  canonical bytes, digests and schema validation
+src/coordinator/       the legacy coordinator
+tests/autobot/         authority and intelligence suites
+tests/test_coordinator.py
+docs/architecture/     chapters 0 to 4 and orchestration
+```
+
+Runtime state is never committed: `autobot.db` (the authority ledger), `intelligence.db` (planning, project and Taskforce state), `store/` (content-addressed bytes).
+
+## The legacy coordinator
+
+Autobot began as a backlog coordinator: it read a curated backlog, had a planner pick tasks, launched each through AutoSwarm and parked the result for a human to close. That code is `src/coordinator`, with the `coordinator`, `coordinator-discover`, `coordinator-authorize` and `coordinator-verify` console scripts, and it still runs.
+
+It is separate from the current runtime. Nothing in `src/autobot` or `src/intelligence` imports it, it has its own ledger (`coordinator.db`), and the `[routes.*]`, `[caps]`, `[cooldowns]`, `[triggers]` and `[safety]` sections of `config.toml` are its configuration. One setting is shared: `[models] planner` also names the Engineer's model when `[engineer] model` is not set. Its guide, including how to write prompts for cold sessions and how the command gate behaves, is [docs/LEGACY_COORDINATOR.md](docs/LEGACY_COORDINATOR.md).
 
 ## License
 

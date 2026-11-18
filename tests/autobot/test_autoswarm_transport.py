@@ -320,9 +320,10 @@ class LaunchProjectionTests(unittest.TestCase):
         captured = {}
 
         def mock_run(argv, *, input=None, capture_output=False,
-                     text=False, env=None):
+                     text=False, env=None, encoding=None, errors=None):
             captured["argv"] = argv
             captured["input"] = input
+            captured["encoding"] = encoding
             captured["env_home"] = env.get("AUTOSWARM_HOME") if env else None
 
             class R:
@@ -346,3 +347,217 @@ class LaunchProjectionTests(unittest.TestCase):
         self.assertEqual(captured["input"],
                          "Investigate the logging layer")
         self.assertEqual(captured["env_home"], str(self.home))
+        # The pipe is UTF-8 in both directions, whatever the locale.
+        self.assertEqual(captured["encoding"], "utf-8")
+
+
+class _Recorder:
+    """Stands in for subprocess.run: records every argv, succeeds."""
+
+    def __init__(self, returncode=0):
+        self.calls = []
+        self.returncode = returncode
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append(list(argv))
+        outer = self
+
+        class R:
+            returncode = outer.returncode
+            stdout = json.dumps({"ok": outer.returncode == 0, "data": {
+                "call_id": "call_" + "a" * 32,
+                "native_session_id": "sess-test"},
+                "error": {"code": "approval_not_pending",
+                          "message": "no longer pending"}})
+            stderr = "boom"
+        return R()
+
+    def git(self):
+        return [c for c in self.calls if c and c[0] == "git"]
+
+    def cli(self):
+        return [c for c in self.calls if not (c and c[0] == "git")]
+
+
+class PermissionRequestTests(unittest.TestCase):
+    """The transport reads a session's pending permission requests from
+    AutoSwarm's own records and relays the caller's decision; it never
+    originates one."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmpdir.name)
+        self.transport = AutoSwarmTransport(
+            _MockStore(), str(self.home), str(self.home),
+            autoswarm_argv=["autoswarm-x"])
+        self.call_id = "call_" + "b" * 32
+        self.directory = self.home / "calls" / self.call_id
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _approval(self, name, request=True, **extra):
+        path = self.directory / "approvals" / ("approval_" + name * 32)
+        path.mkdir(parents=True)
+        if request is True:
+            _write_json(path / "request.json", {
+                "kind": "approval_required",
+                "request_id": "approval_" + name * 32,
+                "native_request": {"subtype": "can_use_tool",
+                                   "tool_name": "Read", "input": {}}})
+        elif request:
+            (path / "request.json").write_text(request, encoding="utf-8")
+        for filename in extra:
+            _write_json(path / (filename + ".json"), extra[filename])
+        return "approval_" + name * 32
+
+    def test_only_undecided_requests_of_a_live_call_are_pending(self):
+        self.assertEqual(self.transport.pending_requests(self.call_id), [])
+        open_id = self._approval("1")
+        self._approval("2", decision={"decision": "allow"})
+        self._approval("3", resolution={"state": "replied"})
+        self._approval("4", request=False)       # no request record yet
+        self._approval("5", request='{"kind": ')  # still being written
+        pending = self.transport.pending_requests(self.call_id)
+        self.assertEqual([r["request_id"] for r in pending], [open_id])
+        _write_json(self.directory / "result.json", {"outcome": "completed"})
+        self.assertEqual(self.transport.pending_requests(self.call_id), [])
+
+    def test_a_cancelled_call_has_nothing_pending(self):
+        self._approval("1")
+        _write_json(self.directory / "cancel.json", {"at": "now"})
+        self.assertEqual(self.transport.pending_requests(self.call_id), [])
+
+    def test_a_decision_is_relayed_for_one_request_once(self):
+        request_id = self._approval("1")
+        recorder = _Recorder()
+        with patch("autobot.autoswarm_transport.subprocess.run", recorder):
+            self.transport.decide_request(
+                self.call_id, request_id, "allow", "inside the scope")
+            self.transport.decide_request(self.call_id, request_id, "deny")
+        allow, deny = recorder.calls
+        self.assertEqual(allow, [
+            "autoswarm-x", "approve", self.call_id, request_id,
+            "--scope", "once", "--message", "inside the scope"])
+        self.assertEqual(deny, [
+            "autoswarm-x", "deny", self.call_id, request_id,
+            "--scope", "once"])
+        with self.assertRaises(ValueError):
+            self.transport.decide_request(self.call_id, request_id,
+                                          "maybe")
+        with patch("autobot.autoswarm_transport.subprocess.run",
+                   _Recorder(returncode=1)):
+            with self.assertRaises(RuntimeError):
+                self.transport.decide_request(self.call_id, request_id,
+                                              "allow")
+
+    def test_the_base_contract_asks_nothing(self):
+        base = Transport()
+        self.assertEqual(base.pending_requests(self.call_id), [])
+        with self.assertRaises(NotImplementedError):
+            base.decide_request(self.call_id, "approval_x", "allow")
+
+
+class WorkspaceIsolationTests(unittest.TestCase):
+    """A specialist given a frozen source revision works in an isolated
+    worktree at it — SOURCE_MODIFYING always, READ_ONLY when the manifest
+    carries one — and the worktree is removed only by this transport, only
+    when asked, and only if it is one this transport made."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmpdir.name) / "home"
+        self.workspace = Path(self.tmpdir.name) / "ws"
+        self.home.mkdir()
+        self.workspace.mkdir()
+        self.store = _MockStore()
+        self.projection = self.store.put(json.dumps({
+            "engineering_context": {"guidance": "Read and report."}
+        }).encode("utf-8"))
+        self.transport = AutoSwarmTransport(
+            self.store, str(self.home), str(self.workspace),
+            autoswarm_argv=["autoswarm-x"])
+        self.call_id = "call_" + "c" * 32
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _manifest(self, finalization_class, source_revision=None):
+        constraints = {"finalization_class": finalization_class,
+                       "evidence_requirements": ["EXECUTION_LIFECYCLE"]}
+        if source_revision:
+            constraints["source_revision"] = source_revision
+        return {"call_id": self.call_id,
+                "projection_address": self.projection,
+                "provider_assignment": {"provider": "claude-code",
+                                        "model": "sonnet",
+                                        "selected_by": "agent_factory"},
+                "constraints": constraints}
+
+    def _launch(self, manifest):
+        recorder = _Recorder()
+        with patch("autobot.autoswarm_transport.subprocess.run", recorder):
+            self.transport.launch_manifest("sha256:" + "0" * 64, manifest)
+        run = recorder.cli()[0]
+        return recorder, run[run.index("--cwd") + 1]
+
+    def test_read_only_with_a_frozen_revision_is_isolated(self):
+        revision = "a" * 40
+        recorder, cwd = self._launch(self._manifest("READ_ONLY", revision))
+        git = recorder.git()
+        self.assertEqual(len(git), 1)
+        self.assertEqual(git[0][3:6], ["worktree", "add", "--detach"])
+        self.assertEqual(git[0][-1], revision)
+        self.assertEqual(git[0][-2], cwd)
+        self.assertEqual(Path(cwd).parent, self.workspace)
+        self.assertTrue(Path(cwd).name.startswith("autobot-wt-"))
+
+    def test_read_only_without_a_revision_uses_the_shared_workspace(self):
+        recorder, cwd = self._launch(self._manifest("READ_ONLY"))
+        self.assertEqual(recorder.git(), [])
+        self.assertEqual(cwd, str(self.workspace))
+
+    def test_source_modifying_is_always_isolated(self):
+        recorder, cwd = self._launch(self._manifest("SOURCE_MODIFYING"))
+        self.assertEqual(recorder.git()[0][-1], "refs/heads/main")
+        self.assertNotEqual(cwd, str(self.workspace))
+
+    def test_a_relaunch_reuses_the_calls_workspace(self):
+        given = str(self.workspace / "autobot-wt-first")
+        _write_json(self.home / "calls" / self.call_id / "task.json",
+                    {"call_id": self.call_id, "workspace": given})
+        recorder, cwd = self._launch(
+            self._manifest("SOURCE_MODIFYING", "b" * 40))
+        self.assertEqual(recorder.git(), [])
+        self.assertEqual(cwd, given)
+
+    def test_release_removes_only_its_own_worktree(self):
+        task = self.home / "calls" / self.call_id / "task.json"
+        mine = self.workspace / "autobot-wt-mine"
+        mine.mkdir()
+
+        def release():
+            recorder = _Recorder()
+            with patch("autobot.autoswarm_transport.subprocess.run",
+                       recorder):
+                return self.transport.release_workspace(self.call_id), \
+                    recorder.git()
+
+        self.assertEqual(release(), (False, []))            # no call record
+        _write_json(task, {"workspace": str(mine)})
+        released, git = release()
+        self.assertTrue(released)
+        self.assertEqual(git[0][3:6], ["worktree", "remove", "--force"])
+        self.assertEqual(git[0][-1], str(mine))
+        # The shared workspace itself is never removed.
+        _write_json(task, {"workspace": str(self.workspace)})
+        self.assertEqual(release(), (False, []))
+        # Nor a directory that merely looks like one of ours elsewhere.
+        elsewhere = Path(self.tmpdir.name) / "autobot-wt-elsewhere"
+        elsewhere.mkdir()
+        _write_json(task, {"workspace": str(elsewhere)})
+        self.assertEqual(release(), (False, []))
+        # Nor one that no longer exists.
+        _write_json(task, {"workspace": str(self.workspace
+                                            / "autobot-wt-gone")})
+        self.assertEqual(release(), (False, []))

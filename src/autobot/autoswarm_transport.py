@@ -57,6 +57,9 @@ class AutoSwarmTransport(Transport):
     ``autoswarm_argv`` is the CLI invocation (default: the uv-tool
     installed autoswarm)."""
 
+    # The name prefix of every isolated worktree this transport creates.
+    WORKTREE_PREFIX = "autobot-wt-"
+
     def __init__(self, store, autoswarm_home, workspace, *,
                  gate_root=None, session_export_dir=None,
                  autoswarm_argv=None):
@@ -75,9 +78,14 @@ class AutoSwarmTransport(Transport):
     def _cli(self, args, *, stdin_text=None):
         env = dict(os.environ)
         env["AUTOSWARM_HOME"] = str(self._home)
+        # AutoSwarm reads and writes its standard streams as UTF-8
+        # whatever the platform's locale is; so does this side, or a
+        # prompt with a character outside the locale's code page would
+        # reach the provider as different bytes than were frozen.
         result = subprocess.run(
             [*self._argv, *args],
-            input=stdin_text, capture_output=True, text=True, env=env)
+            input=stdin_text, capture_output=True, text=True, env=env,
+            encoding="utf-8", errors="replace")
         if result.returncode != 0:
             payload = None
             try:
@@ -137,12 +145,28 @@ class AutoSwarmTransport(Transport):
             model = manifest.get("provider_assignment", {}).get("model")
             workspace = str(self._workspace)
             constraints = manifest.get("constraints", {})
-            if constraints.get("finalization_class") == "SOURCE_MODIFYING":
+            # SOURCE_MODIFYING work always runs in an isolated worktree at
+            # its frozen source revision. READ_ONLY work does too when the
+            # manifest carries one: the reader then sees exactly that
+            # revision, never whatever a shared checkout's files hold.
+            source_rev = constraints.get("source_revision")
+            if constraints.get("finalization_class") == "SOURCE_MODIFYING" \
+                    and not source_rev:
+                source_rev = "refs/heads/main"
+            # A relaunch of a call AutoSwarm already holds (a restart
+            # between dispatch and adoption) reuses the workspace that
+            # call was given; a second worktree is never created for it.
+            existing = None
+            try:
+                existing = _read_json(self._call_dir(call_id) / "task.json")
+            except (ValueError, OSError):
+                existing = None
+            if isinstance(existing, dict) and existing.get("workspace"):
+                workspace = str(existing["workspace"])
+            elif source_rev:
                 import tempfile as _tf
-                source_rev = constraints.get(
-                    "source_revision", "refs/heads/main")
                 worktree_dir = Path(_tf.mkdtemp(
-                    prefix="autobot-wt-", dir=str(self._workspace)))
+                    prefix=self.WORKTREE_PREFIX, dir=str(self._workspace)))
                 subprocess.run(
                     ["git", "-C", str(self._workspace), "worktree", "add",
                      "--detach", str(worktree_dir), source_rev],
@@ -237,6 +261,69 @@ class AutoSwarmTransport(Transport):
         if isinstance(content, str) and content:
             collected["artifact_bytes"] = content.encode("utf-8")
         return collected
+
+    def release_workspace(self, call_id):
+        """Remove the isolated worktree this transport created for one
+        call, once the caller says the call's work has settled. Only a
+        directory this transport made (its own prefix, directly under its
+        workspace, recorded by AutoSwarm as the call's workspace) is ever
+        removed; the shared workspace itself never is. Returns whether a
+        worktree was removed."""
+        task = _read_json(self._call_dir(call_id) / "task.json")
+        if not isinstance(task, dict) or not task.get("workspace"):
+            return False
+        path = Path(task["workspace"])
+        if not path.name.startswith(self.WORKTREE_PREFIX):
+            return False
+        if os.path.normcase(str(path.parent)) != os.path.normcase(
+                str(self._workspace)):
+            return False
+        if not path.is_dir():
+            return False
+        proc = subprocess.run(
+            ["git", "-C", str(self._workspace), "worktree", "remove",
+             "--force", str(path)], capture_output=True, text=True)
+        return proc.returncode == 0
+
+    def pending_requests(self, call_id):
+        """The session's undecided native permission requests, read from
+        AutoSwarm's own durable records
+        (``calls/<call_id>/approvals/approval_*/request.json``): a
+        request is pending while it has neither a decision nor a
+        resolution and the call has neither ended nor been cancelled. A
+        record still being written is simply not seen until the next
+        look."""
+        directory = self._call_dir(call_id)
+        if (directory / "result.json").is_file() \
+                or (directory / "cancel.json").is_file():
+            return []
+        approvals = directory / "approvals"
+        if not approvals.is_dir():
+            return []
+        pending = []
+        for path in sorted(approvals.glob("approval_*")):
+            if (path / "decision.json").is_file() \
+                    or (path / "resolution.json").is_file():
+                continue
+            try:
+                request = _read_json(path / "request.json")
+            except (ValueError, OSError):
+                continue
+            if isinstance(request, dict) and request.get("request_id"):
+                pending.append(request)
+        return pending
+
+    def decide_request(self, call_id, request_id, decision, reason=""):
+        """Relay the caller's decision on one request through the
+        AutoSwarm CLI (``approve`` / ``deny``, scope ``once``). AutoSwarm
+        owns the record of the decision; this adapter originates none."""
+        if decision not in ("allow", "deny"):
+            raise ValueError("decision must be 'allow' or 'deny'")
+        args = ["approve" if decision == "allow" else "deny",
+                call_id, request_id, "--scope", "once"]
+        if reason:
+            args += ["--message", reason]
+        return self._cli(args)
 
     def _collect_governance(self, session_id):
         """obj-12: individual Helios command-governance decision files

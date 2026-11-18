@@ -1,7 +1,7 @@
 """The end-to-end autonomous pilot (the CE phase's §15/§16 proof).
 
-Three contracts driven by an actual Chief Engineer reasoning cycle —
-no scripted call order, only rules over authoritative state:
+Three contracts driven by an actual Engineer reasoning cycle — no
+scripted call order, only rules over authoritative state:
 
   A (INVESTIGATE, READ_ONLY): a specialist investigates and returns a
   structured finding. B (implementation, SOURCE_MODIFYING): proposed by
@@ -34,10 +34,11 @@ from autobot.models import instant
 from fake_transport import FakeTransport
 from fake_verifier import FakeVerifierRunner, bound_receipt_bytes
 from intelligence import (
-    AgentFactory,
     ChiefEngineerPolicy,
     ContinuousDriver,
     PlanStore,
+    SpecialistPool,
+    TaskforceSeatResolver,
 )
 
 # The frozen record family requires COMMAND_GOVERNANCE +
@@ -296,11 +297,11 @@ class PilotTestCase(unittest.TestCase):
         self.repo = self.dir / "repo"
         self.sha_old, self.sha_new = support.init_git_repo(self.repo)
         self.transport = ScriptedTransport()
-        self.factory = AgentFactory()
+        self.pool = SpecialistPool()
         for capability, role in (("research", "investigator"),
                                  ("software_implementation", "builder"),
                                  ("verification", "reviewer")):
-            self.factory.register(capability, role, "fake")
+            self.pool.register(capability, role, "fake")
         self.plan = PlanStore(self.dir / "intelligence.db")
         self.driver = None
 
@@ -321,7 +322,7 @@ class PilotTestCase(unittest.TestCase):
         return ContinuousDriver(
             self.plan, self.rt.registry, self.rt.sequencer, self.rt.store,
             self.env, self.clock, policy, self.transport,
-            runner, self.factory,
+            runner, self.pool,
             self.dir / "autobot.db", repo_path=self.repo,
             repository_context="the pilot repository, branch main",
             holder=holder)
@@ -521,37 +522,80 @@ class AutonomousPilotTests(PilotTestCase):
             (seq_id,)).fetchone()["n"]
         self.assertEqual(attempts, 1)
 
-    def test_seat_selection_belongs_to_the_agent_factory(self):
-        """cap-14, adversarially pinned: the Taskforce asks for WHAT it
-        needs (capability, role) and dictates no provider or model; the
-        Agent Factory alone answers WHICH seat, and the persisted seat
-        records that principal."""
+    def test_who_executes_is_never_part_of_the_work_request(self):
+        """cap-14, adversarially pinned: the engineering request is WHAT
+        is needed (capability, role) and dictates no provider, model or
+        specialist. WHO is a project assignment: with nobody retained the
+        Taskforce resolves nobody, the Project Manager's explicit
+        selection (here the standing rule's) is what the pump applies,
+        the persisted execution slot records the registered cap-14
+        principal, and the assignment records the decision and its
+        reasons — and creates no Taskforce membership."""
         requests = []
+        real_resolve = TaskforceSeatResolver.resolve
 
-        class SpyFactory(AgentFactory):
-            def select(self, capability, role=None, providers=None):
-                requests.append({"capability": capability, "role": role,
-                                 "providers": providers})
-                return AgentFactory.select(self, capability, role=role,
-                                           providers=providers)
+        def spy(resolver, capability, role=None, environment=None,
+                subsystem=None, directive=None, independent_of=None):
+            requests.append({"capability": capability, "role": role,
+                             "directive": directive})
+            return real_resolve(resolver, capability, role=role,
+                                environment=environment,
+                                subsystem=subsystem, directive=directive,
+                                independent_of=independent_of)
 
-        self.factory = SpyFactory()
-        self.factory.register("software_implementation", "builder", "fake")
+        self.pool = SpecialistPool()
+        self.pool.register("software_implementation", "builder", "fake")
         self.transport.scripts = {"builder": [result()]}
         self.plan.add_objective("obj-gadget", "Build the gadget.", "you",
                                 instant(self.clock.now()))
         self.driver = self._driver(RepairPolicy())
-        self.driver.run_until_stable()
-        self.assertEqual(requests, [{"capability":
-                                     "software_implementation",
-                                     "role": "builder",
-                                     "providers": None}])
+        TaskforceSeatResolver.resolve = spy
+        try:
+            self.driver.run_until_stable()
+        finally:
+            TaskforceSeatResolver.resolve = real_resolve
+        assignment = self.plan.conn.execute(
+            "SELECT * FROM project_assignments").fetchone()
+        # One resolution: the pump applying the Project Manager's
+        # decision. The request itself is the capability and the role.
+        self.assertEqual(requests, [{
+            "capability": "software_implementation", "role": "builder",
+            "directive": {"mode": "outside_specialist",
+                          "specialist_id": assignment["specialist_id"],
+                          "previous_specialist_id": None}}])
         seat = self.plan.conn.execute(
             "SELECT provider, model, selected_by FROM seats").fetchone()
         self.assertEqual((seat["provider"], seat["selected_by"]),
                          ("fake", "agent_factory"))
+        self.assertEqual(assignment["selection_path"],
+                         "OUTSIDE_SPECIALIST")
+        self.assertEqual(assignment["decided_by"], "PROJECT_MANAGER")
+        self.assertEqual(assignment["standing_at_assignment"], "OUTSIDE")
+        self.assertEqual(
+            json.loads(assignment["selected_reason"])["request"]
+            ["capability"], "software_implementation")
+        decision = json.loads(self.plan.proposal(
+            assignment["assignment_decision"])["body"])
+        self.assertEqual(decision["class"], "ASSIGN_SPECIALIST")
+        self.assertEqual(decision["staffing"]["specialist_id"],
+                         assignment["specialist_id"])
+        for table in ("taskforce_memberships", "taskforce_seats"):
+            self.assertEqual(self.plan.conn.execute(
+                "SELECT COUNT(*) AS n FROM %s" % table).fetchone()["n"], 0)
+        # The frozen contract never learned who.
+        for row in self.rt.db.conn.execute(
+                "SELECT content_address FROM records").fetchall():
+            payload = self.rt.store.get(
+                row["content_address"]).decode("utf-8")
+            self.assertNotIn(assignment["specialist_id"], payload)
 
     def test_independent_ready_contracts_allocate_concurrently(self):
+        """Two independent READY contracts are staffed in ONE sweep —
+        onto two specialists: a seat is never dispatched into two
+        executions at once (max_concurrent 1), so concurrency is the
+        organization's capacity, not one worker run twice."""
+        self.pool.register("research", "investigator", "fake",
+                           handle="fake-second")
         self.transport.scripts = {
             "investigator": [result(), result()],
         }
@@ -570,6 +614,8 @@ class AutonomousPilotTests(PilotTestCase):
         launched = [l["call_id"] for l in self.transport.launch_log]
         self.assertEqual(sorted(launched),
                          sorted(a["call_id"] for a in allocated))
+        self.assertEqual(
+            len({a["specialist_id"] for a in allocated}), 2)
 
 
 class MissingResultTests(PilotTestCase):
@@ -607,7 +653,7 @@ class MissingResultTests(PilotTestCase):
         try:
             taskforce = Taskforce(
                 self.plan, seq, self.rt.store, self.transport,
-                FakeVerifierRunner(seq), self.factory, self.clock, ro)
+                FakeVerifierRunner(seq), self.pool, self.clock, ro)
             self.transport.scripts = {"builder": []}  # no terminal result
             before = self.rt.db.conn.execute(
                 "SELECT COUNT(*) AS n FROM transition_journal"

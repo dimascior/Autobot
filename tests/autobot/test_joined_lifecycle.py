@@ -28,7 +28,7 @@ from autobot.witness_semantics import extract_facts
 from autobot.witnesses import WITNESS_KINDS
 from contract_library import content_address
 from intelligence import (
-    AgentFactory,
+    SpecialistPool,
     ChiefEngineerPolicy,
     ContinuousDriver,
     PlanStore,
@@ -200,8 +200,8 @@ class JoinedLifecycleTests(unittest.TestCase):
         self.rt.sequencer.acquire_lease(ttl_seconds=360000)
         self.env = support.intelligence_environment()
         self.plan = PlanStore(self.dir / "intelligence.db")
-        self.factory = AgentFactory()
-        self.factory.register("research", "builder", "codex")
+        self.pool = SpecialistPool()
+        self.pool.register("research", "builder", "codex")
 
     def tearDown(self):
         self.plan.close()
@@ -235,7 +235,7 @@ class JoinedLifecycleTests(unittest.TestCase):
         return ContinuousDriver(
             self.plan, self.rt.registry, self.rt.sequencer, self.rt.store,
             self.env, self.clock, policy, transport,
-            runner, self.factory,
+            runner, self.pool,
             self.dir / "autobot.db",
             holder="joined-lifecycle-test")
 
@@ -257,7 +257,7 @@ class JoinedLifecycleTests(unittest.TestCase):
 
     def test_taskforce_through_real_cli_to_completed(self):
         """One continuous path:
-        Chief Engineer → Taskforce → Agent Factory → Sequencer →
+        Chief Engineer → Taskforce (staffing) → Sequencer →
         PromptProjection → ExecutionManifest → real AutoSwarm CLI →
         engine.start_call → manifest validation → manifest persistence →
         ExecutionClaimRecord → task.json → fixture provider →
@@ -347,10 +347,23 @@ class JoinedLifecycleTests(unittest.TestCase):
             (att_id,)).fetchall()
         self.assertTrue(len(obj11_rows) >= 1,
                         "No obj-11 witness admitted")
-        obj11_bytes = self.rt.store.get(obj11_rows[0]["content_sha256"])
-        obj11_facts = extract_facts("obj-11", obj11_bytes)
-        self.assertEqual(obj11_facts.get("call_id"), call_ids[0],
-                         "obj-11 call_id fact != Sequencer call_id")
+        # Two obj-11 producer records are admitted for one call: the task
+        # record (adoption, t-a03) and the result record (collection).
+        # Every one names the Sequencer's call; exactly the task record
+        # carries the prompt the child received. The rows come back in
+        # content-hash order, which differs run to run, so the witness is
+        # selected by the fact it carries, never by position.
+        all_facts = [extract_facts("obj-11",
+                                   self.rt.store.get(r["content_sha256"]))
+                     for r in obj11_rows]
+        for facts in all_facts:
+            self.assertEqual(facts.get("call_id"), call_ids[0],
+                             "obj-11 call_id fact != Sequencer call_id")
+        with_prompt = [f for f in all_facts if f.get("prompt_sha256")]
+        self.assertEqual(len(with_prompt), 1,
+                         "exactly one obj-11 witness (the provider task"
+                         " record) carries the received-prompt identity")
+        obj11_facts = with_prompt[0]
 
         # === 7. Prompt identity / role-transform (Phase 6-7) ===
         prompt_sha = obj11_facts.get("prompt_sha256")

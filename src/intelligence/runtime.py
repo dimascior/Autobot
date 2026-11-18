@@ -1,20 +1,42 @@
-"""The production authority runtime: assembly and lifecycle.
+"""The production runtime: assembly and lifecycle.
 
 Constructs the complete ContinuousDriver stack from configuration,
-acquiring leases and wiring every component the joined lifecycle proof
-exercised — Database, Store, Registry, Sequencer, PlanStore,
-AgentFactory, AutoSwarmTransport, ProductionVerifierRunner and the
+acquiring leases and wiring every component — Database, Store, Registry,
+Sequencer, PlanStore, the specialist catalog (SpecialistPool),
+AutoSwarmTransport, ProductionVerifierRunner and the
 RepositoryEnvironment — into a single object whose public surface is:
 
     runtime = AuthorityRuntime.from_config(config)
     runtime.add_objective(...)
-    runtime.run_until_stable()
+    runtime.run(policy)            # waits for work in flight
     runtime.status()
     runtime.close()
 
-No new semantics: every component is the same instance the deterministic
-proof already exercised. The runtime's job is assembly and lifecycle
-management — connecting configuration to constructors.
+No new semantics: every component is the same class the deterministic
+suites exercise. The runtime's job is assembly and lifecycle management —
+connecting configuration to constructors.
+
+The specialist catalog comes from configuration:
+
+    [specialists.<handle>]
+    agent  = "claude-code"          # the provider AutoSwarm launches
+    model  = "sonnet"
+    offers = ["research:investigator", "documentation:builder"]
+
+    [taskforce]
+    established_threshold = 3
+
+Each ``[specialists.<handle>]`` table is one engineering worker: a stable
+identity, how it is routed, and the (capability, role) pairs it may do.
+Being in the catalog makes a specialist AVAILABLE to projects — an
+outside specialist a Project Manager can select. It does not make it a
+Taskforce member: membership exists only in ``intelligence.db``, earned
+by an explicit retention decision. ``[taskforce]`` configures the
+persistent organization itself.
+
+Two earlier spellings are still read: ``[taskforce.specialists.<handle>]``
+(the same table under ``[taskforce]``) and ``[authority_routes.<name>]``
+(``<capability> = "<role>"`` keys, each route one worker named after it).
 """
 
 import json
@@ -36,14 +58,77 @@ from autobot import Database, Registry, Sequencer, Store, SystemClock, instant
 from autobot.autoswarm_transport import AutoSwarmTransport
 from autobot.verifier_runner import ProductionVerifierRunner
 
+from . import query
+from .capabilities import CAPABILITIES
 from .compiler import RepositoryEnvironment
 from .driver import ContinuousDriver
 from .planstore import PlanStore, readonly_view
-from .roles import AgentFactory
+from .workforce import SpecialistPool
+
+_ROUTE_KEYS = ("agent", "model", "provider_args", "workspace",
+               "remote_control", "effort")
 
 
 def _which(name):
     return shutil.which(name)
+
+
+def build_pool(file_config):
+    """The specialist catalog from configuration (see the module
+    docstring for the accepted forms). Registration order is
+    configuration order, so every listing over it is reproducible."""
+    pool = SpecialistPool()
+    specialists = {}
+    for section in (file_config.get("specialists", {}),
+                    file_config.get("taskforce", {}).get("specialists",
+                                                         {})):
+        if not isinstance(section, dict):
+            raise ConfigError("[specialists] must be a table of workers")
+        for handle, spec in section.items():
+            specialists.setdefault(handle, spec)
+    for handle, spec in specialists.items():
+        if not isinstance(spec, dict):
+            continue
+        agent = spec.get("agent") or spec.get("provider")
+        if not agent:
+            raise ConfigError("[specialists.%s] needs an agent" % handle)
+        offers = spec.get("offers", [])
+        if not (isinstance(offers, list) and offers):
+            raise ConfigError(
+                "[specialists.%s] offers must list at least one"
+                " \"capability:role\"" % handle)
+        for offer in offers:
+            capability, _sep, role = str(offer).partition(":")
+            if not role or capability not in CAPABILITIES:
+                raise ConfigError(
+                    "[specialists.%s] offer %r is not \"capability:role\""
+                    " over the capability vocabulary" % (handle, offer))
+            pool.register(
+                capability, role, agent, model=spec.get("model"),
+                handle=handle, effort=spec.get("effort"),
+                tool_requirements=spec.get("tool_requirements", ()),
+                context_budget=spec.get("context_budget"),
+                expected_output=spec.get("expected_output", "artifacts"),
+                origin=spec.get("origin", "outside_pool"),
+                max_concurrent=int(spec.get("max_concurrent", 1)))
+    routes = file_config.get("authority_routes",
+                             file_config.get("routes", {}))
+    for route_name, route_config in routes.items():
+        if not isinstance(route_config, dict):
+            continue
+        agent = route_config.get("agent", route_name)
+        model = route_config.get("model", None)
+        for capability, role_map in route_config.items():
+            if capability in _ROUTE_KEYS:
+                continue
+            if isinstance(role_map, str):
+                pool.register(capability, role_map, agent, model=model,
+                              handle=route_name)
+            elif isinstance(role_map, dict):
+                for role, provider in role_map.items():
+                    pool.register(capability, role, provider, model=model,
+                                  handle="%s/%s" % (route_name, provider))
+    return pool
 
 
 class ConfigError(Exception):
@@ -188,29 +273,38 @@ def _admitted_ids(db, store, kind, id_key):
 
 
 class AuthorityRuntime:
-    """The assembled production authority runtime.
+    """The assembled production runtime.
 
-    All components are the same classes the joined lifecycle proof
-    exercised: Database, Store, Registry, Sequencer, PlanStore,
-    AgentFactory, AutoSwarmTransport, ProductionVerifierRunner,
-    RepositoryEnvironment, ContinuousDriver. The runtime only
-    connects configuration to constructors."""
+    All components are the same classes the deterministic suites
+    exercise: Database, Store, Registry, Sequencer, PlanStore, the
+    Taskforce's SpecialistPool, AutoSwarmTransport,
+    ProductionVerifierRunner, RepositoryEnvironment, ContinuousDriver.
+    The runtime only connects configuration to constructors."""
 
     def __init__(self, *, db, store, registry, sequencer, plan,
-                 factory, transport, runner, environment, clock,
+                 pool, transport, runner, environment, clock,
                  authority_db_path, repo_path=None,
                  holder="autobot-authority",
-                 lease_seconds=3600):
+                 lease_seconds=3600, established_threshold=3,
+                 engineer_model=None, repository_context=None,
+                 isolate_read_only=True, chief_engineer_model=None):
+        self.isolate_read_only = isolate_read_only
         self.db = db
         self.store = store
         self.registry = registry
         self.sequencer = sequencer
         self.plan = plan
-        self.factory = factory
+        self.pool = pool
         self.transport = transport
         self.runner = runner
         self.environment = environment
         self.clock = clock
+        self.established_threshold = established_threshold
+        # The model the Engineer reasons with (``chief_engineer_model`` is
+        # the name it had before the organizational model was aligned).
+        self.engineer_model = engineer_model or chief_engineer_model
+        self.chief_engineer_model = self.engineer_model
+        self.repository_context = repository_context
         self._authority_db_path = authority_db_path
         self._repo_path = repo_path
         self._holder = holder
@@ -242,8 +336,9 @@ class AuthorityRuntime:
 
         paths = file_config.get("paths", {})
         authority_section = file_config.get("authority", {})
-        routes_section = file_config.get("authority_routes",
-                                         file_config.get("routes", {}))
+        taskforce_section = file_config.get("taskforce", {})
+        engineer_section = file_config.get("engineer", {})
+        chief_section = file_config.get("chief_engineer", {})
 
         # --- paths ---
         data_dir = Path(authority_section.get("data_dir",
@@ -281,25 +376,17 @@ class AuthorityRuntime:
         # --- intelligence ---
         plan = PlanStore(intelligence_db_path)
 
-        # --- agent factory ---
-        factory = AgentFactory()
-        for route_name, route_config in routes_section.items():
-            if not isinstance(route_config, dict):
-                continue
-            agent = route_config.get("agent", route_name)
-            model = route_config.get("model", None)
-            for capability, role_map in route_config.items():
-                if capability in ("agent", "model", "provider_args",
-                                  "workspace", "remote_control",
-                                  "effort"):
-                    continue
-                if isinstance(role_map, str):
-                    factory.register(capability, role_map, agent,
-                                     model=model)
-                elif isinstance(role_map, dict):
-                    for role, provider in role_map.items():
-                        factory.register(capability, role, provider,
-                                         model=model)
+        # --- the Taskforce's specialist catalog ---
+        pool = build_pool(file_config)
+        established_threshold = int(taskforce_section.get(
+            "established_threshold", 3))
+        # The Engineer's reasoning model is configuration ([engineer]
+        # model; [chief_engineer] model is the earlier spelling), falling
+        # back to the organization's planner model. Nothing here picks
+        # one.
+        engineer_model = engineer_section.get("model") or \
+            chief_section.get("model") or \
+            file_config.get("models", {}).get("planner")
 
         # --- transport ---
         autoswarm_cli = authority_section.get("autoswarm_cli", None)
@@ -331,10 +418,19 @@ class AuthorityRuntime:
 
         return cls(
             db=db, store=store, registry=registry, sequencer=sequencer,
-            plan=plan, factory=factory, transport=transport, runner=runner,
+            plan=plan, pool=pool, transport=transport, runner=runner,
             environment=environment, clock=clock,
             authority_db_path=authority_db_path, repo_path=repo_path,
-            holder=holder, lease_seconds=lease_ttl)
+            holder=holder, lease_seconds=lease_ttl,
+            established_threshold=established_threshold,
+            engineer_model=engineer_model,
+            isolate_read_only=bool(authority_section.get(
+                "isolate_read_only", True)),
+            repository_context=authority_section.get(
+                "repository_context",
+                "repository %s, canonical ref %s"
+                % (repository_id,
+                   environment.declaration.get("canonical_ref"))))
 
     @classmethod
     def bootstrap(cls, project_root=None, config=None,
@@ -343,10 +439,10 @@ class AuthorityRuntime:
         return the runtime ready for add_objective / run_until_stable.
 
         Raises ConfigError if any required component is missing or
-        incomplete: research/builder seat, autoswarm_home, workspace,
-        gate_root, repository declaration, delegation, at least two
-        verifier registrations, identity-projection transform, and the
-        compiler defaults needed to freeze a READ_ONLY pilot contract."""
+        incomplete: a non-empty Taskforce specialist catalog, autoswarm_home,
+        workspace, gate_root, repository declaration, delegation, at least
+        two verifier registrations, identity-projection transform, and the
+        compiler defaults needed to freeze a contract."""
         rt = cls.from_config(project_root=project_root, config=config,
                              defaults=defaults, clock=clock,
                              evidence_profile=evidence_profile)
@@ -361,13 +457,12 @@ class AuthorityRuntime:
     REQUIRED_TRANSFORM_IDS = ("identity-projection",)
 
     def _validate_pilot_readiness(self):
-        """Check every dependency the first READ_ONLY pilot requires."""
+        """Check every dependency a production run requires."""
         problems = []
-        try:
-            self.factory.select("research", "builder")
-        except Exception:
-            problems.append("no research/builder seat registered"
-                            " in AgentFactory")
+        if not self.pool.profiles():
+            problems.append(
+                "the specialist catalog is empty: no specialist can be"
+                " assigned to a project (configure [specialists.<handle>])")
         if self.transport._gate_root is None:
             problems.append("gate_root is None — governance evidence"
                             " collection will be skipped")
@@ -450,21 +545,105 @@ class AuthorityRuntime:
         self._driver = ContinuousDriver(
             self.plan, self.registry, self.sequencer, self.store,
             self.environment, self.clock, policy, self.transport,
-            self.runner, self.factory, self._authority_db_path,
-            repo_path=self._repo_path, holder=self._holder,
-            lease_seconds=self._lease_seconds)
+            self.runner, self.pool, self._authority_db_path,
+            repo_path=self._repo_path,
+            repository_context=self.repository_context,
+            holder=self._holder,
+            lease_seconds=self._lease_seconds,
+            # Production contracts freeze their specialist prompt as a
+            # declared specification input (prompts.py), and every
+            # specialist — READ_ONLY included — works from a frozen source
+            # revision in an isolated worktree.
+            freeze_prompts=True,
+            isolate_read_only=self.isolate_read_only,
+            established_threshold=self.established_threshold,
+            gate_root=getattr(self.transport, "_gate_root", None))
         return self._driver
 
     # -------------------------------------------------------------- public
 
-    def add_objective(self, objective_id, text, authored_by="operator"):
+    def add_objective(self, objective_id, text, authored_by="operator",
+                      constraints=None, budget=None):
+        """Add one objective (cap-01: yours). ``constraints`` are the
+        design constraints stated with it; ``budget`` sets its
+        engineering-work budget limits (cap-47), the conservative default
+        otherwise."""
         now = instant(self.clock.now())
-        return self.plan.add_objective(objective_id, text,
-                                       authored_by, now)
+        self.plan.add_objective(objective_id, text, authored_by, now,
+                                constraints=constraints)
+        if budget:
+            self.plan.set_budget(objective_id, now, set_by=authored_by,
+                                 **budget)
+        return objective_id
+
+    def signal_resume(self):
+        """Tell the Engineer you resumed the loop: one workforce event
+        per active objective. A loop that went quiet with a decision
+        still open (work finished but not declared complete, a workstream
+        nobody staffed) reasons again over the current state instead of
+        staying quiet. Returns the objectives signalled."""
+        now = instant(self.clock.now())
+        signalled = []
+        objectives = self.plan.active_objectives()
+        with self.plan.transaction() as cur:
+            for objective in objectives:
+                objective_id = objective["objective_id"]
+                if self.plan.emit_workforce_event(
+                        cur, "operator_resumed:%s:%s" % (objective_id, now),
+                        "operator_resumed", objective_id,
+                        {"objective_id": objective_id}, now):
+                    signalled.append(objective_id)
+        return signalled
 
     def run_until_stable(self, policy, **kwargs):
         driver = self._ensure_driver(policy)
         return driver.run_until_stable(**kwargs)
+
+    def run(self, policy, **kwargs):
+        """Run the loop to a stable quiet state, waiting for specialists
+        that are still executing (``ContinuousDriver.run``)."""
+        driver = self._ensure_driver(policy)
+        return driver.run(**kwargs)
+
+    def engineer_policy(self, reasoner=None):
+        """The production Engineer policy for this runtime: the reasoning
+        policy over the configured model, given the environment facts the
+        model should know (plain data only)."""
+        from .policy import ClaudeCliReasoner, ReasoningEngineerPolicy
+        if reasoner is None:
+            if not self.engineer_model:
+                raise ConfigError(
+                    "no Engineer model is configured: set [engineer]"
+                    " model or [models] planner")
+            reasoner = ClaudeCliReasoner(self.engineer_model)
+        delegation = self.environment.delegation
+        context = {
+            "repository_id": self.environment.repository_id,
+            "canonical_ref": self.environment.declaration.get(
+                "canonical_ref"),
+            "delegated_scope_paths": delegation.get(
+                "allowed_scope", {}).get("paths", []),
+            "note": "SOURCE_MODIFYING allowed_paths must lie inside the"
+                    " delegated scope; anything outside it is queued for"
+                    " the operator instead of executed.",
+        }
+        return ReasoningEngineerPolicy(reasoner, context=context)
+
+    # The name this method had before the organizational model was
+    # aligned.
+    chief_engineer_policy = engineer_policy
+
+    def taskforce_report(self):
+        """The persistent organization's state report (query layer)."""
+        return query.taskforce_report(self.plan)
+
+    def projects_report(self):
+        """Every project with its temporary team (query layer)."""
+        ro = readonly_view(self._authority_db_path)
+        try:
+            return query.projects_report(self.plan, ro)
+        finally:
+            ro.close()
 
     def status(self):
         """Current state: active objectives, running sequences, lease."""

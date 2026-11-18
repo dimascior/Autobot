@@ -9,14 +9,14 @@ from .manifest import build_execution_manifest
 
 
 def launch_with_manifest(sequencer, transport, attempt_id,
-                         factory_assignment, capability,
+                         staffing_assignment, capability,
                          parent_call_id=None):
     """Build the manifest from durable state and launch through it.
 
     Returns ``{"call_id": str, "manifest_address": str,
                "native_session_id": str}``."""
     manifest_bytes, manifest_address = build_execution_manifest(
-        sequencer, attempt_id, factory_assignment, capability,
+        sequencer, attempt_id, staffing_assignment, capability,
         parent_call_id=parent_call_id)
     import json
     manifest = json.loads(manifest_bytes)

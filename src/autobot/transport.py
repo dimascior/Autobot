@@ -118,6 +118,23 @@ class Transport:
         originals, ready for the admission seam."""
         raise NotImplementedError
 
+    def pending_requests(self, call_id):
+        """The native permission requests a RUNNING session is blocked
+        on, as the provider's own durable request records (each a mapping
+        with at least ``request_id``, ``kind`` and ``native_request``).
+        A transport whose provider never asks returns nothing — the
+        default. Reading them changes nothing."""
+        return []
+
+    def decide_request(self, call_id, request_id, decision, reason=""):
+        """Answer one pending permission request: ``decision`` is
+        ``"allow"`` or ``"deny"``, for that one request only. The
+        transport relays the caller's decision to the provider and never
+        originates one. Raises RuntimeError when the request is no longer
+        pending."""
+        raise NotImplementedError(
+            "this transport's provider raises no permission requests")
+
 
 def reconcile_dispatched(sequencer, transport):
     """Apply the launch/restart protocol to every DISPATCHED attempt.

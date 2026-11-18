@@ -1,30 +1,44 @@
-"""The first persistent loop driver.
+"""The persistent loop driver.
 
-    read ProjectState -> identify planning events -> invoke the Chief
-    Engineer -> validate typed proposals -> compile -> Registry
-    admission -> allocate READY work -> PromptProjection -> transport
-    dispatch -> collect outcomes -> registered authority arcs -> wait
-    for authority-state change -> repeat.
+    read ProjectState -> identify planning events -> invoke the Engineer
+    -> validate typed proposals -> compile -> Registry admission ->
+    project assignment (a retained member the Taskforce resolves, or an
+    outside specialist the Project Manager selected) -> PromptProjection
+    -> transport dispatch -> supervise -> collect outcomes -> registered
+    authority arcs -> capability demonstrations -> wait for change ->
+    repeat.
 
 Restart safety is layered, never clever: the authority ledger is the
 only truth (D-69 restart discipline); planning events are keyed by
-journal seq; proposals converge on deterministic identity and Registry
-DUPLICATE; dispatch idempotency rides the Sequencer-minted call_id and
-the Transport contract; witness and verification admissions are
-idempotent on content. Killing this driver anywhere and starting a new
-one continues the same loop without duplicating proposals, contracts or
-specialist launches — the autonomous-pilot suite does exactly that.
+journal seq; workforce events by their own identity; proposals converge
+on deterministic identity and Registry DUPLICATE; reasoning is replayed
+from its durable record; staffing converges on the assignment identity;
+dispatch idempotency rides the Sequencer-minted call_id and the Transport
+contract; witness and verification admissions are idempotent on content.
+Killing this driver anywhere and starting a new one continues the same
+loop without duplicating proposals, contracts, memberships, assignments
+or specialist launches.
+
+Stable means nothing is left to do AND nothing is still coming.
+``run_until_stable`` is the bounded form the deterministic suites use: it
+stops after consecutive quiet steps. ``run`` is the production form: a
+quiet step while specialists are still executing is a WAIT, not
+stability — the driver sleeps, looks again (answering permission requests
+and collecting results as they arrive) and only reports a stable quiet
+state once no attempt is in flight.
 
 One driver reasons at a time (the plan store's driver lease). The
 authority side needs no such guard: the Sequencer's instance lease and
 single-writer transactions already fence it.
 """
 
-from autobot import project_state
-from autobot.models import instant
+import time
 from datetime import timedelta
 
-from .chief import ChiefEngineerService
+from autobot import project_state
+from autobot.models import instant
+
+from .engineer import EngineerService
 from .planstore import readonly_view
 from .taskforce import Taskforce
 
@@ -32,38 +46,79 @@ from .taskforce import Taskforce
 def _any_activity(planning, sweep):
     if planning["cycle_id"] is not None:
         return True
-    if sweep["allocated"] or sweep["adopted"] or sweep["collected"] \
-            or sweep["verified"]:
-        return True
+    for key in ("allocated", "adopted", "collected", "verified",
+                "supervised", "settled"):
+        if sweep.get(key):
+            return True
     arcs = sweep["arcs"]
     return any(arcs[key] for key in arcs)
 
 
 class ContinuousDriver:
     def __init__(self, plan, registry, sequencer, store, environment,
-                 clock, policy, transport, runner, agent_factory,
+                 clock, policy, transport, runner, pool,
                  authority_db_path, repo_path=None,
                  repository_context=None, holder="chief-engineer",
-                 lease_seconds=3600, max_proposals_per_cycle=16):
+                 lease_seconds=3600, max_proposals_per_cycle=16,
+                 freeze_prompts=False, established_threshold=3,
+                 gate_root=None, isolate_read_only=False):
+        """``pool`` is the specialist catalog (``SpecialistPool``): the
+        workers that exist, whether or not any is a Taskforce member.
+        ``freeze_prompts`` makes every contract
+        declare its composed specialist prompt as a specification input;
+        ``isolate_read_only`` gives READ_ONLY specialists a frozen source
+        revision in an isolated worktree, as SOURCE_MODIFYING ones always
+        have. Both are the production settings; the deterministic suites
+        that script provider witnesses leave them off."""
         self.plan = plan
         self.clock = clock
         self.holder = holder
         self.lease_seconds = lease_seconds
         self.ro = readonly_view(authority_db_path)
-        self.chief = ChiefEngineerService(
-            plan, registry, environment, clock, policy,
-            max_proposals_per_cycle=max_proposals_per_cycle)
         self.taskforce = Taskforce(
-            plan, sequencer, store, transport, runner, agent_factory,
+            plan, sequencer, store, transport, runner, pool,
             clock, self.ro, repo_path=repo_path,
+            repository_context=repository_context,
+            established_threshold=established_threshold,
+            gate_root=gate_root, isolate_read_only=isolate_read_only)
+        self.engineer = EngineerService(
+            plan, registry, environment, clock, policy,
+            max_proposals_per_cycle=max_proposals_per_cycle,
+            store=store if freeze_prompts else None,
+            roster=self.taskforce.roster,
             repository_context=repository_context)
+        # The attribute this service was reached by before the
+        # organizational model was aligned.
+        self.chief = self.engineer
         self._acquire()
+        # The organization the Engineer reasons over exists before its
+        # first cycle: mirror the specialist catalog now.
+        self.taskforce.roster.sync_pool(instant(self.clock.now()))
 
     def _acquire(self):
         now_dt = self.clock.now()
         self.plan.acquire_driver_lease(
             self.holder, instant(now_dt),
             instant(now_dt + timedelta(seconds=self.lease_seconds)))
+
+    def _renew_authority_lease(self):
+        """Keep the Sequencer's instance lease alive across a long run.
+        The lease is renewed only once less than half of it remains —
+        each renewal is a journaled authority fact, so a loop that waits
+        for hours renews a handful of times, not once per look."""
+        sequencer = self.taskforce.sequencer
+        if getattr(sequencer, "epoch", None) is None:
+            return
+        row = self.ro.execute(
+            "SELECT holder, epoch, expires_utc FROM instance_lease"
+            " WHERE lease_key = 'sequencer'").fetchone()
+        if row is None or row["holder"] != sequencer.holder \
+                or row["epoch"] != sequencer.epoch:
+            return  # not ours to renew; the next transition will say so
+        threshold = instant(self.clock.now()
+                            + timedelta(seconds=self.lease_seconds / 2.0))
+        if row["expires_utc"] <= threshold:
+            sequencer.renew_lease(ttl_seconds=self.lease_seconds)
 
     def close(self):
         self.plan.release_driver_lease(self.holder)
@@ -76,17 +131,34 @@ class ContinuousDriver:
         the planner) and one Taskforce sweep. Returns the step report;
         ``quiet`` means the step changed nothing and proposed nothing."""
         self._acquire()  # renew; refuses if another driver took over
+        self._renew_authority_lease()
         now = instant(self.clock.now())
-        planning = self.chief.run_cycle(self.ro, project_state, now)
+        planning = self.engineer.run_cycle(self.ro, project_state, now)
         sweep = self.taskforce.advance(now)
         return {"planning": planning, "sweep": sweep,
                 "quiet": not _any_activity(planning, sweep)}
+
+    def _closing(self, steps, **extra):
+        report = {
+            "steps": len(steps),
+            "reports": steps,
+            "active_objectives": self.plan.active_objectives(),
+            "waiting": self.plan.proposals_by_status(
+                "WAITING", "QUEUED_FOR_YOU"),
+            "in_flight": self.taskforce.in_flight(),
+        }
+        report.update(extra)
+        return report
 
     def run_until_stable(self, max_steps=64, quiet_steps=2):
         """Repeat ``step`` until the loop is stable: ``quiet_steps``
         consecutive steps with no planning cycle and no Taskforce
         activity. Returns the closing report with what remains: active
-        objectives and proposals waiting on YOUR registered authority."""
+        objectives and proposals waiting on YOUR registered authority.
+
+        This form never waits: an attempt still executing at a provider
+        simply leaves the loop quiet (``in_flight`` names it). ``run`` is
+        the form that waits for it."""
         steps = []
         quiet = 0
         while len(steps) < max_steps:
@@ -99,10 +171,56 @@ class ContinuousDriver:
             raise RuntimeError(
                 "no stable state within %d steps (runaway loop guard)"
                 % max_steps)
-        return {
-            "steps": len(steps),
-            "reports": steps,
-            "active_objectives": self.plan.active_objectives(),
-            "waiting": self.plan.proposals_by_status(
-                "WAITING", "QUEUED_FOR_YOU"),
-        }
+        return self._closing(steps)
+
+    def run(self, max_wall_seconds=3600.0, poll_seconds=2.0,
+            quiet_steps=2, max_active_steps=512, sleep=None,
+            on_step=None):
+        """The production loop: step until a STABLE QUIET STATE — nothing
+        left to do and nothing in flight.
+
+        A quiet step with attempts still in flight is a wait: the driver
+        sleeps ``poll_seconds`` and steps again, which is also what
+        answers a specialist's permission requests and collects its
+        result. ``max_wall_seconds`` bounds the whole run on the injected
+        clock; ``max_active_steps`` is the runaway guard on steps that DID
+        something (waiting does not count against it). ``sleep`` is
+        injectable so the deterministic suites advance a manual clock
+        instead of the wall. ``on_step`` observes each step report.
+
+        Returns the closing report; ``stable`` says whether the quiet
+        state was reached, ``timed_out`` whether the wall bound ended the
+        run first (work then remains in flight and a later run resumes
+        it)."""
+        sleep = sleep or time.sleep
+        started = self.clock.now()
+        steps = []
+        quiet = 0
+        active = 0
+        waited = 0
+        while True:
+            report = self.step()
+            steps.append(report)
+            if on_step is not None:
+                on_step(report)
+            if not report["quiet"]:
+                quiet = 0
+                active += 1
+                if active > max_active_steps:
+                    raise RuntimeError(
+                        "no stable state within %d active steps (runaway"
+                        " loop guard)" % max_active_steps)
+                continue
+            if self.taskforce.in_flight():
+                quiet = 0
+                elapsed = (self.clock.now() - started).total_seconds()
+                if elapsed >= max_wall_seconds:
+                    return self._closing(steps, stable=False,
+                                         timed_out=True, waits=waited)
+                waited += 1
+                sleep(poll_seconds)
+                continue
+            quiet += 1
+            if quiet >= quiet_steps:
+                return self._closing(steps, stable=True, timed_out=False,
+                                     waits=waited)
