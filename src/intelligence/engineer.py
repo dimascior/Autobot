@@ -478,7 +478,11 @@ class EngineerService:
                 proposal.get("provenance", {}).get("findings", [])),
             repository_context=self.repository_context,
             governed="COMMAND_GOVERNANCE" in evidence_requirements_for(
-                self.environment, fin_class))
+                self.environment, fin_class),
+            # Work with frozen predecessors (or a record it reviews) is
+            # told where their accepted results will be.
+            predecessor_inputs=bool(requirement.get("predecessors")
+                                    or proposal.get("review_of")))
         address = self.store.put(prompt.encode("utf-8"))
         bound = dict(proposal)
         bound["requirement"] = dict(requirement)

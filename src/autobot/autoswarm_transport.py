@@ -59,10 +59,14 @@ class AutoSwarmTransport(Transport):
 
     # The name prefix of every isolated worktree this transport creates.
     WORKTREE_PREFIX = "autobot-wt-"
+    # Where the accepted results a call's work depends on are placed
+    # inside its isolated worktree (never tracked: see _exclude_inputs).
+    INPUTS_DIR = (".autobot", "inputs")
 
     def __init__(self, store, autoswarm_home, workspace, *,
                  gate_root=None, session_export_dir=None,
                  autoswarm_argv=None):
+        self._staged = {}
         self._store = store
         self._home = Path(autoswarm_home)
         self._workspace = Path(workspace)
@@ -172,6 +176,12 @@ class AutoSwarmTransport(Transport):
                      "--detach", str(worktree_dir), source_rev],
                     capture_output=True, text=True, check=True)
                 workspace = str(worktree_dir)
+            # The accepted results this work depends on, staged by the
+            # caller, go into the isolated worktree and nowhere else: a
+            # shared workspace is never written.
+            staged = self._staged.pop(call_id, None)
+            if staged and self._is_own_worktree(Path(workspace)):
+                self._write_inputs(Path(workspace), staged)
             args = [
                 "run",
                 "--agent", provider,
@@ -191,6 +201,54 @@ class AutoSwarmTransport(Transport):
             except OSError:
                 pass
         return info.get("native_session_id") or info["call_id"]
+
+    def stage_inputs(self, call_id, files):
+        """Accept the ACCEPTED results one call's work depends on, to be
+        placed in its isolated worktree when the session is launched.
+
+        ``files`` is a list of (name, bytes). The caller read each one
+        from the content store by the address the authority ledger holds
+        for an accepted attempt's artifact; this adapter puts those exact
+        bytes where the specialist can read them and originates nothing.
+        Held in memory until that call's launch."""
+        self._staged[call_id] = [(str(name), bytes(data))
+                                 for name, data in files]
+
+    def _is_own_worktree(self, path):
+        return path.name.startswith(self.WORKTREE_PREFIX) \
+            and os.path.normcase(str(path.parent)) == os.path.normcase(
+                str(self._workspace)) and path.is_dir()
+
+    def _write_inputs(self, worktree, staged):
+        target = worktree.joinpath(*self.INPUTS_DIR)
+        target.mkdir(parents=True, exist_ok=True)
+        for name, data in staged:
+            safe = "".join(ch if ch.isalnum() or ch in "._-" else "_"
+                           for ch in name)[:80] or "input"
+            (target / (safe + ".md")).write_bytes(data)
+        self._exclude_inputs()
+
+    def _exclude_inputs(self):
+        """Keep the inputs directory out of Git's view of every worktree
+        (the repository's own info/exclude, which is local and never
+        committed): a SOURCE_MODIFYING specialist's worktree must still
+        read as clean, and the files can never be staged by accident."""
+        git_dir = self._workspace / ".git"
+        if not git_dir.is_dir():
+            return
+        exclude = git_dir / "info" / "exclude"
+        line = self.INPUTS_DIR[0] + "/"
+        try:
+            text = exclude.read_text(encoding="utf-8") \
+                if exclude.is_file() else ""
+            if line in text.splitlines():
+                return
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            with open(str(exclude), "a", encoding="utf-8") as fh:
+                fh.write(("" if not text or text.endswith("\n") else "\n")
+                         + line + "\n")
+        except OSError:
+            pass
 
     def find_session(self, call_id):
         directory = self._call_dir(call_id)

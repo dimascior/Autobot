@@ -531,6 +531,34 @@ class WorkspaceIsolationTests(unittest.TestCase):
         self.assertEqual(recorder.git(), [])
         self.assertEqual(cwd, given)
 
+    def test_staged_inputs_go_into_the_isolated_worktree_only(self):
+        """The accepted predecessor results the caller stages for a call
+        are written into that call's isolated worktree, byte for byte,
+        under a directory Git is told to ignore; a name can never leave
+        that directory; and a shared workspace is never written."""
+        (self.workspace / ".git" / "info").mkdir(parents=True)
+        self.transport.stage_inputs(self.call_id, [
+            ("policy-trace", b"accepted result\n"),
+            ("../evil name", b"x")])
+        _recorder, cwd = self._launch(self._manifest("READ_ONLY", "a" * 40))
+        inputs = Path(cwd) / ".autobot" / "inputs"
+        self.assertEqual((inputs / "policy-trace.md").read_bytes(),
+                         b"accepted result\n")
+        self.assertEqual(sorted(p.name for p in inputs.iterdir()),
+                         [".._evil_name.md", "policy-trace.md"])
+        exclude = self.workspace / ".git" / "info" / "exclude"
+        self.assertEqual(exclude.read_text(encoding="utf-8").splitlines(),
+                         [".autobot/"])
+        self.assertEqual(self.transport._staged, {})  # used once
+        # Staged for work that is not isolated: nothing is written into
+        # the shared workspace.
+        self.transport.stage_inputs(self.call_id, [("x", b"y")])
+        _recorder, cwd = self._launch(self._manifest("READ_ONLY"))
+        self.assertEqual(cwd, str(self.workspace))
+        self.assertFalse((self.workspace / ".autobot").exists())
+        self.assertEqual(exclude.read_text(encoding="utf-8").splitlines(),
+                         [".autobot/"])
+
     def test_release_removes_only_its_own_worktree(self):
         task = self.home / "calls" / self.call_id / "task.json"
         mine = self.workspace / "autobot-wt-mine"

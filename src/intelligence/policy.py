@@ -130,6 +130,10 @@ How to reason
 - Independent activities should be proposed together so they run
   concurrently. An activity that needs another's ACCEPTED result must
   declare the dependency; it then waits until authority releases it.
+  When it starts, each predecessor's accepted result is in its working
+  directory as a file under .autobot/inputs/ (named after the
+  predecessor workstream), and a review is given the result it reviews
+  the same way: write its guidance to use them.
 - A finding is information. If it calls for follow-up that the objective
   needs, propose that work and cite the finding in provenance.findings.
   When verified findings change what the project should do, adjust the

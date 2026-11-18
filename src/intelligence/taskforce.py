@@ -496,6 +496,68 @@ class Taskforce:
             execution={"projection_address": projection})
         return slot_id
 
+    def predecessor_inputs(self, record):
+        """The ACCEPTED results one piece of work depends on: for every
+        frozen predecessor edge authority has RELEASED (``released_edges``
+        is the only truth for that), the artifact admitted for the attempt
+        that was accepted, read from the content store by the address in
+        the ledger — never from a workspace, never from the Engineer.
+        Each entry names the predecessor workstream and carries the
+        identities it came from."""
+        inputs = []
+        seen = set()
+        for edge in record.get("predecessors", []):
+            released = self.ro.execute(
+                "SELECT predecessor_sequence_id FROM released_edges WHERE"
+                " edge_kind = ? AND edge_value = ?",
+                (edge.get("edge_kind"), edge.get("target"))).fetchone()
+            if released is None:
+                continue
+            sequence_id = released["predecessor_sequence_id"]
+            if sequence_id in seen:
+                continue
+            seen.add(sequence_id)
+            accepted = self.ro.execute(
+                "SELECT attempt_id FROM attempts WHERE sequence_id = ? AND"
+                " state = 'VERIFIED' ORDER BY rowid DESC LIMIT 1",
+                (sequence_id,)).fetchone()
+            if accepted is None:
+                continue
+            artifact = self.ro.execute(
+                "SELECT content_sha256 FROM attempt_artifacts WHERE"
+                " attempt_id = ? ORDER BY rowid DESC LIMIT 1",
+                (accepted["attempt_id"],)).fetchone()
+            if artifact is None:
+                continue
+            workstream = self.plan.workstream_of_sequence(sequence_id) or {}
+            inputs.append({
+                "name": workstream.get("workstream_key") or sequence_id,
+                "sequence_id": sequence_id,
+                "attempt_id": accepted["attempt_id"],
+                "content_sha256": artifact["content_sha256"],
+                "bytes": self.store.get(artifact["content_sha256"])})
+        return inputs
+
+    def _stage_predecessor_inputs(self, record, assignment, attempt_id,
+                                  call_id, now):
+        """Hand the accepted predecessor results to the transport for
+        this call's isolated workspace, and record on the assignment
+        exactly which ones were provided. A transport with no such
+        surface (or work with no released predecessor) changes nothing."""
+        stage = getattr(self.transport, "stage_inputs", None)
+        if stage is None:
+            return
+        inputs = self.predecessor_inputs(record)
+        if not inputs:
+            return
+        stage(call_id, [(i["name"], i["bytes"]) for i in inputs])
+        self.roster.bind_execution(
+            assignment["assignment_id"], attempt_id, call_id, now,
+            execution={"predecessor_inputs": [
+                {"workstream": i["name"], "sequence_id": i["sequence_id"],
+                 "attempt_id": i["attempt_id"],
+                 "content_sha256": i["content_sha256"]} for i in inputs]})
+
     def _drive(self, seq_row, assignment, request, ordinal, now):
         """Carry one staffed attempt from whatever durable stage it has
         reached to a launched session: create the attempt (t-s06), reserve
@@ -564,6 +626,8 @@ class Taskforce:
             source_revision = view["execution"].get("source_revision")
             if source_revision:
                 launch["source_revision"] = source_revision
+            self._stage_predecessor_inputs(record, assignment, attempt_id,
+                                           call_id, now)
             self._launched.add(call_id)
             launch_with_manifest(
                 self.sequencer, self.transport, attempt_id, launch,
