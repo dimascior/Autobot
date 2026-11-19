@@ -17,7 +17,7 @@ The layer above the authority plane.
 | [QUERY_MODEL.md](QUERY_MODEL.md) | how project, engineering and Taskforce information is queried |
 | [PRINCIPALS.md](PRINCIPALS.md) | how the frozen `planner` and `agent_factory` principals map onto the model |
 | [PRODUCTION_PROOF.md](PRODUCTION_PROOF.md) | the production runs that demonstrate it, with their identities |
-| [RUNBOOK.md](RUNBOOK.md) | operating the `engineer` command: flags, exit codes, timeouts, provider failures, resuming, preflight, execution routing, the sandbox edge. Written, reviewed, corrected and kept current by the organization's own specialists (Pilots 2, 4 and 5) |
+| [RUNBOOK.md](RUNBOOK.md) | operating the `engineer` command: flags, exit codes, timeouts, provider failures, resuming, preflight, execution routing, the sandbox edge. Written, reviewed, corrected and kept current by the organization's own specialists (Pilots 2, 4, 5 and 6) |
 
 ## Source
 

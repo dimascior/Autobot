@@ -10,8 +10,10 @@
 > objective work budget) is closed. The current description is
 > [../orchestration/ARCHITECTURE.md](../orchestration/ARCHITECTURE.md);
 > how the frozen `planner` and `agent_factory` principals map onto it is
-> [../orchestration/PRINCIPALS.md](../orchestration/PRINCIPALS.md). The
-> text below is left as written.
+> [../orchestration/PRINCIPALS.md](../orchestration/PRINCIPALS.md); what
+> has run in production is
+> [../orchestration/PRODUCTION_PROOF.md](../orchestration/PRODUCTION_PROOF.md).
+> The text below is left as written.
 
 The first continuously operating loop over the committed Chapter 2
 authority runtime:
