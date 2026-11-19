@@ -305,11 +305,19 @@ Every other sandbox-exit request is refused with a reason. Taskforce sends the d
 
 ### 5.6 Review verdicts
 
-Reviewers are asked to put exactly one `AUTOBOT_REVIEW: EXAMINED` or `AUTOBOT_REVIEW: NOT_EXAMINED` line in their final response. `EXAMINED` means they read the work under review and the source it must agree with, name what they read as `path:line`, and state what is wrong or report `[]` findings; if they could not read either, they state `NOT_EXAMINED` and what stopped them (`prompts.py:109-123`).
+Reviewers are asked to put exactly one `AUTOBOT_REVIEW: EXAMINED` or `AUTOBOT_REVIEW: NOT_EXAMINED` line in their final response. `EXAMINED` means they read the work under review and the source it must agree with, name what they read as `path:line`, and state what is wrong or report `[]` findings; if they could not read either, they state `NOT_EXAMINED` and what stopped them (`prompts.py:126-140`).
 
 `extract_review_verdict` reads the explicit verdict line; an absent, unrecognized or conflicting verdict produces no verdict, and prose is not used to infer one (`findings.py:91-114`). A review workstream's `review_verdict` is the latest collected attempt's value: `EXAMINED`, `NOT_EXAMINED`, or `NOT_STATED` when there is no verdict line; it is `None` until an attempt is collected (`query.py:193-203`).
 
 Among completed reviews for a record, `unexamined_reviews` lists it when none says `EXAMINED` and at least one says `NOT_EXAMINED`; reviews that only say nothing do not list the record (`query.py:206-229`). `PROJECT_COMPLETE` is refused when a reviewed record has no completed review reporting `EXAMINED` and at least one completed review reporting `NOT_EXAMINED` (`query.py:206-229`, `policy.py:1097-1111`).
+
+### 5.7 One assignment, one session
+
+`SESSION_RULES` tells each specialist to do its own task in one session (`prompts.py:79-87`). It is included in both `READ_ONLY_CONTRACT` and `SHELL_NOTE` (`prompts.py:89-106`, `prompts.py:109-116`). `compose_specialist_prompt` adds `SHELL_NOTE` to `SOURCE_MODIFYING` prompts and adds either `READ_ONLY_CONTRACT` or `SHELL_NOTE` for other prompts, so each prompt gets one of the two (`prompts.py:227-239`).
+
+For a provider that asks permission before each tool use (`can_use_tool`), `decide` checks `READ_TOOLS`, `SHELL_TOOLS` and `WRITE_TOOLS`; its last return denies any tool outside those lists (`supervision.py:76-79`, `supervision.py:443-525`).
+
+For sandboxed Codex, the approval request is one of three native kinds: command execution, file change or permissions. `decide` sends these requests to `_decide_codex`, which handles the request as leaving the sandbox (`supervision.py:83-90`, `supervision.py:377-440`, `supervision.py:443-456`). That path asks about leaving the sandbox, not each tool use; the one-session rule on this provider is carried by the prompt contract alone (`supervision.py:377-394`, `supervision.py:443-456`, `prompts.py:104`, `prompts.py:115`, `prompts.py:227-239`).
 
 ---
 
