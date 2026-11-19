@@ -305,7 +305,7 @@ Every other sandbox-exit request is refused with a reason. Taskforce sends the d
 
 ### 5.6 Review verdicts
 
-Reviewers are asked to put exactly one `AUTOBOT_REVIEW: EXAMINED` or `AUTOBOT_REVIEW: NOT_EXAMINED` line in their final response. `EXAMINED` means they read the work under review and the source it must agree with, name what they read as `path:line`, and state what is wrong or report `[]` findings; if they could not read either, they state `NOT_EXAMINED` and what stopped them (`prompts.py:126-140`).
+Reviewers are asked to put exactly one `AUTOBOT_REVIEW: EXAMINED` or `AUTOBOT_REVIEW: NOT_EXAMINED` line in their final response. `EXAMINED` means they read the work under review and the source it must agree with, name what they read as `path:line`, and state what is wrong or report `[]` findings; if they could not read either, they state `NOT_EXAMINED` and what stopped them (`prompts.py:140-154`).
 
 `extract_review_verdict` reads the explicit verdict line; an absent, unrecognized or conflicting verdict produces no verdict, and prose is not used to infer one (`findings.py:91-114`). A review workstream's `review_verdict` is the latest collected attempt's value: `EXAMINED`, `NOT_EXAMINED`, or `NOT_STATED` when there is no verdict line; it is `None` until an attempt is collected (`query.py:193-203`).
 
@@ -313,11 +313,19 @@ Among completed reviews for a record, `unexamined_reviews` lists it when none sa
 
 ### 5.7 One assignment, one session
 
-`SESSION_RULES` tells each specialist to do its own task in one session (`prompts.py:79-87`). It is included in both `READ_ONLY_CONTRACT` and `SHELL_NOTE` (`prompts.py:89-106`, `prompts.py:109-116`). `compose_specialist_prompt` adds `SHELL_NOTE` to `SOURCE_MODIFYING` prompts and adds either `READ_ONLY_CONTRACT` or `SHELL_NOTE` for other prompts, so each prompt gets one of the two (`prompts.py:227-239`).
+`SESSION_RULES` tells each specialist to do its own task in one session (`prompts.py:79-87`). It is included in both `READ_ONLY_CONTRACT` and `SHELL_NOTE` (`prompts.py:102-120`, `prompts.py:123-130`). `compose_specialist_prompt` adds `SHELL_NOTE` to `SOURCE_MODIFYING` prompts and adds either `READ_ONLY_CONTRACT` or `SHELL_NOTE` for other prompts, so each prompt gets one of the two (`prompts.py:241-253`).
 
 For a provider that asks permission before each tool use (`can_use_tool`), `decide` checks `READ_TOOLS`, `SHELL_TOOLS` and `WRITE_TOOLS`; its last return denies any tool outside those lists (`supervision.py:76-79`, `supervision.py:443-525`).
 
-For sandboxed Codex, the approval request is one of three native kinds: command execution, file change or permissions. `decide` sends these requests to `_decide_codex`, which handles the request as leaving the sandbox (`supervision.py:83-90`, `supervision.py:377-440`, `supervision.py:443-456`). That path asks about leaving the sandbox, not each tool use; the one-session rule on this provider is carried by the prompt contract alone (`supervision.py:377-394`, `supervision.py:443-456`, `prompts.py:104`, `prompts.py:115`, `prompts.py:227-239`).
+For sandboxed Codex, the approval request is one of three native kinds: command execution, file change or permissions. `decide` sends these requests to `_decide_codex`, which handles the request as leaving the sandbox (`supervision.py:83-90`, `supervision.py:377-440`, `supervision.py:443-456`). That path asks about leaving the sandbox, not each tool use; the one-session rule on this provider is carried by the prompt contract alone (`supervision.py:377-394`, `supervision.py:443-456`, `prompts.py:117`, `prompts.py:129`, `prompts.py:241-253`).
+
+### 5.8 What a session may reach
+
+1. **What every specialist is told.** `TOOL_RULES` says that work may reach only this machine's files and the session's shell; connectors, apps, plugins, web access, browser or desktop control, and remote repository copies are outside the assignment (`prompts.py:94-100`). Both `READ_ONLY_CONTRACT` and `SHELL_NOTE` carry the rule (`prompts.py:118`, `prompts.py:129`), and prompt composition gives every specialist one of those texts (`prompts.py:241-249`).
+
+2. **What a per-tool approval provider can reach.** For a provider that asks before each tool use (`can_use_tool`), `decide` recognizes only the three tool lists, and its last statement refuses any tool outside them. Connectors and the web are not in those lists (`supervision.py:76-79`, `supervision.py:523-525`).
+
+3. **What the sandboxed default route can reach.** The default `luna-6-max` route uses `workspace-write` sandboxing, `on-request` approval and configured writable gate paths. Its session arguments switch off apps and plugins, computer and browser use, image generation, goals, web search and the configured `node_repl` MCP server (`config.toml:63`, `config.toml:91-106`). They also set `features.multi_agent=false`, which the comment says does not remove sub-agent tools; the execution contract forbids those tools (`config.toml:83-86`). The comment says the overrides switch off inherited apps and connectors, plugins, MCP servers, web search, browser and desktop control for this session only, without changing the operator's configuration (`config.toml:75-82`). `_route` preserves the route's argument values when it builds the route (`routing.py:93-123`).
 
 ---
 
