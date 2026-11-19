@@ -88,6 +88,32 @@ def admit_finding(plan, finding, now):
     return finding_id
 
 
+def extract_review_verdict(text):
+    """What a reviewer said about its own review, from the line the
+    review contract names (``prompts.REVIEW_CONTRACT``): ``"EXAMINED"``
+    or ``"NOT_EXAMINED"``. None when the response carries no such line,
+    a line with any other word, or lines that disagree — a review that
+    says both has said neither. Deterministic, and never inferred from
+    prose: a reviewer that does not say it examined the work is not
+    recorded as having done so."""
+    from .prompts import REVIEW_MARK, REVIEW_VERDICTS
+    if not isinstance(text, str):
+        return None
+    stated = set()
+    for line in text.splitlines():
+        line = line.strip().strip("*`>").strip()
+        if not line.startswith(REVIEW_MARK):
+            continue
+        rest = line[len(REVIEW_MARK):].lstrip()
+        if not rest.startswith(":"):
+            continue
+        value = rest[1:].strip().strip("*`.").strip().upper()
+        if value not in REVIEW_VERDICTS:
+            return None
+        stated.add(value)
+    return stated.pop() if len(stated) == 1 else None
+
+
 def extract_findings(text):
     """The structured findings a specialist reported in its final
     response, from the block the findings contract names

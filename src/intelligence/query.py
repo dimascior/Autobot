@@ -168,6 +168,10 @@ def _assignment_summary(row):
             # The execution route the attempt was dispatched on (routing
             # detail: removed from what the Engineer reasons over).
             "route": execution.get("route"),
+            # What a REVIEW said about itself: {"verdict": "EXAMINED" |
+            # "NOT_EXAMINED" | None}, or absent for work that is not a
+            # collected review.
+            "review": execution.get("review"),
             "assignment_id": row["assignment_id"],
             "project_id": row["project_id"],
             "workstream_id": row["workstream_id"],
@@ -181,6 +185,48 @@ def _assignment_summary(row):
             "decided_by": row["decided_by"],
             "standing_at_assignment": row["standing_at_assignment"],
             "status": row["status"], "outcome": row["outcome"]}
+
+
+REVIEW_NOT_STATED = "NOT_STATED"
+
+
+def review_verdict(assignments):
+    """What a review workstream's latest collected attempt said about
+    itself (D-TF-32): ``EXAMINED``, ``NOT_EXAMINED``, ``NOT_STATED`` when
+    the reviewer's response carried no verdict line, or None while no
+    attempt of the review has been collected."""
+    verdict = None
+    for assignment in assignments:
+        review = assignment.get("review")
+        if isinstance(review, dict):
+            verdict = review.get("verdict") or REVIEW_NOT_STATED
+    return verdict
+
+
+def unexamined_reviews(workstreams):
+    """The reviewed records whose reviews are finished and none of which
+    examined the work: for each such record, the review workstreams that
+    said NOT_EXAMINED. A record with any EXAMINED review is reviewed; a
+    record whose reviews only say nothing is the Engineer's to judge and
+    is not listed. ``workstreams`` are task rows (``task`` /
+    ``engineering_view``)."""
+    by_record = {}
+    for row in workstreams:
+        if row.get("class") != "REQUEST_REVIEW" or \
+                row.get("state") != "COMPLETED":
+            continue
+        by_record.setdefault(row.get("reviews_record"), []).append(row)
+    out = []
+    for record_hash, reviews in by_record.items():
+        verdicts = [r.get("review_verdict") for r in reviews]
+        if "EXAMINED" in verdicts:
+            continue
+        stopped = [r for r in reviews
+                   if r.get("review_verdict") == "NOT_EXAMINED"]
+        if stopped:
+            out.append({"reviews_record": record_hash,
+                        "reviews": [r.get("sequence_id") for r in stopped]})
+    return out
 
 
 def task(plan, ro, proposal_row):
@@ -221,6 +267,8 @@ def task(plan, ro, proposal_row):
             "edge_id": "review-of", "edge_kind": "RECORD",
             "target": reviewed, "observation_requirement": "ACCEPTANCE"})
     return {
+        "review_verdict": review_verdict(assignments)
+        if proposal_row["class"] == "REQUEST_REVIEW" else None,
         "proposal_id": proposal_row["proposal_id"],
         "class": proposal_row["class"],
         "proposal_status": proposal_row["status"],
@@ -500,6 +548,8 @@ def engineering_view(plan, ro, objectives):
                 "subsystem": entry["subsystem"],
                 "state": entry["state"] or entry["proposal_status"],
                 "record_hash": entry["record_hash"],
+                "reviews_record": entry["reviews_record"],
+                "review_verdict": entry["review_verdict"],
                 "attempts": len(entry["attempts"]),
                 "repairs_used": entry["repairs_used"],
                 "staffing": [
@@ -1143,6 +1193,9 @@ def project_state(plan, ro, project_id, roster=None, store=None):
                 edge["depends_on_sequence_id"]),
             "sequence_id": edge["depends_on_sequence_id"],
             "released": edge["released"]})
+    key_of_record = {entry["record_hash"]: workstream["workstream_key"]
+                     for workstream, entry in entries
+                     if entry["record_hash"]}
     workstreams = []
     for workstream, entry in entries:
         sequence_id = entry["sequence_id"]
@@ -1151,6 +1204,11 @@ def project_state(plan, ro, project_id, roster=None, store=None):
             "workstream_id": workstream["workstream_id"],
             "proposal_id": entry["proposal_id"],
             "class": entry["class"], "task": entry["task"],
+            # For a review: the workstream it reviews, and what the
+            # reviewer said about its own review once it was collected.
+            "reviews": key_of_record.get(entry["reviews_record"])
+            if entry["reviews_record"] else None,
+            "review_verdict": entry["review_verdict"],
             "capability": entry["capability"],
             "role": entry["roles"][0] if entry["roles"] else None,
             "finalization_class": entry["finalization_class"],

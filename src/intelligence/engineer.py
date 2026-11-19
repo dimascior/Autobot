@@ -482,7 +482,9 @@ class EngineerService:
             # Work with frozen predecessors (or a record it reviews) is
             # told where their accepted results will be.
             predecessor_inputs=bool(requirement.get("predecessors")
-                                    or proposal.get("review_of")))
+                                    or proposal.get("review_of")),
+            # A review says whether it examined the work (D-TF-32).
+            review=proposal["class"] == "REQUEST_REVIEW")
         address = self.store.put(prompt.encode("utf-8"))
         bound = dict(proposal)
         bound["requirement"] = dict(requirement)

@@ -53,6 +53,8 @@ from test_taskforce_orchestration import (
     RetryPolicy,
     TwoTaskPolicy,
     WorkforceTestCase,
+    _Boom,
+    _fail_once,
     assign,
     complete,
     investigate,
@@ -113,10 +115,13 @@ class RouteRecordingTransport(ScriptedTransport):
     def __init__(self):
         ScriptedTransport.__init__(self)
         self.session = {}
+        self.session_provider = {}
 
-    def stage_session(self, call_id, provider_args=(), effort=None):
+    def stage_session(self, call_id, provider_args=(), effort=None,
+                      provider=None):
         self.session[call_id] = {"effort": effort,
                                  "args": list(provider_args)}
+        self.session_provider[call_id] = provider
 
     @property
     def session_args(self):
@@ -244,6 +249,30 @@ class RoutingPolicyTests(unittest.TestCase):
         with self.assertRaises(RoutingError) as raised:
             RoutingPolicy.from_config(broken)
         self.assertIn("{somewhere_else}", str(raised.exception))
+
+    def test_a_placeholder_no_session_can_fill_is_refused_however_spelled(
+            self):
+        """F-TF-28: a name in braces that is not one of the four a session
+        fills would stay in the arguments as literal text. It is refused
+        whatever its case, digits or hyphens; a provider's own braces are
+        not placeholders."""
+        def policy(argument):
+            section = routing_config()["routing"]
+            section["routes"]["luna-6-max"]["provider_args"] = [
+                "-c", argument]
+            return RoutingPolicy.from_config(section)
+
+        for token in ("{Workspace}", "{WORKSPACE}", "{gate-pending}",
+                      "{workspace2}", "{repoGit}", "{unknown}"):
+            with self.assertRaises(RoutingError) as raised:
+                policy("roots=['%s']" % token)
+            self.assertIn(token, str(raised.exception))
+        route = policy("roots=['{workspace}', '{gate_pending}',"
+                       " '{gate_pending_real}', '{repo_git}']").route(
+                           "luna-6-max")
+        self.assertEqual(len(route["provider_args"]), 2)
+        policy("table={a=1, b='x y'}")
+        policy("empty={}")
 
     def test_the_description_names_every_route_and_what_it_serves(self):
         described = self.policy.describe()
@@ -441,10 +470,12 @@ class RouteReplacementTests(RoutingTestCase):
             self.transport.launch_log[-1]["manifest_address"])
         self.assertEqual(
             json.loads(first["execution"])["route"],
-            dict(SONNET, name="sonnet", served_as="default"))
+            dict(SONNET, name="sonnet", served_as="default",
+                 provider_args=[]))
         self.assertEqual(
             json.loads(second["execution"])["route"],
-            dict(LUNA, name="luna-6-max", served_as="default"))
+            dict(LUNA, name="luna-6-max", served_as="default",
+                 provider_args=LUNA_ARGS))
         self.assertEqual((first["provider"], first["model"]),
                          ("claude-code", "sonnet"))
         self.assertEqual((second["provider"], second["model"]),
@@ -535,6 +566,100 @@ class RouteReplacementTests(RoutingTestCase):
             " WHERE outcome = 'PASS' GROUP BY attempt_id").fetchall()
         self.assertEqual(len(verified), 2)
         self.assertEqual(verified[0]["n"], verified[1]["n"])
+
+
+class RouteAcrossAStopTests(RoutingTestCase):
+    """F-TF-28. The route of an attempt is recorded with its assignment
+    before the ledger binds the call to a provider, and it is what a
+    re-entry repeats — session arguments included — whatever the routing
+    policy says when the process comes back."""
+
+    def _start(self):
+        self.transport.scripts = {"investigator": [result(), result()]}
+        self._objective()
+        self.driver = self._driver(TwoTaskPolicy("none"),
+                                   runner=QueueRunner())
+
+    def _stop_in(self, target, name):
+        restore = _fail_once(target, name)
+        with self.assertRaises(_Boom):
+            for _ in range(8):
+                self.driver.step()
+        restore()
+        return self._assignments()[0]
+
+    def _come_back_routed(self, config):
+        self.pool = build_pool(config)
+        self._restart(TwoTaskPolicy("none"), "engineer-b",
+                      runner=QueueRunner())
+        for _ in range(30):
+            self.driver.step()
+            if self.transport.launch_log:
+                return self._assignments()[0]
+        raise AssertionError("the attempt was not relaunched")
+
+    def test_a_stop_after_dispatch_relaunches_on_the_recorded_route(self):
+        """The ledger has dispatched the attempt to one provider; the
+        process stops before the assignment is bound to the call; the
+        organization changes its default route; the process comes back.
+        The session is launched on the route the attempt was dispatched
+        on."""
+        self._start()
+        row = self._stop_in(self.driver.taskforce, "_bind_slot")
+        dispatched = self.rt.db.conn.execute(
+            "SELECT a.state, c.provider FROM attempts a JOIN attempt_calls"
+            " c ON c.attempt_id = a.attempt_id").fetchone()
+        self.assertEqual((dispatched["state"], dispatched["provider"]),
+                         ("DISPATCHED", "codex"))
+        # Not bound to its call yet — and already holding its route.
+        self.assertEqual((row["status"], row["call_id"]),
+                         ("SELECTED", None))
+        recorded = dict(LUNA, name="luna-6-max", served_as="default",
+                        provider_args=LUNA_ARGS)
+        self.assertEqual(json.loads(row["execution"])["route"], recorded)
+        self.assertEqual(self.transport.launch_log, [])
+
+        row = self._come_back_routed(routing_config("sonnet"))
+        self.assertEqual(self._route_of(row), dict(
+            LUNA, selected_by="agent_factory"))
+        self.assertEqual(self.transport.session[row["call_id"]],
+                         {"effort": "max", "args": LUNA_ARGS})
+        self.assertEqual(self.transport.session_provider[row["call_id"]],
+                         "codex")
+        self.assertEqual((row["provider"], row["model"]),
+                         ("codex", "gpt-6-luna"))
+        self.assertEqual(json.loads(row["execution"])["route"], recorded)
+        # Work staffed after the change runs on the new default.
+        self.driver.run_until_stable()
+        self.assertEqual(set(self._states().values()), {"COMPLETED"})
+        later = self._assignments()[1]
+        self.assertEqual(self._route_of(later), dict(
+            SONNET, selected_by="agent_factory"))
+
+    def test_a_relaunch_repeats_the_recorded_session_arguments(self):
+        """Dispatched and bound, never launched; the operator edits the
+        route's session arguments; the process comes back. The relaunch
+        of that attempt carries the arguments it was dispatched with; the
+        next attempt carries the new ones."""
+        self._start()
+        row = self._stop_in(self.transport, "launch_manifest")
+        self.assertEqual(row["status"], "DISPATCHED")
+        self.transport.session.clear()
+        edited = routing_config()
+        edited["routing"]["routes"]["luna-6-max"]["provider_args"] = [
+            "--sandbox", "read-only"]
+        relaunched = self._come_back_routed(edited)
+        self.assertEqual(relaunched["call_id"], row["call_id"])
+        self.assertEqual(self.transport.session[row["call_id"]],
+                         {"effort": "max", "args": LUNA_ARGS})
+        self.driver.run_until_stable()
+        self.assertEqual(set(self._states().values()), {"COMPLETED"})
+        later = self._assignments()[1]
+        self.assertEqual(self.transport.session[later["call_id"]]["args"],
+                         ["--sandbox", "read-only"])
+        self.assertEqual(
+            json.loads(later["execution"])["route"]["provider_args"],
+            ["--sandbox", "read-only"])
 
 
 class LunaDefaultTests(RoutingTestCase):
@@ -669,7 +794,8 @@ class EscalationTests(RoutingTestCase):
         execution = json.loads(assignment["execution"])
         self.assertEqual(execution["escalation"], "deep_reasoning")
         self.assertEqual(execution["route"], dict(
-            OPUS, name="opus-4-6-1m", served_as="escalation"))
+            OPUS, name="opus-4-6-1m", served_as="escalation",
+            provider_args=[]))
         self.assertEqual(self._route_of(assignment), dict(
             OPUS, selected_by="agent_factory"))
         decision = self._rows("SELECT * FROM assignment_decisions")[0]
