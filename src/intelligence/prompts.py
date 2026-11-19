@@ -70,6 +70,22 @@ SHELL_RULES = (
     " inline code needs an authorization you cannot give; use plain"
     " commands.")
 
+# One assignment is one specialist doing its own task in one session.
+# Production, 2026-11-19 (F-TF-31): a builder was shown its project's
+# objective, which also asked for an independent review of the result. It
+# started a sub-agent of its own provider to check its work and reported
+# that as "an independent review". Independence is the organization's to
+# arrange: another specialist, under its own assignment.
+SESSION_RULES = (
+    " Do this task yourself, in this one session: do not start"
+    " sub-agents, other agents or other sessions, and do not hand any"
+    " part of the work to one. The project objective is context: other"
+    " parts of it are other assignments, which the organization staffs,"
+    " and are not yours to do or to arrange. Checking your own work is"
+    " part of your task; it is not an independent review, which only"
+    " another specialist under its own assignment can give, and your"
+    " response must not call it one.")
+
 READ_ONLY_CONTRACT = (
     "\n\n--- READ_ONLY EXECUTION CONTRACT ---\n"
     "This is a READ_ONLY assignment. Your working directory is a"
@@ -85,6 +101,7 @@ READ_ONLY_CONTRACT = (
     " request outright, complete the task with your file-reading tools.\n"
     "- Do not ask questions; nobody will answer. Complete the task from"
     " what the files show, and say what you could not determine.\n"
+    "-" + SESSION_RULES + "\n"
     "- Cite what you rely on as path:line.\n"
     "--- END CONTRACT ---"
 )
@@ -95,7 +112,7 @@ SHELL_NOTE = (
     " command gate. A command is refused until you write the gate file"
     " the refusal describes; follow the refusal's instructions exactly"
     " and retry the identical command." + SHELL_RULES + " Do not ask"
-    " questions; nobody will answer.\n"
+    " questions; nobody will answer." + SESSION_RULES + "\n"
     "--- END ---"
 )
 
