@@ -39,8 +39,15 @@ It uses the agent CLIs' own subscription logins, never API keys.
 |---|---|
 | Authority plane, READ_ONLY | Live end to end. First production proof 2026-11-16. |
 | Authority plane, SOURCE_MODIFYING | Live end to end. Production proof 2026-11-17: a specialist created the candidate commit in an isolated worktree, and it was published by local ref compare-and-swap as `05e3d1a`. Record: [docs/implementation/source_modifying_pilot.md](docs/implementation/source_modifying_pilot.md). |
-| Engineer, projects, Taskforce, the loop | See [docs/architecture/orchestration/PRODUCTION_PROOF.md](docs/architecture/orchestration/PRODUCTION_PROOF.md) for what has run in production and what has only run in the test suite. |
+| Engineer, and the Engineer as Project Manager | Live. It reasons on Opus 4.6 1M, solves the technical problem and, as Project Manager, opens the project, staffs it and completes it. Production proof 2026-11-18 and 2026-11-19: a founding run and six pilots on one production ledger. |
+| Projects and their temporary teams | Live: multi-workstream projects with concurrent sessions, dependencies, and accepted results passed on to dependent work. Every team was dissolved when its project completed. |
+| Taskforce | Live: four members, each earned by an explicit retention decision that binds verified work, each reused through its seat afterwards. Outside specialists took part without membership, and one was let go with none. |
+| Execution routing | Live: every specialist session on the default route (Luna 6 Max: `codex`, `gpt-6-luna`, effort `max`); the route replaced under unchanged specialist, membership and seat identities; one assignment escalated on the Project Manager's ask. |
+| Specialist-owned SOURCE_MODIFYING work under sandbox supervision | Live: seven specialist-created commits published by authority. Outside its sandbox a builder is granted `git add` of paths in its frozen scope and `git commit -m`, and nothing else. |
+| Independent review | Live: another specialist, in another session, that says what it examined. A review that could not read the work is recorded as that and cannot close a project. |
 | Legacy coordinator | Preserved. See [The legacy coordinator](#the-legacy-coordinator). |
+
+Every identity behind these rows, and everything production found that is still open, is in [docs/architecture/orchestration/PRODUCTION_PROOF.md](docs/architecture/orchestration/PRODUCTION_PROOF.md).
 
 ## The parts
 
@@ -82,7 +89,7 @@ Retention changes who is staffed and nothing else. A retained member's work goes
 
 ### AutoSwarm
 
-The execution substrate. Autobot hands it an execution manifest built from the ledger; AutoSwarm verifies it, claims the call and launches the specialist's session. Provider and model are read from the assigned specialist's route at that point. Each specialist works in an isolated Git worktree at a frozen revision.
+The execution substrate. Autobot hands it an execution manifest built from the ledger; AutoSwarm verifies it, claims the call and launches the specialist's session. Which provider, model and effort that session runs on is resolved last, by the routing policy, and recorded with the assignment before the attempt is dispatched. Each specialist works in an isolated Git worktree at a frozen revision.
 
 ### The authority plane
 

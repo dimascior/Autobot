@@ -52,8 +52,9 @@ chooses its own model.
 That is exactly as true now as when it was frozen:
 
 - A specialist never takes part in its own staffing. It receives a
-  manifest; the provider, the model and the effort in it were resolved
-  from the routing policy by deterministic code.
+  session: the provider and the model in its manifest, and the effort and
+  session arguments that travel beside it, were resolved from the routing
+  policy by deterministic code.
 - The Engineer names a *specialist* for a project assignment. It never
   names a provider or a model — `validate_proposal` refuses either in a
   work requirement and in an assignment — and it is not even shown them:

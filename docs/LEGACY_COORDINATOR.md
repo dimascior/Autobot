@@ -1,6 +1,6 @@
 # The legacy coordinator
 
-> This is the guide to Autobot's first form: the backlog coordinator (`src/coordinator`, the `coordinator*` console scripts, `config.toml`'s `[routes.*]`, `backlog.toml`, `coordinator.db`). It is preserved and still runs, with its 41 tests. It is not the current architecture. The current system — the Chief Engineer, the Taskforce and the authority plane — is described in the [README](../README.md) and in [architecture/orchestration](architecture/orchestration/README.md). Paths below are relative to the repository root, and "Autobot" in this document means the coordinator.
+> This is the guide to Autobot's first form: the backlog coordinator (`src/coordinator`, the `coordinator*` console scripts, `config.toml`'s `[routes.*]`, `backlog.toml`, `coordinator.db`). It is preserved and still runs, with its 41 tests. It is not the current architecture. The current system — the Engineer, projects and their teams, the Taskforce and the authority plane — is described in the [README](../README.md) and in [architecture/orchestration](architecture/orchestration/README.md). Paths below are relative to the repository root, and "Autobot" in this document means the coordinator.
 
 The coordinator (the `swarm-coordinator` package's `coordinator` module) is the layer that starts and tracks agent runs, so nobody has to launch them by hand. It reads a curated backlog, has Claude decide what runs, launches each run through **AutoSwarm**, and parks the result for a human to close.
 
