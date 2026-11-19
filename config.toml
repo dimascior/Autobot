@@ -71,6 +71,19 @@ escalate = []
 # The session runs in a sandbox that can write its own worktree and the
 # command-gate pending directory (the Helios handshake) and nothing else,
 # and it asks before leaving the sandbox; the supervision policy answers.
+#
+# A session of this provider inherits the operator's own provider
+# configuration: apps and their connectors, plugins, MCP servers, web
+# search, browser and desktop control. None of that passes the sandbox or
+# the command gate, and none of it is part of an assignment (F-TF-32). The
+# overrides below switch it off for the session only; the operator's
+# configuration file is not touched. Measured 2026-11-19: 158 tools in a
+# session's registry without them, 5 with them (the shell, apply_patch,
+# the clock, view_image, write_stdin).
+#   - An MCP server is switched off by name: `mcp_servers={}` clears
+#     nothing. Add one line per server the provider configuration declares.
+#   - `features.multi_agent=false` does not remove this provider's
+#     sub-agent tools (F-TF-31); the execution contract forbids them.
 [routing.routes.luna-6-max]
 agent = "codex"
 model = "gpt-6-luna"
@@ -79,6 +92,17 @@ provider_args = [
     "--sandbox", "workspace-write",
     "--ask-for-approval", "on-request",
     "-c", "sandbox_workspace_write.writable_roots=['{gate_pending}', '{gate_pending_real}']",
+    "-c", "features.apps=false",
+    "-c", "features.plugins=false",
+    "-c", "features.computer_use=false",
+    "-c", "features.browser_use=false",
+    "-c", "features.browser_use_external=false",
+    "-c", "features.in_app_browser=false",
+    "-c", "features.image_generation=false",
+    "-c", "features.goals=false",
+    "-c", "features.multi_agent=false",
+    "-c", "web_search=\"disabled\"",
+    "-c", "mcp_servers.node_repl.enabled=false",
 ]
 
 [routing.routes.opus-4-6-1m]
