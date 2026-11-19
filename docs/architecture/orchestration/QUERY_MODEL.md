@@ -72,6 +72,8 @@ safe beside a running organization. `query` output is JSON.
 | Which specialists required repairs? | `verification-outcome FAIL` -> `specialist_id` |
 | Which specialist has experience with this subsystem? | `subsystem <name>` -> `experienced_seats` |
 | What evidence justified retaining this specialist? | `why-retained <seat_id>` |
+| Did this review examine the work? | `project <project_id>` -> the review workstream's `review_verdict` (`EXAMINED`, `NOT_EXAMINED`, `NOT_STATED`) and `reviews` (the workstream it reviews) |
+| What was a dependent session given, and what was it told its workspace held? | the assignment's `execution.predecessor_inputs` (workstream, sequence, attempt, content address; `given_to` for what the reviewed work was given) and `execution.inputs_note` (the content address of the note) |
 
 ## What the Engineer sees
 
@@ -99,10 +101,13 @@ are the projections `EngineerService.build_view` puts into the
 The production policy removes handles, providers, models and routes from
 all of it before a model sees it: routing is not something the Engineer
 reasons over. An assignment's `route` (the route its attempt was
-dispatched on: name, provider, model, effort) is in the operator's view
-and never in the Engineer's. What the Engineer does see is whether an
-assignment was escalated, in its own word (`escalation`: `high_context`
-or `deep_reasoning`), because asking for that is its decision.
+dispatched on: name, provider, model, effort, session arguments) is in
+the operator's view and never in the Engineer's. What the Engineer does
+see is whether an assignment was escalated, in its own word
+(`escalation`: `high_context` or `deep_reasoning`), because asking for
+that is its decision; and, on a review workstream, what the reviewer said
+about its own review (`review_verdict`), because whether reviewed work
+counts as reviewed is its judgment too.
 
 Semantic retrieval is not part of this model. The state is relational and
 every answer above is an exact read.

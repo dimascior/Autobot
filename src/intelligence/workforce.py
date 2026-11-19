@@ -800,11 +800,12 @@ class TaskforceRoster:
         assignment is executing under (references, never copies).
 
         ``route`` is the execution route the attempt is DISPATCHED on
-        (provider, model, effort, the route's name). It is recorded once,
-        with the first binding that carries it: the assignment row then
-        says what this attempt actually ran on, whatever its specialist
-        is routed to later, and a relaunch after a restart repeats exactly
-        that route."""
+        (provider, model, effort, the route's name, its native session
+        arguments). It is recorded once, with the first binding that
+        carries it — which is BEFORE the ledger binds the call to its
+        provider — so the assignment row says what this attempt runs on,
+        whatever its specialist or the policy is routed to later, and a
+        re-entry after a stop repeats exactly that route."""
         with self.plan.transaction() as cur:
             row = cur.execute(
                 "SELECT status, execution, provider, model FROM"
@@ -820,7 +821,7 @@ class TaskforceRoster:
                 merged["route"] = {
                     key: route.get(key)
                     for key in ("name", "provider", "model", "effort",
-                                "served_as")
+                                "served_as", "provider_args")
                     if route.get(key) is not None}
                 provider = route.get("provider") or provider
                 model = route.get("model")
@@ -854,11 +855,15 @@ class TaskforceRoster:
         route = _loads(specialist["route"], {}) if specialist else {}
         execution = _loads(row["execution"], {})
         # Provider and model are read from the specialist AS IT IS ROUTED
-        # NOW for work not yet dispatched (a rerouted worker executes its
-        # next attempt on the new route). Once an attempt is dispatched
-        # the assignment row holds the route it was dispatched on, and
-        # that is what a relaunch repeats.
-        live = row["status"] == "SELECTED" and specialist is not None
+        # NOW for an attempt no route has been recorded for (a rerouted
+        # worker executes its next attempt on the new route). The route
+        # is recorded with the assignment just before the attempt is
+        # dispatched; from then on the row holds it, and that — never the
+        # live policy — is what a re-entry or a relaunch repeats, session
+        # arguments included (F-TF-28).
+        dispatched = execution.get("route")
+        live = not dispatched and row["status"] == "SELECTED" \
+            and specialist is not None
         provider = specialist["provider"] if live else row["provider"]
         model = specialist["model"] if live else row["model"]
         effort = route.get("effort")
@@ -866,12 +871,15 @@ class TaskforceRoster:
         route_name = route.get("route_name")
         served_as = "default" if route_name else None
         routing = getattr(self.pool, "routing", None)
-        dispatched = execution.get("route") if not live else None
         if dispatched:
             effort = dispatched.get("effort")
             route_name = dispatched.get("name")
             served_as = dispatched.get("served_as")
-            if routing is not None and route_name in routing.names():
+            if "provider_args" in dispatched:
+                provider_args = list(dispatched["provider_args"])
+            elif routing is not None and route_name in routing.names():
+                # An assignment dispatched before session arguments were
+                # recorded with the route: the policy's, by route name.
                 provider_args = routing.route(route_name)["provider_args"]
         elif live and routing is not None and (
                 execution.get("escalation")

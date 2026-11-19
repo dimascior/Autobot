@@ -418,6 +418,30 @@ record and the Engineer is told, but it is not a workstream to complete
 and does not keep a project open. An admission still queued for you does.
 A project with no admitted work at all is never complete.
 
+A review counts only when it examined the work (D-TF-32). The frozen
+prompt of every `REQUEST_REVIEW` carries a review contract: the reviewer
+puts one line in its response, `AUTOBOT_REVIEW: EXAMINED` when it read
+both the work under review and the source it must agree with,
+`AUTOBOT_REVIEW: NOT_EXAMINED` when it could not. What it said is recorded
+with its assignment when its result is collected and shown on the review
+workstream as `review_verdict`: `EXAMINED`, `NOT_EXAMINED`, or `NOT_STATED`
+when the response carried no such line. Nothing is inferred from prose.
+
+Authority is not asked this question. A reviewer that reports truthfully
+that it could not read the work has returned a valid result, and the
+Registry, the Collector and the verifiers treat it as one: the review
+sequence is verified, accepted and COMPLETED. What changes is what the
+organization makes of it:
+
+| Verdict | The reviewed work | The reviewer's demonstration | `PROJECT_COMPLETE` |
+|---|---|---|---|
+| `EXAMINED` | reviewed | judged as any work | allowed |
+| `NOT_EXAMINED` | still unreviewed | NOT_QUALIFYING (`outcome useful` fails) | refused until another review of the same record is `EXAMINED` |
+| `NOT_STATED` | the Engineer's to judge; it is told to treat it as unreviewed | judged as any work | allowed |
+
+Another review is a new `REQUEST_REVIEW` of the same record: a new
+contract, staffed independently again.
+
 ## 4. The Taskforce
 
 The Taskforce is the persistent engineering organization. It owns retained
@@ -550,7 +574,7 @@ the ledger:
 | scope respected | SOURCE_MODIFYING: the candidate tree was captured after the frozen scope check |
 | governance satisfied | the admitted ExecutionReceipt is COMPLETE |
 | repair coherent | the attempt that verified is this one |
-| outcome useful | the accepted work was created for an objective |
+| outcome useful | the accepted work was created for an objective; and, for a review, the reviewer did not say it could not examine the work (section 3.7) |
 
 All seven make a demonstration QUALIFYING. Anything else is
 NOT_QUALIFYING, recorded with what failed.
@@ -579,15 +603,19 @@ staged so that a restart continues from the stage it reached (D-TF-7):
    1  project assignment (and the team row)           plan store
    2  attempt created                 t-s06           Sequencer
    3  attempt reserved                t-a01           Sequencer
-   4  projection + dispatch, call_id  t-a02           Sequencer
-   5  execution slot + references bound               plan store
-   6  manifest built, session launched                AutoSwarm
+   4  execution route recorded                        plan store
+   5  projection + dispatch, call_id  t-a02           Sequencer
+   6  execution slot + references bound               plan store
+   7  manifest built, session launched                AutoSwarm
 ```
 
 Each stage is read back from the ledger before it is attempted. A restart
-after stage 1 re-derives the same assignment row; after stage 4 it
+after stage 1 re-derives the same assignment row; after stage 5 it
 relaunches on the same call_id, which the transport treats as the same
-call.
+call. The route is recorded before the ledger binds the call to a
+provider (stage 4), so a restart anywhere after it reads the route from
+the assignment and never from a policy that may have changed since
+(section 6.8).
 
 ### 6.2 The frozen prompt
 
@@ -600,6 +628,15 @@ exactly those bytes, and verification proves it (INV-49).
 
 A repair therefore executes the same frozen requirement. Different
 instructions are a different contract.
+
+The contracts appended to the guidance are one text for every provider
+(D-TF-29) and say how to work in the environment, never what to conclude.
+Two parts of them exist because production needed them. Every execution
+contract tells the specialist to run each command in the default shell of
+its session, that a shell which cannot start is not a refusal of the
+command and not a reason to stop, and that an interpreter run on inline
+code needs an authorization a specialist cannot give (D-TF-31). And a
+review carries the review contract of section 3.7.
 
 ### 6.3 Supervision
 
@@ -737,6 +774,17 @@ attempt, content address. Git is told to ignore the directory (the
 repository's local `info/exclude`), so a SOURCE_MODIFYING worktree still
 reads as clean and the files cannot be staged.
 
+Two more things are placed there, because a session cannot work out
+either by itself (D-TF-33):
+
+| File | What it is |
+|---|---|
+| `README.md` | what the working directory holds: the revision it is a checkout of; each delivered file and the workstream, sequence and attempt it came from; and, for a predecessor whose accepted work changed the repository, the commit authority published, its parent, and whether the checkout is at that commit. Every fact is read from the ledger. The note's bytes are stored and their address is recorded with the assignment (`inputs_note`) |
+| `<reviewed>.given.<workstream>.md`, for a review only | the accepted results the reviewed work was itself given, by the addresses its own assignment recorded |
+
+The frozen prompt cannot say any of this: the revision a predecessor's
+change lands as does not exist when the dependent contract is frozen.
+
 ### 6.8 Execution routing
 
 Which provider and model a session runs on is decided last, after every
@@ -787,12 +835,21 @@ reasoning effort and the native session arguments — travels beside the
 manifest: the Taskforce stages it for the call and the transport passes
 it to AutoSwarm, whose own call record (the admitted obj-11 witness)
 holds the model and effort it was launched with. The assignment row
-records the whole route with its name when the attempt is dispatched
-(`execution.route`), and a relaunch after a restart repeats exactly that
-route. A specialist whose route is replaced executes its next attempt on
-the new one. Its earlier attempts keep the routes they ran on, so one
-specialist's history can read: attempt 1 on one model, attempt 2 on
-another.
+records the whole route — its name, provider, model, effort and session
+arguments — just before the attempt is dispatched (`execution.route`),
+and a re-entry or a relaunch after a restart repeats exactly that route,
+arguments included, whatever the policy says by then. The staged
+configuration names the provider it is for, and the transport refuses to
+apply it to a manifest that names another. A specialist whose route is
+replaced executes its next attempt on the new one. Its earlier attempts
+keep the routes they ran on, so one specialist's history can read:
+attempt 1 on one model, attempt 2 on another.
+
+A route's session arguments may carry four placeholders the transport
+fills for each session (`{workspace}`, `{repo_git}`, `{gate_pending}`,
+`{gate_pending_real}`). Any other name in braces is refused when the
+policy is read, however it is cased or punctuated: it would otherwise
+reach the provider as literal text.
 
 **Escalation** (D-TF-27). Work runs on the escalation route in two ways,
 and neither names a model:
@@ -956,8 +1013,11 @@ refused. The authority database is not touched.
 | D-TF-26 | Execution routing is a declared policy resolved after staffing: a default route for every specialist session, an escalation route, fallbacks used only while the default is switched off, and a utility route. A route's provider, model and effort are no part of a TaskContractRecord, a requirement, a project, a workstream, a capability, a specialist, a membership, a seat or a demonstration. The Engineer's model is separate configuration. |
 | D-TF-27 | Work is escalated by the organization's rule over capability and role, or by the Project Manager for one assignment in words about the engineering need (`high_context`, `deep_reasoning`) with its rationale. Routing resolves either to the escalation route. Neither names a provider or a model. |
 | D-TF-28 | A provider that runs inside an operating-system sandbox is supervised at the sandbox's edge: its route declares what the sandbox may write, and the only escalation the policy grants is the pair of Git commands a specialist-owned candidate commit needs (`git add` of paths in the frozen scope, `git commit -m`), as one plain command run by the system shell from the root of the assignment's own, untampered worktree. The command that would run is what is judged. Every command still passes Helios. (Narrowed after F-TF-26; as first written it granted seven Git subcommands by their first two words.) |
-| D-TF-29 | The route an attempt is dispatched on is recorded with that attempt: provider and model in the ExecutionManifest, whose schema stays what AutoSwarm also holds; the whole route, with its name and effort, on the assignment. Effort and session arguments are staged beside the manifest. A relaunch repeats the recorded route. The specialist prompt is one text for every provider. |
+| D-TF-29 | The route an attempt is dispatched on is recorded with that attempt: provider and model in the ExecutionManifest, whose schema stays what AutoSwarm also holds; the whole route, with its name, effort and session arguments, on the assignment, before the ledger dispatches the attempt. Effort and session arguments are staged beside the manifest, for the provider they belong to. A re-entry or a relaunch repeats the recorded route. The specialist prompt is one text for every provider. (Completed after F-TF-28: the route was first recorded after dispatch and without its arguments.) |
 | D-TF-30 | Supervision judges a location by where it resolves. A path is inside a root when its resolved location lies inside the root's resolved location; the spelling of either decides nothing. |
+| D-TF-31 | A specialist works in the default shell of its session. The execution contracts say so, and say that a shell which cannot start is neither a refusal nor a reason to stop. The contract names no shell: which one a session has is the provider's and the host's. |
+| D-TF-32 | A review states whether it examined the work, in one line the review contract defines. The statement is recorded with the review's assignment. A review that says it could not examine the work is still a valid result for authority; for the organization it leaves the work unreviewed, earns its reviewer no qualifying demonstration, and refuses project completion until another review of the same record examines it. A verdict is read from the line and never inferred. |
+| D-TF-33 | A dependent session is told what its working directory holds, by a note written at launch from ledger facts and recorded by content address; a review is also given what the reviewed work was given. |
 
 ## 12. Findings
 
@@ -990,5 +1050,6 @@ refused. The authority database is not touched.
 | F-TF-25 | RUNBOOK.md cites source by line, and the routing change moved those lines. | Fixed through the organization, 2026-11-18 (Pilot 4): commit `606663ade00219a4b2c1baef0df0aa81dc510067`, written by the retained documentation builder from two verified investigations and published by authority. All 104 references of the earlier text carry through the line shifts of the routing change (75 moved, 29 did not); the commit also adds the `preflight` command and an execution-routing subsection. [PRODUCTION_PROOF.md](PRODUCTION_PROOF.md) section 19. |
 | F-TF-26 | Reported by Pilot 3's reviewers, 2026-11-18 (three findings, significance high), and confirmed in source. The sandbox-edge rule of D-TF-28 as first written read the provider's description of a command by its first two words. A script that chained a second command after `git status` would have been approved to run outside the sandbox; any program named `git` was accepted; path-capable Git commands (`rm`, `mv`, `reset`, `restore`) were granted without looking at their paths; and the working directory only had to be spelled inside the workspace. | Fixed: the rule of section 6.3 (D-TF-28 as narrowed, D-TF-30). No production request used the gap. The only two requests production had raised (Pilot 4: `git add docs/architecture/orchestration/RUNBOOK.md` and `git commit -m "docs: update orchestration runbook"`) are replayed in the tests as recorded and are still granted. Not closed by a policy that decides before a command runs: the checks are made at decision time and the command runs afterwards; Git reads the repository's own configuration and hooks, which are trusted as the operator's; and inside the sandbox a session can still write any file of its worktree, in scope or not, which the candidate scope check refuses afterwards. |
 | F-TF-27 | Reported by Pilot 1's specialists and again by Pilot 3's: `_relative_inside` accepted a path when either its written or its resolved spelling lay inside the root, while its documentation said both were judged. A link inside a worktree that leads out of it counted as inside, for reads, for writes and for the sandbox-edge working directory. | Fixed: resolved containment (D-TF-30). |
-| F-TF-28 | Reported by Pilot 3's specialists, read in source, not confirmed by a test. The route of an attempt is recorded when its execution slot is bound, after dispatch: a stop between the two, followed by a routing change, would relaunch on the new route and record that one. A relaunch takes a route's session arguments from the live policy, not from the assignment. Staged session arguments are keyed by call id alone. A placeholder that is not lower-case letters in braces passes validation and stays literal in the arguments. | Open. Each needs a routing change or a configuration error between a stop and a restart. |
-| F-TF-29 | Found in production, 2026-11-18 (Pilot 4). The reviewer of a SOURCE_MODIFYING change is given the builder's accepted result and a worktree at the landed revision, but is not told that its worktree holds the reviewed change, and is not given the results the builder worked from. Pilot 4's reviewer verified the new sections, spot-checked the references and reported that it could not compare exhaustively. | Open. The review was accepted as what it was; the exhaustive comparison was made outside the organization and is recorded in the production proof. |
+| F-TF-28 | Reported by Pilot 3's specialists; each part then confirmed by reading the source and by a test that fails without the fix. (a) The route of an attempt was recorded when its execution slot was bound, after dispatch: a stop between the two, followed by a routing change, relaunched on the new route while the ledger had dispatched the attempt to the old provider. (b) A relaunch took a route's session arguments from the live policy, not from the assignment. (c) Staged session arguments were keyed by call id alone and applied to whatever manifest carried that id. (d) A placeholder that was not lower-case letters in braces passed validation and stayed literal in the arguments. | Fixed, all four. (a) The route is recorded with the assignment before the ledger dispatches, and once recorded it is what every re-entry reads (section 6.1, stage 4). (b) The recorded route carries its session arguments, and a relaunch repeats them; an edit of a route's arguments applies to attempts dispatched after it. (c) Staged configuration names its provider, and the transport refuses to apply it to a manifest naming another. (d) Any name in braces that is not one of the four placeholders is refused when the policy is read. No production run met any of the four conditions. |
+| F-TF-29 | Found in production, 2026-11-18 (Pilot 4). The reviewer of a SOURCE_MODIFYING change is given the builder's accepted result and a worktree at the landed revision, but is not told that its worktree holds the reviewed change, and is not given the results the builder worked from. Pilot 4's reviewer verified the new sections, spot-checked the references and reported that it could not compare exhaustively. | Fixed: D-TF-33, section 6.7. The review of Pilot 4 stays what it was, a partial one; the exhaustive comparison was made outside the organization and is recorded as that in the production proof. |
+| F-TF-30 | Found in production, 2026-11-18 (Pilot 5). The independent reviewer read the change under review in its session's default shell, then set its command tool to `bash`. On that host the only `bash` is the WSL launcher, and WSL refuses a sandboxed process: every later read returned `Bash/Service/CreateInstance/E_ACCESSDENIED`. Helios had admitted each command, no permission request was raised, and no file was unreadable: the default shell would have read everything, which two probe sessions confirmed. The reviewer took the failure for a denial, looked for a file-reading tool, found none and reported that it could not determine whether the reviewed text was accurate. Three things then went wrong above it. Authority, correctly, accepted the result. The reviewer was credited with a qualifying demonstration. And the Engineer completed the project, reasoning that the review had reported no defect. | Fixed. The contract keeps a session in its default shell and says a shell that cannot start is not a denial (D-TF-31). A review states whether it examined the work; one that says it could not leaves the work unreviewed, earns no qualifying demonstration and blocks completion (D-TF-32, section 3.7). The reviewed text itself was checked against the source outside the organization and is accurate. The review of Pilot 5 stays on record as what it was: an accepted result that examined nothing. |

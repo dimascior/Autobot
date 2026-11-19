@@ -2200,8 +2200,12 @@ class PredecessorResultTests(WorkforceTestCase):
         self.assertNotIn(work["call_id"], self.transport.staged)
         self.assertNotIn(prompts.INPUTS_DIR,
                          self.transport.prompts[work["call_id"]])
-        self.assertEqual(self.transport.staged[review["call_id"]],
-                         [(key, b"the accepted trace\n")])
+        # The accepted result, then the note saying what the workspace
+        # holds (test_independent_review pins the note).
+        staged = self.transport.staged[review["call_id"]]
+        self.assertEqual(staged[0], (key, b"the accepted trace\n"))
+        self.assertEqual([name for name, _data in staged],
+                         [key, prompts.INPUTS_README])
         self.assertIn(prompts.INPUTS_DIR,
                       self.transport.prompts[review["call_id"]])
         provided = json.loads(review["execution"])["predecessor_inputs"]

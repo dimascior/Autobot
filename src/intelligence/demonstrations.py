@@ -233,6 +233,14 @@ class DemonstrationRecorder:
             # READ_ONLY: writes are granted only for command-governance
             # (gate) files, which the supervision policy records as such.
             scope_respected = candidate is not None
+        # A review that says it could not examine the work produced an
+        # accepted result and no review (D-TF-32): that result is not
+        # useful to the objective as the review it was asked to be, and
+        # earns its reviewer no qualifying demonstration.
+        review = (_loads(assignment.get("execution"), {}) or {}).get(
+            "review")
+        unexamined = isinstance(review, dict) \
+            and review.get("verdict") == "NOT_EXAMINED"
         criteria = {
             "task_completed": accepted,
             "candidate_accepted": bool(accepted and candidate),
@@ -242,7 +250,8 @@ class DemonstrationRecorder:
                 receipt and receipt["completeness"] == "COMPLETE"),
             "repair_coherent": verification_passed,
             "outcome_useful": bool(accepted and origin
-                                   and origin.get("objective_id")),
+                                   and origin.get("objective_id")
+                                   and not unexamined),
         }
         observations = {
             "attempt_ordinal": assignment["attempt_ordinal"],
@@ -253,6 +262,9 @@ class DemonstrationRecorder:
                 [a for a in approvals if a["decision"] == "deny"]),
             "writes_granted": len(granted_writes),
         }
+        if isinstance(review, dict):
+            observations["review_verdict"] = review.get("verdict") \
+                or "NOT_STATED"
         if attempt["state"] in ("FAILED", "STALE"):
             # The attempt never produced work to judge. What the provider
             # itself said about the session is recorded beside the

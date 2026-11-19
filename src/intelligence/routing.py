@@ -72,7 +72,12 @@ ESCALATION_CLASSES = ("deep_reasoning", "high_context")
 # (AutoSwarmTransport.SESSION_PLACEHOLDERS is the same list).
 PLACEHOLDERS = ("{repo_git}", "{gate_pending}", "{gate_pending_real}",
                 "{workspace}")
-_PLACEHOLDER = re.compile(r"\{[a-z_]+\}")
+# Anything that reads as a placeholder — a name in braces, however it is
+# cased, with digits or hyphens — must be one a session can fill. A token
+# that is none of the four would stay in the arguments as literal text
+# (F-TF-28). Braces around anything else (a provider's own inline table,
+# ``{a=1}``) are the provider's syntax and are left alone.
+_PLACEHOLDER = re.compile(r"\{[A-Za-z0-9_\-]+\}")
 
 
 class RoutingError(Exception):

@@ -188,7 +188,8 @@ class AutoSwarmTransport(Transport):
             # session configuration the caller staged for this call. The
             # arguments' placeholders are filled from the workspace this
             # session is actually launched in.
-            effort, session_args = self._session_config(call_id, workspace)
+            effort, session_args = self._session_config(
+                call_id, workspace, provider)
             args = ["run", "--agent", provider]
             if model:
                 args += ["--model", model]
@@ -230,20 +231,32 @@ class AutoSwarmTransport(Transport):
     SESSION_PLACEHOLDERS = ("{repo_git}", "{gate_pending}",
                             "{gate_pending_real}", "{workspace}")
 
-    def stage_session(self, call_id, provider_args=(), effort=None):
+    def stage_session(self, call_id, provider_args=(), effort=None,
+                      provider=None):
         """Accept the session configuration of the execution route one
         call is dispatched on — the route's reasoning effort and its
         native session arguments — to be passed to the provider when that
         call's session is launched. It configures the session (how deeply
         the model reasons, a sandbox mode, an approval policy); it is no
-        part of the manifest or of any contract. Held in memory until
-        that call's launch."""
+        part of the manifest or of any contract. ``provider`` names the
+        provider the configuration is for: it is applied only to a
+        manifest that names the same one. Held in memory until that
+        call's launch."""
         self._session[call_id] = {
             "effort": str(effort) if effort else None,
-            "args": [str(arg) for arg in provider_args or []]}
+            "args": [str(arg) for arg in provider_args or []],
+            "provider": str(provider) if provider else None}
 
-    def _session_config(self, call_id, workspace):
+    def _session_config(self, call_id, workspace, provider=None):
         staged = self._session.pop(call_id, None) or {}
+        intended = staged.get("provider")
+        if intended and provider and intended != provider:
+            # One route's sandbox and approval arguments are never handed
+            # to another provider's session (F-TF-28).
+            raise RuntimeError(
+                "the session configuration staged for call %s is for"
+                " provider %s; its manifest names %s"
+                % (call_id, intended, provider))
         return staged.get("effort"), self._expand_session_args(
             staged.get("args") or [], workspace)
 

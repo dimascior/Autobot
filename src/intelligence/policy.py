@@ -66,6 +66,7 @@ from .proposals import (
     ProposalError,
     validate_proposal,
 )
+from .query import unexamined_reviews
 from .routing import ESCALATION_CLASSES
 from .workforce import RELEASE_REASONS, STAFFING_MODES
 
@@ -237,6 +238,17 @@ Completion
   membership persists.
 - When every workstream is COMPLETED and nothing more is needed, do not
   leave the project open: complete it.
+- A review counts only when it examined the work. A review workstream
+  shows "review_verdict": "EXAMINED" when the reviewer read the work and
+  the source it must agree with, "NOT_EXAMINED" when the reviewer says it
+  could not, and "NOT_STATED" when it did not say. A COMPLETED review
+  that is NOT_EXAMINED or NOT_STATED means its verified result exists,
+  not that the work was reviewed: the work is still unreviewed. Request
+  another independent review of the same workstream (REQUEST_REVIEW with
+  the same "review_of", under a new workstream key, with guidance that
+  avoids what stopped the first one) before you complete the project.
+  PROJECT_COMPLETE is refused while a reviewed workstream has only
+  NOT_EXAMINED reviews.
 - A workstream shown as REJECTED with no sequence_id was refused at
   admission and never became work: it is nothing to complete. Decide
   whether the objective still needs that work in another form (under a
@@ -1082,9 +1094,29 @@ class ReasoningEngineerPolicy(EngineerPolicy):
                 errors.append(
                     "PROJECT_COMPLETE refused: %d workstream(s) of %s are"
                     " not COMPLETED" % (len(unfinished), objective_id))
+            elif self._unexamined_reviews(view, objective_id):
+                # D-TF-32: a review that says it could not examine the
+                # work is not a review of it. The work stays unreviewed
+                # until another review of the same record examines it.
+                stopped = self._unexamined_reviews(view, objective_id)
+                errors.append(
+                    "PROJECT_COMPLETE refused: %d reviewed workstream(s)"
+                    " of %s have only reviews that say NOT_EXAMINED (%s)."
+                    " A review that could not read the work has not"
+                    " reviewed it: request another independent review of"
+                    " the same workstream, with guidance that avoids what"
+                    " stopped the first" % (
+                        len(stopped), objective_id,
+                        ", ".join(sorted(s for entry in stopped
+                                         for s in entry["reviews"] if s))))
             else:
                 kept.append(proposal)
         return kept
+
+    def _unexamined_reviews(self, view, objective_id):
+        """The reviewed work of this objective whose finished reviews all
+        failed to examine it (``query.unexamined_reviews``)."""
+        return unexamined_reviews(self._work(view, objective_id))
 
     # ------------------------------------------------------------- plan
 

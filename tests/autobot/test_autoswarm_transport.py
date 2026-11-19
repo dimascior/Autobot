@@ -629,6 +629,30 @@ class WorkspaceIsolationTests(unittest.TestCase):
         self.assertIn("{gate_pending}", str(raised.exception))
         self.assertEqual(recorder.cli(), [])
 
+    def test_a_session_configuration_is_applied_only_to_its_provider(self):
+        """F-TF-28: one route's sandbox and approval arguments are never
+        handed to another provider's session. Configuration staged for
+        one provider stops the launch of a manifest that names another,
+        before the provider is started."""
+        staged = ["--sandbox", "workspace-write"]
+        self.transport.stage_session(self.call_id, staged, effort="max",
+                                     provider="codex")
+        recorder = _Recorder()
+        with patch("autobot.autoswarm_transport.subprocess.run", recorder):
+            with self.assertRaises(RuntimeError) as raised:
+                self.transport.launch_manifest(
+                    "sha256:" + "0" * 64, self._route_manifest(
+                        provider="claude-code", model="sonnet"))
+        self.assertIn("is for provider codex", str(raised.exception))
+        self.assertIn("names claude-code", str(raised.exception))
+        self.assertEqual(recorder.cli(), [])
+        # For the provider it was staged for, it is applied.
+        self.transport.stage_session(self.call_id, staged, effort="max",
+                                     provider="codex")
+        recorder, _cwd = self._launch(self._route_manifest())
+        self.assertIn("--provider-arg=--sandbox", recorder.cli()[0])
+        self.assertIn("--effort", recorder.cli()[0])
+
     def test_a_route_probe_runs_outside_any_attempt(self):
         """A preflight session gets the route — provider, model, effort,
         session arguments, an isolated worktree — and no manifest and no
