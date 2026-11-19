@@ -33,6 +33,17 @@ called its check "an independent review". So also:
     one assignment is one specialist doing its own task in one session:
     the contract says so for every provider, and where a provider asks
     before each tool use, a tool that starts another agent is refused.
+
+The run that confirmed that (Pilot 7, F-TF-32) showed the next thing a
+provider can offer a session: its reviewer, refused three gate files it
+had addressed to the wrong folder, found a connector to the remote
+repository among its provider's tools and read the source from there.
+So also:
+
+    nothing that reaches outside the machine's files and the session's
+    shell is part of an assignment, even to read: the contract says so
+    for every provider, and where a provider asks before each tool use,
+    a connector, the web, a browser or a desktop is refused.
 """
 
 import json
@@ -180,6 +191,39 @@ class ContractTests(unittest.TestCase):
             builder.index("Project objective: Change it, and have the"
                           " result independently reviewed."),
             builder.index("The project objective is context"))
+
+    def test_every_contract_keeps_a_session_to_this_machine(self):
+        """Production, 2026-11-19 (F-TF-32): a reviewer whose gate files
+        were refused looked through its provider's tools, found a
+        connector to the remote repository and read the source from
+        there. Nothing that reaches outside the machine's files and the
+        session's shell is part of an assignment, even to read."""
+        for prompt in (self._prompt(), self._prompt(governed=True),
+                       self._prompt("SOURCE_MODIFYING"),
+                       self._prompt(review=True)):
+            self.assertEqual(prompt.count(prompts.TOOL_RULES), 1)
+            self.assertIn("Nothing that reaches outside this machine's"
+                          " files and your session's shell is part of an"
+                          " assignment", prompt)
+            self.assertIn("no connector, app or plugin, no web access, no"
+                          " browser or desktop control, no remote copy of"
+                          " the repository", prompt)
+            self.assertIn("Do not use one, even to read.", prompt)
+            self.assertIn("What you could not read without one you have"
+                          " not read", prompt)
+            # It follows the one-session rule in the same part of the
+            # contract: both say what a session is, not how to do the work.
+            self.assertLess(prompt.index(prompts.SESSION_RULES),
+                            prompt.index(prompts.TOOL_RULES))
+        # The rule names no provider, no service and no provider's tool.
+        for word in ("github", "mcp", "codex", "claude", "slack",
+                     "fetch_file", "node"):
+            self.assertNotIn(word, prompts.TOOL_RULES.lower())
+        # A review that could not read without one says so, by the review
+        # contract that follows: the line is NOT_EXAMINED.
+        review = self._prompt(review=True)
+        self.assertLess(review.index(prompts.TOOL_RULES),
+                        review.index("--- REVIEW CONTRACT ---"))
 
     def test_only_a_review_carries_the_review_contract(self):
         review = self._prompt(review=True)
@@ -636,6 +680,31 @@ class ReviewerAuthorityTests(unittest.TestCase):
                     {"kind": "approval_required", "native_request": {
                         "subtype": "can_use_tool", "tool_name": tool,
                         "input": {"prompt": "review my work"}}}, context)
+                self.assertEqual(verdict["decision"], "deny", tool)
+                self.assertIn("is not granted to Taskforce assignments",
+                              verdict["reason"])
+
+    def test_no_session_is_granted_a_tool_that_reaches_outside(self):
+        """F-TF-32, for a provider that asks before each tool use: a
+        connector, the web, a browser or a desktop is one no assignment
+        grants, to a builder or to a reviewer, to read or to write."""
+        outside = (
+            ("mcp__github__get_file_contents",
+             {"owner": "o", "repo": "r", "path": "src/x.py"}),
+            ("mcp__github__add_issue_comment",
+             {"owner": "o", "repo": "r", "issue_number": 1, "body": "x"}),
+            ("mcp__slack__post_message", {"channel": "c", "text": "x"}),
+            ("WebFetch", {"url": "https://example.invalid/x"}),
+            ("WebSearch", {"query": "x"}),
+            ("mcp__browser__navigate", {"url": "https://example.invalid/"}),
+            ("computer", {"action": "screenshot"}),
+        )
+        for context in (self._reviewer(), self._builder()):
+            for tool, tool_input in outside:
+                verdict = supervision.decide(
+                    {"kind": "approval_required", "native_request": {
+                        "subtype": "can_use_tool", "tool_name": tool,
+                        "input": tool_input}}, context)
                 self.assertEqual(verdict["decision"], "deny", tool)
                 self.assertIn("is not granted to Taskforce assignments",
                               verdict["reason"])

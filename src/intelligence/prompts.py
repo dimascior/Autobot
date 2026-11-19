@@ -86,6 +86,19 @@ SESSION_RULES = (
     " another specialist under its own assignment can give, and your"
     " response must not call it one.")
 
+# What a session may reach. Production, 2026-11-19 (F-TF-32): a reviewer
+# whose gate files were refused looked through its provider's tools,
+# found a connector to the remote repository and read the source from
+# there. A provider can offer a session far more than an assignment
+# grants; where the route cannot switch it off, this is the only rule.
+TOOL_RULES = (
+    " Nothing that reaches outside this machine's files and your"
+    " session's shell is part of an assignment: no connector, app or"
+    " plugin, no web access, no browser or desktop control, no remote"
+    " copy of the repository. Do not use one, even to read. What you"
+    " could not read without one you have not read; say so in your"
+    " response.")
+
 READ_ONLY_CONTRACT = (
     "\n\n--- READ_ONLY EXECUTION CONTRACT ---\n"
     "This is a READ_ONLY assignment. Your working directory is a"
@@ -102,6 +115,7 @@ READ_ONLY_CONTRACT = (
     "- Do not ask questions; nobody will answer. Complete the task from"
     " what the files show, and say what you could not determine.\n"
     "-" + SESSION_RULES + "\n"
+    "-" + TOOL_RULES + "\n"
     "- Cite what you rely on as path:line.\n"
     "--- END CONTRACT ---"
 )
@@ -112,7 +126,7 @@ SHELL_NOTE = (
     " command gate. A command is refused until you write the gate file"
     " the refusal describes; follow the refusal's instructions exactly"
     " and retry the identical command." + SHELL_RULES + " Do not ask"
-    " questions; nobody will answer." + SESSION_RULES + "\n"
+    " questions; nobody will answer." + SESSION_RULES + TOOL_RULES + "\n"
     "--- END ---"
 )
 
