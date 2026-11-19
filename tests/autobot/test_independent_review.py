@@ -25,6 +25,14 @@ These tests pin what those runs needed:
     a note saying what its working directory holds;
     a reviewer stays a READ_ONLY session — nothing it asks for leaves the
     sandbox — and the builder's narrowed rule is what it was.
+
+The run that confirmed all of that (Pilot 6, F-TF-31) showed one more
+thing: the builder's session started a sub-agent of its own provider and
+called its check "an independent review". So also:
+
+    one assignment is one specialist doing its own task in one session:
+    the contract says so for every provider, and where a provider asks
+    before each tool use, a tool that starts another agent is refused.
 """
 
 import json
@@ -137,6 +145,41 @@ class ContractTests(unittest.TestCase):
         # The contract names no shell and no provider: it is one text.
         for word in ("powershell", "bash", "wsl", "codex", "claude"):
             self.assertNotIn(word, self._prompt().lower())
+
+    def test_every_contract_keeps_the_work_in_one_session(self):
+        """Production, 2026-11-19 (F-TF-31): a builder, shown a project
+        objective that also asked for an independent review, started a
+        sub-agent of its own provider and reported its check as "an
+        independent review". One assignment is one specialist doing its
+        own task in one session, whatever provider runs it and whatever
+        class the work has."""
+        for prompt in (self._prompt(), self._prompt(governed=True),
+                       self._prompt("SOURCE_MODIFYING"),
+                       self._prompt(review=True)):
+            self.assertEqual(prompt.count(prompts.SESSION_RULES), 1)
+            self.assertIn("Do this task yourself, in this one session",
+                          prompt)
+            self.assertIn("do not start sub-agents, other agents or other"
+                          " sessions", prompt)
+            self.assertIn("other parts of it are other assignments, which"
+                          " the organization staffs", prompt)
+            self.assertIn("it is not an independent review, which only"
+                          " another specialist under its own assignment"
+                          " can give", prompt)
+        # The rule names no provider and none of a provider's tools.
+        for word in ("spawn", "collaboration", "codex", "claude",
+                     "task tool"):
+            self.assertNotIn(word, prompts.SESSION_RULES.lower())
+        # A project objective that asks for a review is still shown to
+        # the builder, as context; the rule that scopes it follows it.
+        builder = self._prompt(
+            "SOURCE_MODIFYING", task="Change it.",
+            objective="Change it, and have the result independently"
+                      " reviewed.")
+        self.assertLess(
+            builder.index("Project objective: Change it, and have the"
+                          " result independently reviewed."),
+            builder.index("The project objective is context"))
 
     def test_only_a_review_carries_the_review_contract(self):
         review = self._prompt(review=True)
@@ -582,6 +625,20 @@ class ReviewerAuthorityTests(unittest.TestCase):
                     reviewer, tool, file_path=str(path), **extra), "deny")
         self.assertEqual(self._tool(reviewer, "Read", file_path=str(
             self.outside / "secret.txt")), "deny")
+
+    def test_no_session_is_granted_a_tool_that_starts_another_agent(self):
+        """F-TF-31, for a provider that asks before each tool use: a tool
+        that starts another agent is one no assignment grants, to a
+        builder or to a reviewer."""
+        for context in (self._reviewer(), self._builder()):
+            for tool in ("Task", "Agent", "SubAgent", "spawn_agent"):
+                verdict = supervision.decide(
+                    {"kind": "approval_required", "native_request": {
+                        "subtype": "can_use_tool", "tool_name": tool,
+                        "input": {"prompt": "review my work"}}}, context)
+                self.assertEqual(verdict["decision"], "deny", tool)
+                self.assertIn("is not granted to Taskforce assignments",
+                              verdict["reason"])
 
     def test_the_builders_rule_is_what_it_was(self):
         builder = self._builder()
