@@ -39,6 +39,7 @@ from autobot import project_state
 from autobot.models import instant
 
 from .engineer import EngineerService
+from .orchestrator import OrchestratorService, PassthroughOrchestratorPolicy
 from .planstore import readonly_view
 from .taskforce import Taskforce
 
@@ -61,7 +62,8 @@ class ContinuousDriver:
                  repository_context=None, holder="chief-engineer",
                  lease_seconds=3600, max_proposals_per_cycle=16,
                  freeze_prompts=False, established_threshold=3,
-                 gate_root=None, isolate_read_only=False):
+                 gate_root=None, isolate_read_only=False,
+                 orchestrator_policy=None):
         """``pool`` is the specialist catalog (``SpecialistPool``): the
         workers that exist, whether or not any is a Taskforce member.
         ``freeze_prompts`` makes every contract
@@ -91,6 +93,10 @@ class ContinuousDriver:
         # The attribute this service was reached by before the
         # organizational model was aligned.
         self.chief = self.engineer
+        self.orchestrator = OrchestratorService(
+            plan=plan,
+            policy=orchestrator_policy or PassthroughOrchestratorPolicy(),
+            clock=clock)
         self._acquire()
         # The organization the Engineer reasons over exists before its
         # first cycle: mirror the specialist catalog now.
@@ -128,15 +134,23 @@ class ContinuousDriver:
     # -------------------------------------------------------------- steps
 
     def step(self):
-        """One loop iteration: a planning cycle (when something new woke
-        the planner) and one Taskforce sweep. Returns the step report;
-        ``quiet`` means the step changed nothing and proposed nothing."""
+        """One loop iteration: an orchestration cycle, a planning cycle
+        (when something new woke the planner), and one Taskforce sweep.
+        Returns the step report; ``quiet`` means the step changed nothing
+        and proposed nothing."""
         self._acquire()  # renew; refuses if another driver took over
         self._renew_authority_lease()
         now = instant(self.clock.now())
+        orchestration = self.orchestrator.run_cycle(
+            objectives=self.plan.active_objectives(),
+            projects=self.plan.active_projects()
+                if hasattr(self.plan, "active_projects") else [],
+            taskforce_state=self.taskforce.roster.snapshot()
+                if hasattr(self.taskforce.roster, "snapshot") else {})
         planning = self.engineer.run_cycle(self.ro, project_state, now)
         sweep = self.taskforce.advance(now)
-        return {"planning": planning, "sweep": sweep,
+        return {"orchestration": orchestration,
+                "planning": planning, "sweep": sweep,
                 "quiet": not _any_activity(planning, sweep)}
 
     def _closing(self, steps, **extra):
