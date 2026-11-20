@@ -405,7 +405,3 @@ Do not rely on any of the following until it has been checked against source:
 - the exact meaning of each `--evidence-profile` value;
 - what happens when an auto-generated objective id collides with an existing one. Two fresh runs in the same second produce the same id;
 - whether the runtime and the reporting commands always resolve the same data directory when `--root` is omitted (`cli.py:39-44`, `cli.py:144-151`).
-
-## Execution-evidence confirmation
-
-Pilot 11: confirmed after F-TF-33, F-TF-34, F-TF-35 corrections. 2026-11-21.

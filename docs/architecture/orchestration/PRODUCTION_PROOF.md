@@ -2566,25 +2566,125 @@ respects the dependency graph.
 | Focused new tests (4 files) | 61 passed |
 | Full regression (excluding legacy coordinator) | 1004 passed |
 
-## 31. Final production state
+## 31. Post-PR35 execution-evidence production pilots
+
+PR 35 (`4e7860c`) closed the initial production proof. The four commits
+that follow it are direct descendants on `main`, not a separate branch:
+
+| Commit | Change |
+|---|---|
+| `23b191a` | Execution-evidence schema fix: `command_correlation`, `execution_reach`, contradiction fields added to obj-15 schema (both copies); WorkProfile compiler integration; manifest generalized fields; PlanningView |
+| `7000a54` | F-TF-34 intermediate: filter helios-only contradictions by `exec-*` prefix (later superseded) |
+| `06921de` | F-TF-34 final: helios-only decisions are measurements, not contradictions; `provider_only` remains the sole command-governance contradiction |
+| `46a769e` | Specialist-authored Pilot 11 confirmation (the commit the governed builder created and published) |
+
+### Pilot 9: `obj-eng-20261120174140`
+
+| | |
+|---|---|
+| Objective | Append an execution-evidence pilot version marker to RUNBOOK.md |
+| Project | `pj_9d5badf30725155e7449e9ce1a937c95` "Execution-evidence pilot version marker" |
+| Builder | `sq_1462445c896f0f1fffb6ab557038f360`, specialist `sp_17a8384fb1d2fe7756e5db8e7a7072e5` (claude-opus), RETAINED_SEAT |
+| State | **HALTED** — the builder's execution receipt was rejected by obj-15 schema validation (F-TF-33) |
+| Reviewer | `sq_be7b1ed5806c28fef8018da1f733339e` — **BLOCKED** (never staffed; predecessor HALTED) |
+| Finding | **F-TF-33**: `command_correlation`, `execution_reach`, and contradiction fields were present in the receipt but absent from the obj-15 schema. The runtime produced correct evidence; the schema had not been updated to accept it. |
+| Correction | `23b191a` added the fields to both schema copies (src and docs). |
+
+### Pilot 10: `obj-eng-20261120183443`
+
+| | |
+|---|---|
+| Objective | Append a Pilot 10 version marker to RUNBOOK.md |
+| Project | `pj_b4b0b60d83efceae717d1660c60675a8` "Pilot 10 version marker" |
+| Builder | `sq_de62871b5d02cf4b9803b161ccbca53f`, specialist `sp_17a8384fb1d2fe7756e5db8e7a7072e5` (claude-opus), RETAINED_SEAT |
+| State | **HALTED** — the builder's receipt was INTEGRITY_FAILED due to 23 `governance_missing_provider_command` contradictions for helios-only tool_use_ids (F-TF-34) |
+| Reviewer | `sq_8ea133b945ad4a6e09a6dc0a86009263` — **BLOCKED** (never staffed; predecessor HALTED) |
+| Finding | **F-TF-34**: Codex assigns `exec-*` IDs to ALL tool calls (apply_patch, file reads, shell commands). Helios governs every tool call, so helios-only entries always exist for non-command tools. These are expected measurements, not integrity violations. |
+| Intermediate | `7000a54` filtered by `exec-*` prefix (incorrect — all Codex IDs use `exec-*`). |
+| Final correction | `06921de` removed all helios-only contradiction generation. Only `provider_only` (a CommandExecution without governance) remains a contradiction. The correlation counts (matched/provider_only/helios_only) are preserved as a measurement. |
+
+### Finding F-TF-35: HALTED → READY resume path
+
+The `t-s13` transition that moves a HALTED sequence back to READY remains
+unimplemented. Pilots 9 and 10 are durable evidence of the gap: their
+builder sequences are HALTED and their reviewer sequences are BLOCKED on
+them. The objectives remain ACTIVE in intelligence.db.
+
+**Status:** OPEN / DEFERRED. The workaround (start fresh objectives) was
+used for Pilot 11.
+
+### Pilot 11: `obj-eng-20261120185528`
+
+The execution-evidence authority chain confirmed end to end, with all
+three corrections (F-TF-33, F-TF-34 schema + correlation semantics) in
+place.
+
+| | |
+|---|---|
+| Objective | Append Pilot 11 execution-evidence confirmation to RUNBOOK.md |
+| Project | `pj_decd8bac7c435aea335e99ef55d378d1` "Pilot 11 execution-evidence confirmation", COMPLETED |
+| Run date | 2026-11-20 |
+
+**Builder (append-pilot11-marker):**
+
+| | |
+|---|---|
+| Workstream | `ws_d2bf6513015738db8e275786140393e7`, documentation/builder, SOURCE_MODIFYING |
+| Sequence | `sq_f89146b4d80857ab43b7be7e42cf3c47`, COMPLETED |
+| Record | `sha256:cb2a4bf67d1f0ff21bdf701dd77f8a80e9e10e3263a81dd908b5013ffcbf05f2` |
+| Contract | `sha256:bf8bfb1a8957e677e489a1f68848cea90e1b973e785cc7717a6cc10bce371bf8` |
+| Assignment | `asg_350c44e2c6d577e94d5387c27489466a`: specialist `sp_17a8384fb1d2fe7756e5db8e7a7072e5` (claude-opus), RETAINED_SEAT, TASKFORCE, seat `ts_c31fff88a7cf30af7a2f73740370f927`, standing ESTABLISHED |
+| Route | luna-6-max: codex / gpt-6-luna / max |
+| Attempt | `at_e027818fbd46e928e491460eec79b29e` |
+| Call | `call_ee73f10624ea668647c192cb68319757` |
+| Verification | `a1` PASS `sha256:0e9029c0eb6151c6f3382afa5f14873410458831584bc2180f8048e2cbdbfd65`; `a2` PASS `sha256:5035786c8f59dbf4bf588bc4fd1686cf4e81a836bd4a33271ec1f63b86f9dc44`; `role-transform/builder` PASS `sha256:cd070a69934fdc1e234bf82aaf4954a7f73534502a6c9a11f236d35338a733f1` |
+| Outcome | VERIFIED_ACCEPTED |
+
+**Reviewer (review-pilot11-marker):**
+
+| | |
+|---|---|
+| Workstream | `ws_914a3c18f03f3123283e8659c5a09136`, verification/reviewer, READ_ONLY |
+| Sequence | `sq_9809a552c4264e7ce37502d3dd04afa7`, COMPLETED |
+| Record | `sha256:0319cd0c4223989eec7bc0424d3b15ad822e0f24aa9252b50241add7d7bbc7ed` |
+| Contract | `sha256:5c6ecca440027183f874f951b1a4fb95127e9706c8626f5f7530dd2ce905ec8d` |
+| Assignment | `asg_ffb4740a547adae49d9a4159236484e3`: specialist `sp_b2f72881be89546de36037d84fea287d` (claude-haiku), RETAINED_SEAT, TASKFORCE, seat `ts_bddb43b39c785f99430327912e364331`, standing ESTABLISHED |
+| Route | luna-6-max: codex / gpt-6-luna / max |
+| Attempt | `at_97b46cc74912d71d2483925a609053d1` |
+| Call | `call_431eb8f3bc0b984ea80ddad0be6663fb` |
+| Predecessor | review-of `sha256:cb2a4bf67d1f0ff21bdf701dd77f8a80e9e10e3263a81dd908b5013ffcbf05f2` (the builder record) |
+| Review verdict | EXAMINED |
+| Verification | `a1` PASS `sha256:d83bf748d3f1b41d890e3a89984822f9176ab14c93d95148f885df79e8622c85`; `a2` PASS `sha256:bc207418aaeedee8c144aff435b58290bd3c4df1614df5f8a0e0107a1bef9729`; `role-transform/reviewer` PASS `sha256:9896ebe475916a218259e8be41017c02f37e3eb04c873e776588825967533952` |
+| Outcome | VERIFIED_ACCEPTED |
+
+**Reviewer independence:** The builder (`sp_17a8384fb1d2fe7756e5db8e7a7072e5`,
+claude-opus) and reviewer (`sp_b2f72881be89546de36037d84fea287d`,
+claude-haiku) are different specialists, different memberships, different
+seats, different assignments, different attempts, different calls, and
+different native provider sessions.
+
+**Finding chain summary:**
+
+| Finding | Discovered | Corrected | Confirmed |
+|---|---|---|---|
+| F-TF-33 | Pilot 9 (schema rejection) | `23b191a` | Pilot 10 (schema accepted), Pilot 11 |
+| F-TF-34 | Pilot 10 (helios-only contradictions) | `06921de` | Pilot 11 |
+| F-TF-35 | Pilot 9 (HALTED → READY) | OPEN / DEFERRED | — |
+
+## 32. Final production state
 
 | Item | Value |
 |---|---|
-| `main` | `1026bea` = `origin/main` |
-| autobot.db | 29 COMPLETED sequences |
-| intelligence.db | 0 active objectives |
-| Taskforce | 4 ACTIVE members, 4 seats |
-| Content store | 1167 objects |
-| Codex sessions | 127 records (31 JSONL + 96 ZST) |
-| AutoSwarm calls | 72 |
-| Helios evidence sessions | 235 |
-| Registered ExecutionProfiles | 6 |
-| Registered WorkProfiles | 3 (ENGINEERING, RESEARCH, GENERAL_OPERATION) |
-| Registered Roles | 5 (ORCHESTRATOR, ENGINEER, PROJECT_MANAGER, SPECIALIST, REVIEWER) |
-| Registered ResourceScope kinds | 9 |
-| Registered Activity classes | 3 |
-| Registered Effect families | 6 (2 implemented, 4 deferred) |
-| Total tests | 1004 passed, 0 failed |
+| `main` | `46a769e` = `origin/main` |
+| autobot.db | 31 COMPLETED + 2 HALTED + 2 BLOCKED sequences (35 total) |
+| intelligence.db | 2 ACTIVE objectives (Pilots 9/10), 11 COMPLETE |
+| Projects | 10 COMPLETED, 2 ACTIVE (Pilots 9/10 with HALTED builders) |
+| Taskforce | 4 ACTIVE members, 4 seats (3 ESTABLISHED + 1 RETAINED) |
+| Content store | 1327 objects |
+| Authority objects | 101 (autobot.db) |
+| Transition journal | 1578 entries |
+| Specialists | 6 registered |
+| Total tests | 1023 passed, 0 failed |
 
 ### Publication history (complete)
 
@@ -2595,43 +2695,56 @@ respects the dependency graph.
 | 32 | Generalized organizational model | `320053e` | 943 |
 | 33 | Production proof sections 27-29 | `bc0a5c9` | docs |
 | 34 | Research, effects, mixed project graph | `1026bea` | 1004 |
+| 35 | Final proof closure and capability classification | `4e7860c` | 1004 |
 
-## 32. Capability classification
+### Post-PR35 direct commits on main
 
-| Capability | Status |
-|---|---|
-| Autobot deterministic authority plane | LIVE END TO END |
-| Engineer — Opus 4.6 1M | LIVE |
-| Engineer Project Manager | LIVE |
-| Taskforce persistent organization | LIVE |
-| Luna engineering specialists | LIVE |
-| Independent Luna reviewers | LIVE |
-| Per-assignment Opus escalation | LIVE |
-| Provider-native obj-13 | LIVE |
-| SESSION_TRANSCRIPT | LIVE |
-| CommandExecution-to-Helios correlation | PROVEN |
-| Observed execution reach | AUTHORITY VISIBLE |
-| ExecutionProfile identity | FROZEN |
-| Reach-policy identity | FROZEN |
-| Execution-reach integrity | LIVE |
-| Engineering WorkProfile | IMPLEMENTED |
-| Research WorkProfile | IMPLEMENTED |
-| General Operation WorkProfile | IMPLEMENTED |
-| ResourceScope | IMPLEMENTED |
-| Mixed Project Work Graph | IMPLEMENTED |
-| Filesystem effect | IMPLEMENTED |
-| Git CAS effect | PROVEN |
-| Research evidence model | IMPLEMENTED |
-| Objective Orchestrator role | IMPLEMENTED |
-| Luna research specialists (luna-research/v1) | IMPLEMENTED |
-| Luna operation specialists (luna-resource/v1) | IMPLEMENTED |
-| Opus high-context escalation (opus-high-context/v1) | IMPLEMENTED |
-| Acceptance reuse (Chapter 5) | DEFERRED BY FROZEN ROADMAP |
-| Remote verification/publication (Chapter 6) | DEFERRED BY FROZEN ROADMAP |
-| Deployment hardening | DEFERRED BY FROZEN ROADMAP |
-| Web/message/database/service effects | DEFERRED BY FROZEN ROADMAP |
+| Commit | Change | Tests |
+|---|---|---|
+| `23b191a` | Execution-evidence schema fix and generalized dimension integration | 1023 |
+| `7000a54` | F-TF-34 intermediate correction | 1023 |
+| `06921de` | F-TF-34 final: helios-only as measurements | 1023 |
+| `46a769e` | Specialist's Pilot 11 confirmation (governed publication) | 1023 |
+
+## 33. Capability classification
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Autobot deterministic authority plane | LIVE END TO END | 35 sequences, 13 objectives |
+| Engineer — Opus 4.6 1M | LIVE | 12 projects |
+| Engineer Project Manager | LIVE | 12 projects |
+| Taskforce persistent organization | LIVE | 4 members, 12 dissolved teams |
+| Luna engineering specialists | LIVE | Pilots 3-11 |
+| Independent Luna reviewers | LIVE | Pilots 6, 8, 11 |
+| Per-assignment Opus escalation | LIVE | Pilot 3 |
+| Provider-native obj-13 | LIVE — PRODUCTION CONFIRMED | Pilot 11 |
+| SESSION_TRANSCRIPT | LIVE — PRODUCTION CONFIRMED | Pilot 11 |
+| CommandExecution-to-Helios correlation | PROVEN — SEMANTICS CORRECTED | F-TF-34, Pilot 11 |
+| Observed execution reach | AUTHORITY VISIBLE | Pilot 11 |
+| ExecutionProfile identity | FROZEN | |
+| Reach-policy identity | FROZEN | |
+| Execution-reach integrity | LIVE — PRODUCTION CONFIRMED | Pilot 11 |
+| Engineering WorkProfile | IMPLEMENTED | Pilot 11 (implicit ENGINEERING) |
+| Research WorkProfile | IMPLEMENTED | |
+| General Operation WorkProfile | IMPLEMENTED | |
+| ResourceScope | IMPLEMENTED | |
+| Mixed Project Work Graph | IMPLEMENTED | |
+| Filesystem effect | IMPLEMENTED | |
+| Git CAS effect | PROVEN | |
+| Research evidence model | IMPLEMENTED | |
+| Objective Orchestrator role | IMPLEMENTED | |
+| Luna research specialists (luna-research/v1) | IMPLEMENTED | |
+| Luna operation specialists (luna-resource/v1) | IMPLEMENTED | |
+| Opus high-context escalation (opus-high-context/v1) | IMPLEMENTED | |
+| HALTED recovery (F-TF-35) | OPEN / DEFERRED | Pilots 9/10 as evidence |
+| Acceptance reuse (Chapter 5) | DEFERRED BY FROZEN ROADMAP | |
+| Remote verification/publication (Chapter 6) | DEFERRED BY FROZEN ROADMAP | |
+| Deployment hardening | DEFERRED BY FROZEN ROADMAP | |
+| Web/message/database/service effects | DEFERRED BY FROZEN ROADMAP | |
 
 LIVE: running in production with evidence.
+PRODUCTION CONFIRMED: exercised in a live production pilot that completed the full authority chain.
 PROVEN: measured against production evidence with deterministic tests.
 IMPLEMENTED: code, model, tests, and regression complete; production pilots pending.
+OPEN / DEFERRED: known gap with durable evidence; workaround available.
 DEFERRED BY FROZEN ROADMAP: architecture designed; implementation follows the frozen chapter sequence.
