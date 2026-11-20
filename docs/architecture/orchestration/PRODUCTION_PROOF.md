@@ -33,6 +33,9 @@ as it happened and the correction is a later record.
 | Independent review by another specialist in another session | on Claude Code models, Pilot 2 (its reviews found defects that were then corrected); on the default Luna route, Pilots 6 and 8, whose reviewers read everything through the governed shell. Pilot 7's review examined the work and read its source through a provider connector that the route has switched off since. Pilot 4's review was partial and Pilot 5's examined nothing, and neither is counted | 15, 21 |
 | A session is one specialist's own work, on this machine | the contract rules of PRs 28 and 29 and the default route's session arguments; Pilots 7 and 8, every tool call of whose sessions was read | 21 |
 | What is still open | findings of the organization's own specialists, and what stays open of the two findings read from session records | 25 |
+| Provider-native session records (obj-13) enter the authority plane with original bytes | 127 Codex session records, 591/591 governed correlation, 26/26 terminal, registered policy identity in receipt | 27 |
+| Execution-reach violations block acceptance | luna-local/v1 authorizes MACHINE_LOCAL only; connector or sub-agent activity produces INTEGRITY_FAILED | 27 |
+| The organizational model generalizes to research and operations, not only engineering | WorkProfile (3), ResourceScope (9 kinds), Roles (5), ExecutionProfile (6 policies); 83 tests; 943 total | 28 |
 
 ## 1. Source baseline
 
@@ -62,6 +65,9 @@ two-parent merge commit; no branch was rebased or squashed.
 | 27 | Pilot 6's accepted RUNBOOK commit, unchanged; and this document as it stood after Pilot 6 | `53667c52daa3d8ea5d60ccfd883b8aa5d18513b5`, `4a29272e43262a4343baea41ac791bbfa6284ed5` | `9d97a34d7b0e29744d3b1f3a98d263d363e7bf88` | source and tests unchanged from PR 26 |
 | 28 | One assignment, one session (found by Pilot 6) | `279fc9c1c6a36dad89236fcdf70892de528b9d9b` | `d320d1bf9139703d36c0a450939f088803f0291d` | 769 / 768 / 41 / 50 of 50 |
 | 29 | Pilot 7's accepted RUNBOOK commit, unchanged; and a session stays on this machine (found by Pilot 7) | `b32fd6f7c0a75567e6a523b0ca4be733305f454e`, `456c9f51d7d223271ff41823b03a38169d985ef5` | `8ae0922f1e79819a1d927a215133be25561bee1f` | 771 / 770 / 41 / 52 of 52 |
+| 30 | Production closure proof | `728cddc` | `5360493` | 826 / 0 |
+| 31 | Execution-evidence authority: provider-native obj-13, registered reach policy, command correlation, terminality, policy binding, profile activation | `42e24ed`, `cf3040d` | `1364464` | 860 / 0 |
+| 32 | Generalized organizational model: WorkProfile, ResourceScope, Roles, ExecutionProfile | `fda8337` | `320053e` | 943 / 0 |
 
 The founding run and the first half of Pilot 1 ran on `3b03b6a`, the rest
 of Pilot 1 on `99af588`, Pilot 2 on `5c96da3`, Pilots 3 and 4 on
@@ -2323,3 +2329,181 @@ document: Git 2.48.1.windows.1; Claude Code 2.1.323; codex-cli
 0.158.0-alpha.15.2; AutoSwarm 2.0.0.dev0; SQLite 3.35.5 under Python
 3.8.10 and 3.47.1 under Python 3.12.11. The regression evidence of each
 earlier publication step is in section 1.
+
+## 27. Execution-evidence authority (PR 31)
+
+Provider-native session records entered the authority plane. The
+implementation added native Codex obj-13 admission, registered
+execution-reach policies, CommandExecution-to-Helios correlation, and
+SESSION_TRANSCRIPT as a production evidence requirement.
+
+| Item | Value |
+|---|---|
+| Implementation commit | `42e24ed` — provider-native obj-13, registered reach policy, command correlation |
+| Proof commit | `cf3040d` — production correlation, terminality, policy binding and profile activation proof |
+| Merge | `1364464` (PR 31), parents `5360493` and `cf3040d` |
+
+### Production correlation measurement
+
+| Measurement | Value |
+|---|---|
+| Luna sessions with both Codex and Helios evidence | 26 |
+| Total CommandExecution items measured | 592 |
+| Total Helios decisions measured | 968 |
+| CommandExecution ids with exact Helios match | 591 |
+| CommandExecution ids without Helios match | 1 (ungoverned outlier) |
+| Duplicate CommandExecution ids | 0 |
+| Duplicate Helios tool_use_ids | 0 |
+| Helios-only decisions | 377 (non-command governance: file reads, greps, etc.) |
+
+**Production correlation rule**: every provider CommandExecution item in
+the measured production Luna corpus has exactly one matching Helios
+decision under the same `exec-*` identity. The single unmatched
+CommandExecution belongs to the one ungoverned session (no Helios
+evidence).
+
+### Provider terminality
+
+| Measurement | Value |
+|---|---|
+| Sessions with terminal Codex record | 26 / 26 |
+| Sessions with AutoSwarm outcome=completed | 26 / 26 |
+
+**Terminality rule**: AutoSwarm call is terminal AND the native record
+belongs to the bound native_session_id AND the native record parses
+through its terminal final_answer event THEREFORE the native producer
+record is final for obj-13 admission.
+
+### Registered execution-reach policy
+
+| Policy | Authorized reach |
+|---|---|
+| `luna-local/v1` (default) | MACHINE_LOCAL |
+| `luna-research/v1` | MACHINE_LOCAL, PROVIDER_CONNECTOR |
+| `luna-resource/v1` | MACHINE_LOCAL, PROVIDER_CONNECTOR |
+| `opus-engineer/v1` | MACHINE_LOCAL, PROVIDER_CONNECTOR, PROVIDER_SUBAGENT |
+| `opus-orchestrator/v1` | (empty — reasoning only) |
+
+The policy identity is frozen into the ExecutionReceipt at derivation
+time. A later policy edit does not reinterpret an already completed
+attempt.
+
+### Profile activation
+
+SESSION_TRANSCRIPT is active in `SOURCE_MODIFYING_GOVERNED`. Receipt
+classification:
+
+| Condition | Completeness |
+|---|---|
+| Missing obj-13 | INCOMPLETE |
+| Terminal clean obj-13 within authorized reach | eligible for COMPLETE |
+| Observed reach outside authorized reach | INTEGRITY_FAILED |
+
+### Execution-evidence test totals
+
+| Suite | Result |
+|---|---|
+| Focused execution-evidence (8 test files) | 89 passed |
+| Full regression (excluding legacy coordinator) | 860 passed |
+
+### Findings disposition
+
+**F-TF-31** (sub-agent behavior): the execution contract forbids
+sub-agent tools. The registered policy `luna-local/v1` does not authorize
+PROVIDER_SUBAGENT reach; the default route's session arguments switch off
+`features.multi_agent`. An obj-13 record showing sub-agent activity would
+produce INTEGRITY_FAILED.
+
+**F-TF-32** (connector behavior): the registered policy `luna-local/v1`
+does not authorize PROVIDER_CONNECTOR reach; the default route's session
+arguments switch off connectors, apps, browser, web search and image
+generation. An obj-13 record showing connector activity would produce
+INTEGRITY_FAILED.
+
+The distinction the execution-evidence implementation makes explicit:
+
+| Concept | Meaning |
+|---|---|
+| Provider capability availability | what the provider CAN do (many things) |
+| Authorized execution reach | what the policy ALLOWS (luna-local/v1: MACHINE_LOCAL only) |
+| Observed execution reach | what the obj-13 record SHOWS the session DID |
+
+The first is a provider fact. The second is a frozen policy. The third is
+observed evidence. Authority evaluates the third against the second.
+
+## 28. Generalized organizational model (PR 32)
+
+The five organizational dimensions that generalize Autobot from
+engineering-only to multi-profile orchestration.
+
+| Item | Value |
+|---|---|
+| Commit | `fda8337` — WorkProfile, ResourceScope, Roles, ExecutionProfile |
+| Merge | `320053e` (PR 32), parents `1364464` and `fda8337` |
+| Files | 9 files, +1006 insertions |
+
+### WorkProfile
+
+| Profile | Default finalization | Default ExecutionProfile | External effect |
+|---|---|---|---|
+| ENGINEERING | SOURCE_MODIFYING | luna-local/v1 | yes |
+| RESEARCH | READ_ONLY | luna-research/v1 | no |
+| GENERAL_OPERATION | SOURCE_MODIFYING | luna-resource/v1 | yes |
+
+### ResourceScope
+
+9 resource kinds: REPOSITORY, REPOSITORY_PATH, FILESYSTEM_READ,
+ARTIFACT_WORKSPACE, PERSISTENT_DEST, WEB_SOURCE, SERVICE, DATABASE,
+EFFECT_TARGET.
+
+3 activity classes: OBSERVATION, ARTIFACT_PRODUCTION, EXTERNAL_EFFECT.
+
+### Organizational roles
+
+| Role | Can reason | Can execute | Default model | Default ExecutionProfile |
+|---|---|---|---|---|
+| ORCHESTRATOR | yes | no | Opus 4.6 1M | opus-orchestrator/v1 |
+| ENGINEER | yes | yes | Opus 4.6 1M | opus-engineer/v1 |
+| PROJECT_MANAGER | yes | no | Opus 4.6 1M | opus-orchestrator/v1 |
+| SPECIALIST | no | yes | Luna 6 Max | luna-local/v1 |
+| REVIEWER | no | yes | Luna 6 Max | luna-local/v1 |
+
+### ExecutionProfile hierarchy
+
+6 registered policies with contained reach:
+```
+orchestrator = {} (empty)
+local        ⊂ research ⊂ high-context ⊂ engineer
+                resource ⊂ high-context ⊂ engineer
+```
+
+### Generalization regression
+
+| Suite | Result |
+|---|---|
+| Focused generalization (5 test files) | 83 passed |
+| Full regression (excluding legacy coordinator) | 943 passed |
+
+## 29. Production state at closure of PRs 31 and 32
+
+| Item | Value |
+|---|---|
+| `main` | `320053e` = `origin/main` |
+| autobot.db | 29 COMPLETED sequences |
+| intelligence.db | 0 active objectives |
+| Taskforce | 4 ACTIVE members, 4 seats |
+| Content store | 1167 objects |
+| Codex sessions | 127 records (31 JSONL + 96 ZST) |
+| AutoSwarm calls | 72 |
+| Helios evidence sessions | 235 |
+| Registered ExecutionProfiles | 6 |
+| codex_sessions_root | configured (`C:\Users\dimas\.codex\sessions`) |
+| SESSION_TRANSCRIPT | active for SOURCE_MODIFYING |
+
+### Publication history
+
+| PR | Change | Commit | Merge | Regression |
+|---|---|---|---|---|
+| 30 | Closure proof | `728cddc` | `5360493` | 826 / 0 |
+| 31 | Execution-evidence authority | `42e24ed`, `cf3040d` | `1364464` | 860 / 0 |
+| 32 | Generalized organizational model | `fda8337` | `320053e` | 943 / 0 |
