@@ -407,6 +407,8 @@ class AuthorityRuntime:
         gate_root = _resolve_gate_root(paths.get("gate_root", ""))
         session_export_dir = authority_section.get(
             "session_export_dir", None)
+        codex_sessions_root = authority_section.get(
+            "codex_sessions_root", None)
         repo_path = authority_section.get("repo_path", None)
         holder = authority_section.get("holder", "autobot-authority")
         lease_ttl = int(authority_section.get("lease_ttl", 3600))
@@ -449,6 +451,7 @@ class AuthorityRuntime:
             store, str(autoswarm_home), workspace,
             gate_root=str(gate_root) if gate_root else None,
             session_export_dir=session_export_dir,
+            codex_sessions_root=codex_sessions_root,
             autoswarm_argv=autoswarm_argv)
 
         # --- verifier ---

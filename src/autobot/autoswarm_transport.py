@@ -49,10 +49,15 @@ class AutoSwarmTransport(Transport):
     tree contains the specialist's governance records. When None,
     obj-12 collection is skipped (the evidence is not available).
 
-    ``session_export_dir`` is the directory containing provider-native
-    session export files (``<session_id>.session.json``). When None,
-    obj-13 collection is skipped. The export must be a single JSON
-    document with a ``session_id`` field for identity recognition.
+    ``session_export_dir`` is a directory of provider session records
+    named ``<session_id>.session.json`` or ``*<session_id>.jsonl[.zst]``.
+
+    ``codex_sessions_root`` is the Codex CLI's native sessions directory
+    (typically ``~/.codex/sessions/``). When set, the transport searches
+    it for a file whose name contains the session UUID. Compressed records
+    are admitted as-is; the recognizer decompresses for fact extraction.
+
+    Without either, obj-13 collection is skipped.
 
     ``autoswarm_argv`` is the CLI invocation (default: the uv-tool
     installed autoswarm)."""
@@ -65,6 +70,7 @@ class AutoSwarmTransport(Transport):
 
     def __init__(self, store, autoswarm_home, workspace, *,
                  gate_root=None, session_export_dir=None,
+                 codex_sessions_root=None,
                  autoswarm_argv=None):
         self._staged = {}
         self._session = {}
@@ -74,6 +80,8 @@ class AutoSwarmTransport(Transport):
         self._gate_root = Path(gate_root) if gate_root else None
         self._session_export_dir = (
             Path(session_export_dir) if session_export_dir else None)
+        self._codex_sessions_root = (
+            Path(codex_sessions_root) if codex_sessions_root else None)
         self._argv = autoswarm_argv or [
             sys.executable, "-m", "autoswarm"]
 
@@ -526,29 +534,57 @@ class AutoSwarmTransport(Transport):
         return entries
 
     def _collect_transcript(self, directory, session_id):
-        """obj-13: a provider-native session transcript export.
+        """obj-13: the provider-native session record, exact original bytes.
 
         The registered producer is agent_clis (the CLI tool itself).
         AutoSwarm's stdout.log is a runner pipe capture, not a
-        provider-native export, and is never used here.
+        provider-native record, and is never used here.
 
-        When ``session_export_dir`` is configured, the adapter reads
-        the session export file at
-        ``<session_export_dir>/<session_id>.session.json`` — a single
-        JSON document whose ``session_id`` field the existing witness
-        recognizer can extract for identity correlation.
+        Collection searches for the native record in two ways:
 
-        The file must be produced by the provider or a registered
-        post-execution exporter. The adapter reads its raw bytes
-        without rewriting, verifying only that the export resolves
-        and is non-empty."""
-        if self._session_export_dir is None or not session_id:
+        1. ``session_export_dir`` — a configured directory containing
+           session records named ``<session_id>.session.json`` or as
+           Codex native JSONL (``*<session_id>.jsonl[.zst]``).
+
+        2. The Codex CLI's sessions directory at ``~/.codex/sessions/``
+           (the provider's own storage), searched when no export
+           directory is configured or when the export directory does
+           not contain a matching file.
+
+        The adapter reads the matching file's raw bytes without
+        rewriting, preserving the producer-original content exactly.
+        For compressed (.jsonl.zst) records the COMPRESSED bytes are
+        admitted as the content-addressed evidence; the recognizer
+        decompresses for fact extraction."""
+        if not session_id:
             return None
-        export_path = (self._session_export_dir
-                       / ("%s.session.json" % session_id))
-        if not export_path.is_file():
-            return None
-        data = export_path.read_bytes()
-        if not data:
-            return None
-        return data
+        # Try configured export directory first
+        if self._session_export_dir is not None:
+            for suffix in (".session.json", ".jsonl", ".jsonl.zst"):
+                candidate = (self._session_export_dir
+                             / ("%s%s" % (session_id, suffix)))
+                if candidate.is_file():
+                    data = candidate.read_bytes()
+                    if data:
+                        return data
+        # Try the configured Codex sessions directory
+        codex_root = self._codex_sessions_root
+        if codex_root is not None and codex_root.is_dir():
+            match = self._find_codex_session(codex_root, session_id)
+            if match is not None:
+                data = match.read_bytes()
+                if data:
+                    return data
+        return None
+
+    @staticmethod
+    def _find_codex_session(root, session_id):
+        """Find a Codex native session JSONL by session UUID.
+        The Codex CLI stores sessions as:
+        <root>/YYYY/MM/DD/rollout-<date>-<session_id>.jsonl[.zst]"""
+        for dirpath, _dirs, filenames in os.walk(str(root)):
+            for name in filenames:
+                if session_id in name and (name.endswith(".jsonl")
+                                           or name.endswith(".jsonl.zst")):
+                    return Path(dirpath) / name
+        return None
