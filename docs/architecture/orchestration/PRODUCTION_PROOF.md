@@ -2507,3 +2507,131 @@ local        ⊂ research ⊂ high-context ⊂ engineer
 | 30 | Closure proof | `728cddc` | `5360493` | 826 / 0 |
 | 31 | Execution-evidence authority | `42e24ed`, `cf3040d` | `1364464` | 860 / 0 |
 | 32 | Generalized organizational model | `fda8337` | `320053e` | 943 / 0 |
+| 33 | Production proof sections 27-29 | `c7acaae` | `bc0a5c9` | documentation only |
+| 34 | Research, effects, mixed project graph | `5a6ee7e` | `1026bea` | 1004 / 0 |
+
+## 30. Research, effects, and mixed project orchestration (PR 34)
+
+| Item | Value |
+|---|---|
+| Commit | `5a6ee7e` — research evidence, filesystem effect, mixed project graph |
+| Merge | `1026bea` (PR 34), parents `bc0a5c9` and `5a6ee7e` |
+| Files | 8 files, +1173 insertions |
+
+### Research evidence model
+
+Source evidence kinds: SOURCE_CAPTURE, SOURCE_METADATA,
+CLAIM_ASSOCIATION, RESEARCH_ARTIFACT.
+
+Verification rules: source identity (required), source capture
+(required), freshness (optional), source diversity (optional),
+citation coverage (required), claim-to-source linkage (required),
+artifact completeness (required), independent review (required).
+
+Research reach semantics: a connector observation authorized under
+`luna-research/v1` (PROVIDER_CONNECTOR in authorized reach) is a
+reach violation under `luna-local/v1` (MACHINE_LOCAL only). The
+observation is the same provider-native fact; the judgment differs
+by the registered ExecutionProfile.
+
+### Effect registry
+
+| Family | Status | Executor | Observation |
+|---|---|---|---|
+| GIT_CAS | PROVEN | git_sequencer | local |
+| FILESYSTEM_PLACE | IMPLEMENTED | filesystem_placer | local |
+| WEB_MUTATION | DEFERRED | web_executor | remote |
+| MESSAGE_DELIVERY | DEFERRED | message_executor | remote |
+| DATABASE_MUTATION | DEFERRED | database_executor | local |
+| SERVICE_OPERATION | DEFERRED | service_executor | remote |
+
+### Filesystem effect
+
+Content-addressed persistent file placement with compare-and-swap
+semantics. Independent post-observation verification: destination
+content address must match source artifact address. Reversible.
+
+### Mixed Project Work Graph
+
+Cross-profile orchestration: RESEARCH, ENGINEERING, and
+GENERAL_OPERATION nodes coexist in one project. Dependencies
+propagate accepted artifacts. Topological ordering ensures
+predecessors complete before dependents. Ready-node scheduling
+respects the dependency graph.
+
+### Regression
+
+| Suite | Result |
+|---|---|
+| Focused new tests (4 files) | 61 passed |
+| Full regression (excluding legacy coordinator) | 1004 passed |
+
+## 31. Final production state
+
+| Item | Value |
+|---|---|
+| `main` | `1026bea` = `origin/main` |
+| autobot.db | 29 COMPLETED sequences |
+| intelligence.db | 0 active objectives |
+| Taskforce | 4 ACTIVE members, 4 seats |
+| Content store | 1167 objects |
+| Codex sessions | 127 records (31 JSONL + 96 ZST) |
+| AutoSwarm calls | 72 |
+| Helios evidence sessions | 235 |
+| Registered ExecutionProfiles | 6 |
+| Registered WorkProfiles | 3 (ENGINEERING, RESEARCH, GENERAL_OPERATION) |
+| Registered Roles | 5 (ORCHESTRATOR, ENGINEER, PROJECT_MANAGER, SPECIALIST, REVIEWER) |
+| Registered ResourceScope kinds | 9 |
+| Registered Activity classes | 3 |
+| Registered Effect families | 6 (2 implemented, 4 deferred) |
+| Total tests | 1004 passed, 0 failed |
+
+### Publication history (complete)
+
+| PR | Change | Merge | Tests |
+|---|---|---|---|
+| 30 | Closure proof | `5360493` | 826 |
+| 31 | Execution-evidence authority | `1364464` | 860 |
+| 32 | Generalized organizational model | `320053e` | 943 |
+| 33 | Production proof sections 27-29 | `bc0a5c9` | docs |
+| 34 | Research, effects, mixed project graph | `1026bea` | 1004 |
+
+## 32. Capability classification
+
+| Capability | Status |
+|---|---|
+| Autobot deterministic authority plane | LIVE END TO END |
+| Engineer — Opus 4.6 1M | LIVE |
+| Engineer Project Manager | LIVE |
+| Taskforce persistent organization | LIVE |
+| Luna engineering specialists | LIVE |
+| Independent Luna reviewers | LIVE |
+| Per-assignment Opus escalation | LIVE |
+| Provider-native obj-13 | LIVE |
+| SESSION_TRANSCRIPT | LIVE |
+| CommandExecution-to-Helios correlation | PROVEN |
+| Observed execution reach | AUTHORITY VISIBLE |
+| ExecutionProfile identity | FROZEN |
+| Reach-policy identity | FROZEN |
+| Execution-reach integrity | LIVE |
+| Engineering WorkProfile | IMPLEMENTED |
+| Research WorkProfile | IMPLEMENTED |
+| General Operation WorkProfile | IMPLEMENTED |
+| ResourceScope | IMPLEMENTED |
+| Mixed Project Work Graph | IMPLEMENTED |
+| Filesystem effect | IMPLEMENTED |
+| Git CAS effect | PROVEN |
+| Research evidence model | IMPLEMENTED |
+| Objective Orchestrator role | IMPLEMENTED |
+| Luna research specialists (luna-research/v1) | IMPLEMENTED |
+| Luna operation specialists (luna-resource/v1) | IMPLEMENTED |
+| Opus high-context escalation (opus-high-context/v1) | IMPLEMENTED |
+| Acceptance reuse (Chapter 5) | DEFERRED BY FROZEN ROADMAP |
+| Remote verification/publication (Chapter 6) | DEFERRED BY FROZEN ROADMAP |
+| Deployment hardening | DEFERRED BY FROZEN ROADMAP |
+| Web/message/database/service effects | DEFERRED BY FROZEN ROADMAP |
+
+LIVE: running in production with evidence.
+PROVEN: measured against production evidence with deterministic tests.
+IMPLEMENTED: code, model, tests, and regression complete; production pilots pending.
+DEFERRED BY FROZEN ROADMAP: architecture designed; implementation follows the frozen chapter sequence.
