@@ -102,6 +102,7 @@ def compile_proposal(proposal, environment, clock):
     read_only = cls in ("INVESTIGATE", "REQUEST_REVIEW") or \
         requirement.get("finalization_class") == "READ_ONLY"
     fin_class = "READ_ONLY" if read_only else "SOURCE_MODIFYING"
+    work_profile = requirement.get("work_profile")
     declaration = environment.declaration
     location = declaration["authority_location"]
     defaults = environment.defaults
@@ -204,4 +205,6 @@ def compile_proposal(proposal, environment, clock):
             "no SEM-05 derivation for class %r at location %r"
             % (fin_class, location))
     payload["finalization_requirements"] = derived
+    if work_profile is not None:
+        payload["work_profile"] = work_profile
     return payload

@@ -166,6 +166,12 @@ def _validate_requirement(req, forced_read_only):
     _refuse_execution_identity(req, "requirement")
     _require(isinstance(req.get("objective"), str) and req["objective"],
              "requirement.objective must be non-empty text")
+    wp = req.get("work_profile")
+    if wp is not None:
+        from autobot.work_profile import VALID_PROFILES
+        _require(wp in VALID_PROFILES,
+                 "requirement.work_profile must be one of %r"
+                 % (sorted(VALID_PROFILES),))
     fin = req.get("finalization_class")
     if forced_read_only:
         _require(fin in (None, "READ_ONLY"),

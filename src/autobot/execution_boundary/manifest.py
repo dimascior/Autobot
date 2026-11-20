@@ -111,6 +111,12 @@ def build_execution_manifest(sequencer, attempt_id, staffing_assignment,
                 "evidence_requirements", []),
         },
     }
+    wp = record.get("work_profile")
+    if wp is not None:
+        artifact["constraints"]["work_profile"] = wp
+    ep = record.get("execution_profile")
+    if ep is not None:
+        artifact["constraints"]["execution_profile"] = ep
     source_rev = staffing_assignment.get("source_revision")
     if source_rev is not None:
         artifact["constraints"]["source_revision"] = source_rev

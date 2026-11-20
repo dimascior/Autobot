@@ -71,6 +71,13 @@
         "target_ref": {
           "type": "string",
           "pattern": "^refs/"
+        },
+        "work_profile": {
+          "enum": ["ENGINEERING", "RESEARCH", "GENERAL_OPERATION"]
+        },
+        "execution_profile": {
+          "type": "string",
+          "pattern": "^[a-z]"
         }
       }
     },
