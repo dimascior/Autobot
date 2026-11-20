@@ -358,12 +358,12 @@ def build_receipt(state, integrity_failures, window_seconds,
             "rule": "provider_command_missing_governance",
             "item_id": cid,
         })
-    for cid in command_correlation.get("helios_only", []):
-        if cid.startswith("exec-"):
-            contradictions.append({
-                "rule": "governance_missing_provider_command",
-                "tool_use_id": cid,
-            })
+    # Helios-only tool_use_ids are NOT contradictions: Helios governs all
+    # provider tool calls (shell, apply_patch, file reads, etc.), but only
+    # shell commands produce CommandExecution items. The correlation counts
+    # (matched/provider_only/helios_only) are a measurement; only
+    # provider_only (a command executed without governance) is a
+    # contradiction.
     contradictions.sort(key=lambda c: (c["rule"],
                                        c.get("content_sha256", ""),
                                        c.get("command_sha256", ""),

@@ -163,12 +163,15 @@
       "required": ["rule"],
       "additionalProperties": false,
       "properties": {
-        "rule": {"enum": ["cross_execution_identity", "deny_then_ran", "execution_without_decision", "provider_command_missing_governance", "governance_missing_provider_command"]},
+        "rule": {"enum": ["cross_execution_identity", "deny_then_ran", "execution_without_decision", "provider_command_missing_governance", "execution_reach_violation"]},
         "witness_kind": {"$ref": "#/$defs/witness_kind"},
         "content_sha256": {"$ref": "#/$defs/digest"},
         "command_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "session_id": {"type": "string", "pattern": "^$|^\\S(?:[^\\n]*\\S)?$"},
-        "tool_use_id": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"}
+        "tool_use_id": {"type": "string", "pattern": "^\\S(?:[^\\n]*\\S)?$"},
+        "item_id": {"type": "string"},
+        "item_type": {"type": "string"},
+        "observed_reach": {"type": "string"}
       }
     },
     "artifact_event": {
