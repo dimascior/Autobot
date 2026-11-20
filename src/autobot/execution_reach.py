@@ -52,6 +52,14 @@ EXECUTION_REACH_POLICIES = {
         "provider": "anthropic",
         "model_family": "opus",
     },
+    "opus-high-context/v1": {
+        "description": "Opus high-context escalation: machine-local plus "
+                       "provider connectors for elevated reasoning tasks.",
+        "authorized_reach": frozenset({
+            "MACHINE_LOCAL", "PROVIDER_CONNECTOR"}),
+        "provider": "anthropic",
+        "model_family": "opus",
+    },
 }
 
 DEFAULT_LUNA_POLICY = "luna-local/v1"
