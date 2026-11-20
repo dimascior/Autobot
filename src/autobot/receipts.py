@@ -359,10 +359,11 @@ def build_receipt(state, integrity_failures, window_seconds,
             "item_id": cid,
         })
     for cid in command_correlation.get("helios_only", []):
-        contradictions.append({
-            "rule": "governance_missing_provider_command",
-            "tool_use_id": cid,
-        })
+        if cid.startswith("exec-"):
+            contradictions.append({
+                "rule": "governance_missing_provider_command",
+                "tool_use_id": cid,
+            })
     contradictions.sort(key=lambda c: (c["rule"],
                                        c.get("content_sha256", ""),
                                        c.get("command_sha256", ""),
