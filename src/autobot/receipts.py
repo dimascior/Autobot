@@ -40,6 +40,8 @@ from contract_library.schema_profile import validate as schema_validate
 
 from .models import instant
 from . import witness_semantics
+from . import session_recognizer
+from . import execution_reach as reach_policy
 
 RECEIPT_KIND = "ExecutionReceipt"
 
@@ -160,8 +162,92 @@ def extract_all_facts(store, entries, failures):
     return facts
 
 
+LUNA_LOCAL_AUTHORIZED_REACH = reach_policy.authorized_reach(
+    reach_policy.DEFAULT_LUNA_POLICY)
+
+
+def classify_execution_reach(store, entries, authorized_reach=None):
+    """Classify observed execution reach from admitted obj-13 evidence.
+
+    Returns a dict with:
+        available:          bool (whether obj-13 evidence was found)
+        observed_reach:     str or None (the overall reach classification)
+        violations:         list of dicts (items outside authorized reach)
+        item_summary:       dict (execution item type counts)
+
+    Pure function of admitted evidence and the authorized_reach set.
+    When authorized_reach is None, no violation check is performed."""
+    obj13_entries = [e for e in entries
+                     if e.get("witness_kind") == "obj-13"]
+    if not obj13_entries:
+        return {"available": False}
+    for entry in obj13_entries:
+        address = entry.get("content_sha256", "")
+        try:
+            data = store.get(address)
+        except Exception:
+            continue
+        recognized = session_recognizer.recognize_session(data)
+        if recognized is None:
+            continue
+        reach = session_recognizer.classify_reach(recognized)
+        result = {
+            "available": True,
+            "observed_reach": reach,
+            "content_sha256": address,
+            "item_summary": {
+                k: v for k, v in
+                sorted(recognized.get("item_counts", {}).items())},
+            "execution_items": len(
+                recognized.get("execution_items", [])),
+            "command_ids": list(recognized.get("command_ids", [])),
+            "terminal": recognized.get("terminal", False),
+        }
+        if authorized_reach is not None:
+            violations = session_recognizer.execution_reach_violations(
+                recognized, authorized_reach)
+            result["violations"] = [
+                {"item_type": v["item_type"],
+                 "item_id": v.get("item_id", ""),
+                 "observed_reach": v["observed_reach"]}
+                for v in violations]
+        else:
+            result["violations"] = []
+        return result
+    return {"available": False}
+
+
+def correlate_commands(execution_reach_result, witness_facts):
+    """Join obj-13 CommandExecution IDs against obj-12 governance decisions.
+
+    Returns a dict with:
+        provider_command_ids:   list of str (from obj-13)
+        helios_tool_use_ids:    list of str (from obj-12)
+        matched:                list of str (exact matches)
+        provider_only:          list of str (in obj-13 but not obj-12)
+        helios_only:            list of str (in obj-12 but not obj-13)
+
+    The correlation key is the exec-<UUID> identity shared between
+    Codex CommandExecution.id and Helios tool_use_id."""
+    provider_ids = set(execution_reach_result.get("command_ids", []))
+    helios_ids = set()
+    for _address, facts in witness_facts.items():
+        tool_use_id = facts.get("tool_use_id")
+        if isinstance(tool_use_id, str) and tool_use_id:
+            helios_ids.add(tool_use_id)
+    matched = sorted(provider_ids & helios_ids)
+    return {
+        "provider_command_ids": sorted(provider_ids),
+        "helios_tool_use_ids": sorted(helios_ids),
+        "matched": matched,
+        "provider_only": sorted(provider_ids - helios_ids),
+        "helios_only": sorted(helios_ids - provider_ids),
+    }
+
+
 def build_receipt(state, integrity_failures, window_seconds,
-                  witness_facts=None, input_rehash=None):
+                  witness_facts=None, input_rehash=None,
+                  execution_reach=None, command_correlation=None):
     """The pure obj-15 derivation (D-C3-2): a function of durable ledger
     facts plus the configured window — no clock, no caller claims, so
     unchanged facts re-derive byte-identical bytes.
@@ -257,6 +343,33 @@ def build_receipt(state, integrity_failures, window_seconds,
          for a in state.get("artifacts", [])),
         key=lambda a: (a["logical_path"], a["content_sha256"]))
 
+    execution_reach = execution_reach or {}
+    reach_violations = execution_reach.get("violations", [])
+    for violation in reach_violations:
+        contradictions.append({
+            "rule": "execution_reach_violation",
+            "item_type": violation.get("item_type", ""),
+            "item_id": violation.get("item_id", ""),
+            "observed_reach": violation.get("observed_reach", ""),
+        })
+    command_correlation = command_correlation or {}
+    for cid in command_correlation.get("provider_only", []):
+        contradictions.append({
+            "rule": "provider_command_missing_governance",
+            "item_id": cid,
+        })
+    for cid in command_correlation.get("helios_only", []):
+        contradictions.append({
+            "rule": "governance_missing_provider_command",
+            "tool_use_id": cid,
+        })
+    contradictions.sort(key=lambda c: (c["rule"],
+                                       c.get("content_sha256", ""),
+                                       c.get("command_sha256", ""),
+                                       c.get("session_id", ""),
+                                       c.get("tool_use_id", ""),
+                                       c.get("item_id", "")))
+
     inputs_intact = all(entry["intact"] for entry in input_rehash.values())
     if failures or contradictions or not inputs_intact:
         completeness = "INTEGRITY_FAILED"
@@ -292,6 +405,21 @@ def build_receipt(state, integrity_failures, window_seconds,
     }
     if native:
         payload["native_session_id"] = native
+    if execution_reach.get("available"):
+        er = {
+            "observed_reach": execution_reach.get("observed_reach"),
+            "violations": reach_violations,
+            "terminal": execution_reach.get("terminal", False),
+        }
+        if execution_reach.get("policy_id"):
+            er["policy_id"] = execution_reach["policy_id"]
+        payload["execution_reach"] = er
+    if command_correlation and command_correlation.get("provider_command_ids"):
+        payload["command_correlation"] = {
+            "matched": len(command_correlation.get("matched", [])),
+            "provider_only": len(command_correlation.get("provider_only", [])),
+            "helios_only": len(command_correlation.get("helios_only", [])),
+        }
     return payload
 
 
@@ -304,8 +432,23 @@ def derive_evidence(store, state, window_seconds):
     failures = probe_integrity(store, state["witnesses"])
     facts = extract_all_facts(store, state["witnesses"], failures)
     inputs = probe_inputs(store, state["record_payload"])
+    evidence_requirements = state.get("record_payload", {}).get(
+        "evidence_requirements", [])
+    reach = {}
+    correlation = {}
+    if "SESSION_TRANSCRIPT" in evidence_requirements:
+        policy_id = reach_policy.DEFAULT_LUNA_POLICY
+        reach = classify_execution_reach(
+            store, state["witnesses"],
+            authorized_reach=reach_policy.authorized_reach(policy_id))
+        if reach.get("available"):
+            reach["policy_id"] = policy_id
+            if "COMMAND_GOVERNANCE" in evidence_requirements:
+                correlation = correlate_commands(reach, facts)
     return build_receipt(state, failures, window_seconds,
-                         witness_facts=facts, input_rehash=inputs)
+                         witness_facts=facts, input_rehash=inputs,
+                         execution_reach=reach,
+                         command_correlation=correlation)
 
 
 def receipt_bytes(payload):

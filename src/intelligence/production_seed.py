@@ -22,13 +22,15 @@ EVIDENCE_PROFILES = {
     "READ_ONLY_REPORT": ["EXECUTION_LIFECYCLE"],
     "READ_ONLY_GOVERNED": ["COMMAND_GOVERNANCE", "EXECUTION_LIFECYCLE"],
     "SOURCE_MODIFYING_GOVERNED": [
-        "COMMAND_GOVERNANCE", "EXECUTION_LIFECYCLE"],
+        "COMMAND_GOVERNANCE", "EXECUTION_LIFECYCLE",
+        "SESSION_TRANSCRIPT"],
 }
 
 # The engineering-organization profile: an objective whose workstreams
 # mix finalization classes takes each contract's evidence requirements
 # from its own class — READ_ONLY work that runs no command is witnessed by
-# its execution lifecycle, SOURCE_MODIFYING work is always governed.
+# its execution lifecycle, SOURCE_MODIFYING work is always governed and
+# its provider session transcript is admitted for execution-reach authority.
 BY_CLASS_PROFILE = "BY_CLASS"
 EVIDENCE_BY_CLASS = {
     "READ_ONLY": EVIDENCE_PROFILES["READ_ONLY_REPORT"],

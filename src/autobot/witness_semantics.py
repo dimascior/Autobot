@@ -74,6 +74,51 @@ def controller_well_formed(value):
             and all(c in "0123456789abcdef" for c in rest))
 
 
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def _decode_obj13_payload(data):
+    """Decode obj-13 producer bytes into the identity-carrying dict.
+
+    Handles three native formats tolerantly:
+    1. Single JSON document (.session.json)
+    2. JSONL (.jsonl) — first line is session_meta
+    3. Zstd-compressed JSONL (.jsonl.zst) — decompress then parse first line
+
+    Returns a dict or None. Never raises."""
+    raw = bytes(data)
+    if raw[:4] == _ZSTD_MAGIC:
+        try:
+            import zstandard
+            raw = zstandard.ZstdDecompressor().decompress(raw)
+        except Exception:
+            return None
+    try:
+        text = raw.decode("utf-8-sig")
+    except (UnicodeDecodeError, ValueError):
+        return None
+    # Try single JSON first
+    try:
+        value = json.loads(text)
+        if isinstance(value, dict):
+            return value
+    except (ValueError, json.JSONDecodeError):
+        pass
+    # Try JSONL: parse the first non-empty line
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+            if isinstance(value, dict):
+                return value
+        except (ValueError, json.JSONDecodeError):
+            pass
+        break
+    return None
+
+
 def extract_facts(witness_kind, data):
     """The tolerant recognizer: exact producer bytes in, recognized facts
     out. Returns {} for non-JSON, non-object or fact-free payloads —
@@ -81,16 +126,19 @@ def extract_facts(witness_kind, data):
     recognized = _RECOGNIZED.get(witness_kind)
     if not recognized:
         return {}
-    try:
-        payload = json.loads(bytes(data).decode("utf-8-sig"))
-    except (UnicodeDecodeError, ValueError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
+    if witness_kind == "obj-13":
+        payload = _decode_obj13_payload(data)
+        if payload is None:
+            return {}
+    else:
+        try:
+            payload = json.loads(bytes(data).decode("utf-8-sig"))
+        except (UnicodeDecodeError, ValueError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
     source = payload
     if witness_kind == "obj-13" and isinstance(payload.get("payload"), dict):
-        # The session rollout's first event nests identity under
-        # payload (session_meta); recognize it without rewriting.
         merged = dict(payload["payload"])
         merged.update({k: v for k, v in payload.items() if k != "payload"})
         source = merged
