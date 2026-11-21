@@ -39,12 +39,18 @@ from autobot import project_state
 from autobot.models import instant
 
 from .engineer import EngineerService
-from .orchestrator import OrchestratorService, PassthroughOrchestratorPolicy
+from .orchestrator import (
+    OrchestratorService,
+    OrchestrationApplicator,
+    PassthroughOrchestratorPolicy,
+)
 from .planstore import readonly_view
 from .taskforce import Taskforce
 
 
-def _any_activity(planning, sweep):
+def _any_activity(planning, sweep, orchestration=None):
+    if orchestration and orchestration.get("had_activity"):
+        return True
     if planning["cycle_id"] is not None:
         return True
     for key in ("allocated", "adopted", "collected", "verified",
@@ -97,6 +103,7 @@ class ContinuousDriver:
             plan=plan,
             policy=orchestrator_policy or PassthroughOrchestratorPolicy(),
             clock=clock)
+        self.orchestration_applicator = OrchestrationApplicator(plan)
         self._acquire()
         # The organization the Engineer reasons over exists before its
         # first cycle: mirror the specialist catalog now.
@@ -145,11 +152,16 @@ class ContinuousDriver:
             objectives=self.plan.active_objectives(),
             projects=self.plan.active_projects(),
             taskforce_state=self.taskforce.roster.snapshot())
+        if orchestration.get("decisions"):
+            orchestration["applied"] = \
+                self.orchestration_applicator.apply(
+                    orchestration["decisions"], now)
         planning = self.engineer.run_cycle(self.ro, project_state, now)
         sweep = self.taskforce.advance(now)
         return {"orchestration": orchestration,
                 "planning": planning, "sweep": sweep,
-                "quiet": not _any_activity(planning, sweep)}
+                "quiet": not _any_activity(
+                    planning, sweep, orchestration=orchestration)}
 
     def _closing(self, steps, **extra):
         report = {

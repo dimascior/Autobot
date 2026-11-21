@@ -38,13 +38,103 @@ Deterministic policies drive the tests; the production policy reasons with
 a model behind the same seam.
 """
 
+import hashlib
+import json
+
 from autobot.planning_view import build_orchestrator_view, enrich_view
 from autobot.work_profile import VALID_PROFILES
+from autobot.resource_scope import RESOURCE_KINDS, ACTIVITY_CLASSES
 
 
 ORCHESTRATOR_POLICY_ID = "reasoning-orchestrator/v1"
 
 ORCHESTRATOR_ROLE = "ORCHESTRATOR"
+
+ORCHESTRATOR_DECISION_CLASSES = frozenset({
+    "CREATE_PROJECT",
+    "CREATE_WORKSTREAM",
+    "SET_WORK_PROFILE",
+    "SET_RESOURCE_SCOPE",
+    "SET_EXECUTION_PROFILE",
+    "SET_ROLE",
+    "ADD_DEPENDENCY",
+    "REQUEST_ENGINEERING_DECISION",
+    "REQUEST_CAPABILITY",
+    "REQUEST_REVIEW",
+    "COMPLETE_WORKSTREAM",
+    "COMPLETE_PROJECT",
+    "RESTRUCTURE_PROJECT",
+})
+
+DEPENDENCY_KINDS = frozenset({
+    "ACCEPTED_ARTIFACT",
+    "ACCEPTED_DECISION",
+    "REVIEW_OF",
+    "COMPLETION",
+})
+
+
+def _decision_digest(decision):
+    """Deterministic identity for an orchestration decision."""
+    canonical = json.dumps(decision, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class OrchestrationDecisionError(Exception):
+    """A typed orchestration decision failed structural validation."""
+
+
+def validate_orchestration_decision(decision):
+    """Validate the structure of one orchestration decision."""
+    if not isinstance(decision, dict):
+        raise OrchestrationDecisionError("decision must be a dict")
+    cls = decision.get("class")
+    if cls not in ORCHESTRATOR_DECISION_CLASSES:
+        raise OrchestrationDecisionError(
+            "unknown decision class %r" % cls)
+    if cls == "CREATE_PROJECT":
+        if not decision.get("objective_id"):
+            raise OrchestrationDecisionError(
+                "CREATE_PROJECT requires objective_id")
+        if not decision.get("title"):
+            raise OrchestrationDecisionError(
+                "CREATE_PROJECT requires title")
+    elif cls == "CREATE_WORKSTREAM":
+        if not decision.get("project_id"):
+            raise OrchestrationDecisionError(
+                "CREATE_WORKSTREAM requires project_id")
+        if not decision.get("workstream_key"):
+            raise OrchestrationDecisionError(
+                "CREATE_WORKSTREAM requires workstream_key")
+    elif cls == "SET_WORK_PROFILE":
+        wp = decision.get("work_profile")
+        if wp not in VALID_PROFILES:
+            raise OrchestrationDecisionError(
+                "SET_WORK_PROFILE requires valid work_profile, got %r" % wp)
+    elif cls == "ADD_DEPENDENCY":
+        if not decision.get("source_workstream"):
+            raise OrchestrationDecisionError(
+                "ADD_DEPENDENCY requires source_workstream")
+        if not decision.get("target_workstream"):
+            raise OrchestrationDecisionError(
+                "ADD_DEPENDENCY requires target_workstream")
+        dk = decision.get("dependency_kind")
+        if dk not in DEPENDENCY_KINDS:
+            raise OrchestrationDecisionError(
+                "ADD_DEPENDENCY requires valid dependency_kind, got %r" % dk)
+    elif cls == "REQUEST_ENGINEERING_DECISION":
+        if not decision.get("question"):
+            raise OrchestrationDecisionError(
+                "REQUEST_ENGINEERING_DECISION requires question")
+    return decision
+
+
+def validate_orchestration_decisions(decisions):
+    """Validate a batch of orchestration decisions."""
+    validated = []
+    for d in decisions:
+        validated.append(validate_orchestration_decision(d))
+    return validated
 
 
 class OrchestratorPolicy:
@@ -222,23 +312,137 @@ class OrchestratorService:
                 "decisions": [],
                 "delegate_to_engineer": [],
                 "policy_id": self.policy.policy_id,
+                "had_activity": False,
             }
 
         view = self.build_view(objectives, projects, taskforce_state,
                                **kwargs)
+
+        input_digest = _decision_digest({
+            "objectives": sorted(o.get("objective_id", "")
+                                 for o in objectives),
+            "projects": sorted(p.get("project_id", "")
+                               for p in projects),
+            "taskforce_digest": str(taskforce_state.get("member_count", 0))
+                + ":" + str(taskforce_state.get("seat_count", 0)),
+        })
+
         decisions = self.policy.interpret(view)
+        if decisions:
+            decisions = validate_orchestration_decisions(decisions)
         delegate = []
         for project in projects:
             if self.policy.should_delegate_to_engineer(view, project):
                 delegate.append(project.get("project_id")
                                 or project.get("title", "unnamed"))
 
+        had_activity = bool(decisions)
+
         self._last_cycle = {
             "orchestrator_cycle": True,
             "decisions": decisions,
             "delegate_to_engineer": delegate,
             "policy_id": self.policy.policy_id,
+            "input_digest": input_digest,
             "objectives_count": len(objectives),
             "projects_count": len(projects),
+            "had_activity": had_activity,
         }
         return dict(self._last_cycle)
+
+
+class OrchestrationApplicator:
+    """Apply validated orchestration decisions to durable organizational state.
+
+    The Orchestrator produces typed decisions. This layer persists them.
+    The Orchestrator itself holds no persistence handle.
+    """
+
+    def __init__(self, plan):
+        self.plan = plan
+
+    def apply(self, decisions, now):
+        """Apply a batch of validated orchestration decisions.
+
+        Returns a list of application results, one per decision."""
+        results = []
+        for decision in decisions:
+            result = self._apply_one(decision, now)
+            results.append(result)
+        return results
+
+    def _apply_one(self, decision, now):
+        cls = decision["class"]
+        decision_id = "orc_" + _decision_digest(decision)[:32]
+
+        if cls == "CREATE_PROJECT":
+            return self._apply_create_project(decision, decision_id, now)
+        elif cls == "CREATE_WORKSTREAM":
+            return self._apply_create_workstream(decision, decision_id, now)
+        elif cls == "ADD_DEPENDENCY":
+            return self._apply_add_dependency(decision, decision_id, now)
+        elif cls in ("SET_WORK_PROFILE", "SET_RESOURCE_SCOPE",
+                     "SET_EXECUTION_PROFILE", "SET_ROLE"):
+            return {"decision_id": decision_id, "class": cls,
+                    "status": "RECORDED", "note": "workstream update"}
+        elif cls in ("COMPLETE_WORKSTREAM", "COMPLETE_PROJECT"):
+            return {"decision_id": decision_id, "class": cls,
+                    "status": "RECORDED", "note": "completion signal"}
+        elif cls == "REQUEST_ENGINEERING_DECISION":
+            return {"decision_id": decision_id, "class": cls,
+                    "status": "RECORDED",
+                    "question": decision.get("question")}
+        elif cls == "REQUEST_CAPABILITY":
+            return {"decision_id": decision_id, "class": cls,
+                    "status": "RECORDED",
+                    "capability": decision.get("capability")}
+        elif cls == "REQUEST_REVIEW":
+            return {"decision_id": decision_id, "class": cls,
+                    "status": "RECORDED"}
+        elif cls == "RESTRUCTURE_PROJECT":
+            return {"decision_id": decision_id, "class": cls,
+                    "status": "RECORDED",
+                    "note": decision.get("rationale", "")}
+        return {"decision_id": decision_id, "class": cls,
+                "status": "UNKNOWN"}
+
+    def _apply_create_project(self, decision, decision_id, now):
+        objective_id = decision["objective_id"]
+        title = decision["title"]
+        solution = decision.get("solution", "")
+        with self.plan.transaction() as cur:
+            project, created = self.plan.open_project(
+                cur, objective_id, title, solution,
+                "ORCHESTRATOR", decision_id, now)
+        return {"decision_id": decision_id, "class": "CREATE_PROJECT",
+                "status": "CREATED" if created else "EXISTS",
+                "project_id": project["project_id"]}
+
+    def _apply_create_workstream(self, decision, decision_id, now):
+        project_id = decision["project_id"]
+        key = decision["workstream_key"]
+        wp = decision.get("work_profile")
+        ep = decision.get("execution_profile")
+        rs = decision.get("resource_scope")
+        role = decision.get("organizational_role")
+        cp = decision.get("completion_policy")
+        with self.plan.transaction() as cur:
+            ws = self.plan.add_workstream(
+                cur, project_id, key, decision_id, now,
+                work_profile=wp, organizational_role=role,
+                resource_scope=rs, execution_profile=ep,
+                completion_policy=cp)
+        return {"decision_id": decision_id, "class": "CREATE_WORKSTREAM",
+                "status": "CREATED",
+                "workstream_id": ws["workstream_id"]}
+
+    def _apply_add_dependency(self, decision, decision_id, now):
+        source = decision["source_workstream"]
+        target = decision["target_workstream"]
+        kind = decision["dependency_kind"]
+        with self.plan.transaction() as cur:
+            dep = self.plan.add_workstream_dependency(
+                cur, source, target, kind)
+        return {"decision_id": decision_id, "class": "ADD_DEPENDENCY",
+                "status": "CREATED",
+                "source": source, "target": target}

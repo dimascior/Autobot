@@ -2,13 +2,19 @@
 import unittest
 
 from intelligence.orchestrator import (
+    DEPENDENCY_KINDS,
     DeterministicOrchestratorPolicy,
+    ORCHESTRATOR_DECISION_CLASSES,
+    OrchestrationApplicator,
+    OrchestrationDecisionError,
     OrchestratorPlanningView,
     OrchestratorPolicy,
     OrchestratorService,
     PassthroughOrchestratorPolicy,
     ORCHESTRATOR_POLICY_ID,
     ORCHESTRATOR_ROLE,
+    validate_orchestration_decision,
+    validate_orchestration_decisions,
 )
 
 
@@ -171,7 +177,7 @@ class TestOrchestratorService(unittest.TestCase):
     def test_deterministic_decisions(self):
         decisions = [
             {"class": "CREATE_PROJECT", "objective_id": "obj-test-001",
-             "work_profile": "RESEARCH"},
+             "title": "Research Project", "work_profile": "RESEARCH"},
         ]
         policy = DeterministicOrchestratorPolicy(decisions=decisions)
         svc = OrchestratorService(plan=None, policy=policy)
@@ -234,6 +240,152 @@ class TestOrchestratorService(unittest.TestCase):
         )
         self.assertIsNotNone(svc._last_cycle)
         self.assertTrue(svc._last_cycle["orchestrator_cycle"])
+
+
+class TestOrchestrationDecisionValidation(unittest.TestCase):
+
+    def test_all_decision_classes_recognized(self):
+        self.assertTrue(len(ORCHESTRATOR_DECISION_CLASSES) >= 13)
+
+    def test_valid_create_project(self):
+        d = validate_orchestration_decision({
+            "class": "CREATE_PROJECT",
+            "objective_id": "obj-test",
+            "title": "Test Project",
+        })
+        self.assertEqual(d["class"], "CREATE_PROJECT")
+
+    def test_create_project_missing_objective(self):
+        with self.assertRaises(OrchestrationDecisionError):
+            validate_orchestration_decision({
+                "class": "CREATE_PROJECT",
+                "title": "Test",
+            })
+
+    def test_valid_create_workstream(self):
+        d = validate_orchestration_decision({
+            "class": "CREATE_WORKSTREAM",
+            "project_id": "pj_test",
+            "workstream_key": "research-phase",
+            "work_profile": "RESEARCH",
+        })
+        self.assertEqual(d["class"], "CREATE_WORKSTREAM")
+
+    def test_valid_add_dependency(self):
+        d = validate_orchestration_decision({
+            "class": "ADD_DEPENDENCY",
+            "source_workstream": "ws_a",
+            "target_workstream": "ws_b",
+            "dependency_kind": "ACCEPTED_ARTIFACT",
+        })
+        self.assertEqual(d["class"], "ADD_DEPENDENCY")
+
+    def test_invalid_dependency_kind(self):
+        with self.assertRaises(OrchestrationDecisionError):
+            validate_orchestration_decision({
+                "class": "ADD_DEPENDENCY",
+                "source_workstream": "ws_a",
+                "target_workstream": "ws_b",
+                "dependency_kind": "INVALID",
+            })
+
+    def test_valid_set_work_profile(self):
+        d = validate_orchestration_decision({
+            "class": "SET_WORK_PROFILE",
+            "work_profile": "RESEARCH",
+            "workstream_id": "ws_x",
+        })
+        self.assertEqual(d["class"], "SET_WORK_PROFILE")
+
+    def test_invalid_work_profile(self):
+        with self.assertRaises(OrchestrationDecisionError):
+            validate_orchestration_decision({
+                "class": "SET_WORK_PROFILE",
+                "work_profile": "INVALID",
+            })
+
+    def test_valid_request_engineering(self):
+        d = validate_orchestration_decision({
+            "class": "REQUEST_ENGINEERING_DECISION",
+            "question": "What architecture should we use?",
+            "objective_id": "obj-test",
+        })
+        self.assertEqual(d["class"], "REQUEST_ENGINEERING_DECISION")
+
+    def test_engineering_requires_question(self):
+        with self.assertRaises(OrchestrationDecisionError):
+            validate_orchestration_decision({
+                "class": "REQUEST_ENGINEERING_DECISION",
+            })
+
+    def test_unknown_class(self):
+        with self.assertRaises(OrchestrationDecisionError):
+            validate_orchestration_decision({"class": "FAKE"})
+
+    def test_batch_validation(self):
+        decisions = [
+            {"class": "CREATE_PROJECT", "objective_id": "obj-1",
+             "title": "P1"},
+            {"class": "COMPLETE_PROJECT", "project_id": "pj_1"},
+        ]
+        result = validate_orchestration_decisions(decisions)
+        self.assertEqual(len(result), 2)
+
+    def test_all_dependency_kinds_known(self):
+        self.assertIn("ACCEPTED_ARTIFACT", DEPENDENCY_KINDS)
+        self.assertIn("ACCEPTED_DECISION", DEPENDENCY_KINDS)
+        self.assertIn("REVIEW_OF", DEPENDENCY_KINDS)
+        self.assertIn("COMPLETION", DEPENDENCY_KINDS)
+
+
+class TestOrchestratorServiceDecisions(unittest.TestCase):
+
+    def test_decisions_are_validated(self):
+        decisions = [
+            {"class": "CREATE_PROJECT", "objective_id": "obj-1",
+             "title": "Test"},
+        ]
+        policy = DeterministicOrchestratorPolicy(decisions=decisions)
+        svc = OrchestratorService(plan=None, policy=policy)
+        result = svc.run_cycle(
+            objectives=[_objective()],
+            projects=[],
+            taskforce_state={"member_count": 0, "seat_count": 0},
+        )
+        self.assertTrue(result["had_activity"])
+        self.assertEqual(len(result["decisions"]), 1)
+
+    def test_invalid_decision_raises(self):
+        decisions = [{"class": "FAKE"}]
+        policy = DeterministicOrchestratorPolicy(decisions=decisions)
+        svc = OrchestratorService(plan=None, policy=policy)
+        with self.assertRaises(OrchestrationDecisionError):
+            svc.run_cycle(
+                objectives=[_objective()],
+                projects=[],
+                taskforce_state={},
+            )
+
+    def test_no_decisions_no_activity(self):
+        policy = PassthroughOrchestratorPolicy()
+        svc = OrchestratorService(plan=None, policy=policy)
+        result = svc.run_cycle(
+            objectives=[_objective()],
+            projects=[],
+            taskforce_state={},
+        )
+        self.assertFalse(result["had_activity"])
+
+    def test_input_digest_present(self):
+        policy = PassthroughOrchestratorPolicy()
+        svc = OrchestratorService(plan=None, policy=policy)
+        result = svc.run_cycle(
+            objectives=[_objective()],
+            projects=[],
+            taskforce_state={"member_count": 4, "seat_count": 4},
+        )
+        self.assertIn("input_digest", result)
+        self.assertEqual(len(result["input_digest"]), 64)
 
 
 if __name__ == "__main__":
