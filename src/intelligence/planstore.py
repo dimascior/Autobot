@@ -28,7 +28,7 @@ from contextlib import contextmanager
 
 from .proposals_util import canonical_json_digest
 
-PLAN_SCHEMA_VERSION = 3
+PLAN_SCHEMA_VERSION = 4
 
 # The objective-scoped engineering-work budget applied when you set none
 # (cap-47: the limits are yours; these are only the conservative default).
@@ -478,7 +478,30 @@ _DDL_V3 = (
     "ALTER TABLE assignment_decisions ADD COLUMN escalation TEXT",
 )
 
-_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3}
+_DDL_V4 = (
+    "ALTER TABLE project_workstreams ADD COLUMN work_profile TEXT",
+    "ALTER TABLE project_workstreams ADD COLUMN organizational_role TEXT",
+    "ALTER TABLE project_workstreams ADD COLUMN resource_scope TEXT",
+    "ALTER TABLE project_workstreams ADD COLUMN execution_profile TEXT",
+    "ALTER TABLE project_workstreams ADD COLUMN status TEXT"
+    " DEFAULT 'ACTIVE'",
+    "ALTER TABLE project_workstreams ADD COLUMN completion_policy TEXT",
+    """CREATE TABLE IF NOT EXISTS project_workstream_dependencies (
+        source_workstream_id TEXT NOT NULL
+            REFERENCES project_workstreams(workstream_id),
+        target_workstream_id TEXT NOT NULL
+            REFERENCES project_workstreams(workstream_id),
+        dependency_kind TEXT NOT NULL CHECK (dependency_kind IN
+            ('ACCEPTED_ARTIFACT','ACCEPTED_DECISION',
+             'REVIEW_OF','COMPLETION')),
+        required_acceptance INTEGER NOT NULL DEFAULT 1,
+        released_utc TEXT,
+        accepted_artifact_address TEXT,
+        PRIMARY KEY (source_workstream_id, target_workstream_id)
+    )""",
+)
+
+_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4}
 
 
 class PlanStoreTooNew(Exception):
