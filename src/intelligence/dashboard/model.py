@@ -66,6 +66,9 @@ def build_snapshot(intelligence, authority, step_reader=None,
     for out in intelligence.node_outputs():
         outputs_by_node.setdefault(out["node_id"], []).append(out)
 
+    # --- assignment index (sequence → provider/model) ---
+    assignments_idx = intelligence.assignments_by_sequence()
+
     # --- runs with nodes and edges ---
     runs = []
     for run in intelligence.orchestration_runs():
@@ -79,6 +82,8 @@ def build_snapshot(intelligence, authority, step_reader=None,
             ab = bindings_by_node.get(nid, {})
             outs = outputs_by_node.get(nid, [])
             latest_out = outs[-1] if outs else {}
+            seq_id = ab.get("sequence_id")
+            asgn = assignments_idx.get(seq_id, {}) if seq_id else {}
             nodes.append(NodeView(
                 node_id=nid,
                 orchestration_id=rid,
@@ -87,11 +92,14 @@ def build_snapshot(intelligence, authority, step_reader=None,
                 realization_kind=n.get("realization_kind"),
                 work_profile=n.get("work_profile"),
                 capability=n.get("capability"),
-                sequence_id=ab.get("sequence_id"),
+                sequence_id=seq_id,
                 record_hash=ab.get("record_hash"),
                 binding_status=ab.get("status"),
                 output_kind=latest_out.get("output_kind"),
-                output_sha256=latest_out.get("content_sha256")))
+                output_sha256=latest_out.get("content_sha256"),
+                provider=asgn.get("provider"),
+                model=asgn.get("model"),
+                specialist_handle=asgn.get("specialist_handle")))
 
         edges = [
             EdgeView(

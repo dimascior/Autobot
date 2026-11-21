@@ -43,6 +43,10 @@ class NodeView:
     # from node output
     output_kind: Optional[str] = None
     output_sha256: Optional[str] = None
+    # from assignment (what actually executed)
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    specialist_handle: Optional[str] = None
 
 
 @dataclass(frozen=True)

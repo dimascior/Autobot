@@ -140,6 +140,24 @@ class IntelligenceReader:
         except sqlite3.OperationalError:
             return 0
 
+    def assignments_by_sequence(self):
+        try:
+            rows = _rows(self.conn,
+                         "SELECT a.sequence_id, a.provider, a.model,"
+                         " s.handle AS specialist_handle"
+                         " FROM project_assignments a"
+                         " JOIN specialists s"
+                         "   ON s.specialist_id = a.specialist_id"
+                         " ORDER BY a.selected_utc DESC")
+            index = {}
+            for r in rows:
+                sid = r.get("sequence_id")
+                if sid and sid not in index:
+                    index[sid] = r
+            return index
+        except sqlite3.OperationalError:
+            return {}
+
     def recent_proposals(self, limit=10):
         return _rows(self.conn,
                      "SELECT proposal_id, class, objective_id, status,"

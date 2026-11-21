@@ -299,10 +299,19 @@ def compose(scr, snapshot, tick, routing=None):
                     "CONTROL": "CTRL"}.get(node.realization_kind or "", "?")
             kc = {"TASK": C["dir"], "ENGR": C["eng"]}.get(kind, C["dim"])
             _text(scr, 26, dag_y, kind, kc)
-            if node.sequence_id:
-                _text(scr, 31, dag_y, "→" + node.sequence_id[:10], C["dim"])
+            # Execution route: what actually ran this node
+            route_col = 31
+            if node.provider and node.model:
+                route_label = "%s/%s" % (node.provider[:6],
+                                          node.model[:12])
+                _text(scr, route_col, dag_y, route_label, C["luna"])
+                route_col += len(route_label) + 1
+            elif node.sequence_id:
+                _text(scr, route_col, dag_y,
+                      "→" + node.sequence_id[:10], C["dim"])
+                route_col = 43
             if node.output_sha256:
-                scr.put(43, dag_y, "✦", C["success"])
+                scr.put(route_col, dag_y, "✦", C["success"])
             dag_y += 1
         if dag_y >= scr.h - 10:
             break
