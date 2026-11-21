@@ -161,8 +161,11 @@ class ContinuousDriver:
         now = instant(self.clock.now())
         coordinator_report = self._coordinator_admit(now)
         orchestration = self._run_orchestration_cycles(now)
+        engineer_nodes = self._realize_engineer_nodes(now)
         admitted = self._admit_ready_workstreams(now)
         node_admitted = self._admit_ready_nodes(now)
+        if engineer_nodes:
+            orchestration["engineer_nodes"] = engineer_nodes
         if admitted:
             orchestration["admitted_workstreams"] = admitted
         if node_admitted:
@@ -287,6 +290,86 @@ class ContinuousDriver:
             combined["delegate_to_engineer"].extend(
                 orch.get("delegate_to_engineer", []))
         return combined
+
+    def _realize_engineer_nodes(self, now):
+        """Realize ENGINEER_REASONING nodes through the Engineer.
+
+        When the Coordinator creates an ENGINEER_ELEVATED run, the
+        initial node has realization_kind=ENGINEER_REASONING. This
+        method detects pending ENGINEER_REASONING nodes, invokes the
+        Engineer's reasoning, stores the decision as the node's output,
+        and completes the node.
+
+        Returns a list of realized nodes."""
+        results = []
+        for run in self.plan.active_orchestration_runs():
+            if run["mode"] != "ENGINEER_ELEVATED":
+                continue
+            run_id = run["orchestration_id"]
+            objective = self.plan.objective(run["objective_id"])
+            if objective is None:
+                continue
+            nodes = self.plan.orchestration_nodes(
+                run_id, status="PENDING")
+            for node in nodes:
+                if node.get("realization_kind") != "ENGINEER_REASONING":
+                    continue
+                binding = self.plan.engineering_binding_for_node(
+                    node["node_id"])
+                if binding is not None and binding.get("adopted_utc"):
+                    continue
+                from .proposals_util import canonical_json_digest
+                import hashlib
+                req_id = "er_" + canonical_json_digest({
+                    "node": node["node_id"],
+                    "run": run_id,
+                })[:32]
+                question = node.get("description") or objective["text"]
+                if binding is None:
+                    with self.plan.transaction() as cur:
+                        self.plan.create_engineering_binding(
+                            cur, req_id, node["node_id"], run_id,
+                            question, now)
+                try:
+                    policy = self.engineer.policy
+                    if hasattr(policy, "reasoner") and \
+                            policy.reasoner is not None:
+                        response = policy.reasoner(question)
+                        content = response.encode("utf-8") \
+                            if isinstance(response, str) \
+                            else response
+                        content_sha = hashlib.sha256(
+                            content).hexdigest()
+                        decision_id = "ed_" + content_sha[:32]
+                        with self.plan.transaction() as cur:
+                            self.plan.adopt_engineering_decision(
+                                cur, req_id, decision_id,
+                                content_sha, now)
+                        output_id = "out_" + canonical_json_digest({
+                            "node": node["node_id"],
+                            "decision": decision_id,
+                        })[:32]
+                        with self.plan.transaction() as cur:
+                            self.plan.record_node_output(
+                                cur, output_id, node["node_id"],
+                                "ENGINEERING_DECISION", now,
+                                content_sha256=content_sha,
+                                engineering_decision_id=decision_id)
+                            self.plan.update_node_status(
+                                cur, node["node_id"],
+                                "COMPLETED", now)
+                        results.append({
+                            "node_id": node["node_id"],
+                            "decision_id": decision_id,
+                            "content_sha256": content_sha,
+                        })
+                except Exception as exc:
+                    results.append({
+                        "node_id": node["node_id"],
+                        "error": "%s: %s" % (
+                            type(exc).__name__, exc),
+                    })
+        return results
 
     def _release_accepted_dependencies(self, now):
         """When a predecessor sequence is accepted, release the

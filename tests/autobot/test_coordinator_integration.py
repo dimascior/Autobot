@@ -288,6 +288,46 @@ class CoordinatorIntegrationTests(unittest.TestCase):
         self.assertEqual(r1["decision"]["decision_id"],
                          r2["decision"]["decision_id"])
 
+    def test_coordinator_skips_objective_with_prior_sequences(self):
+        """Coordinator does not admit an objective that already has
+        authority sequences from prior Engineer cycles."""
+        now = instant(self.clock.now())
+        self.transport.scripts = {
+            "investigator": [result()],
+        }
+        self.plan.add_objective(
+            "obj-ci-prior", "Pre-existing research work", "operator",
+            now)
+
+        self.driver = self._driver(
+            CoordinatorPassthroughPolicy(),
+            runner=QueueRunner(sequencer=self.rt.sequencer),
+            coordinator_policy=PassthroughCoordinatorPolicy())
+        self.driver.run_until_stable()
+
+        proposals = self.plan.proposals_by_status("ADMITTED")
+        has_work = any(p["objective_id"] == "obj-ci-prior"
+                       for p in proposals)
+        self.assertTrue(has_work,
+                        "objective should have Engineer-created work")
+
+        self.driver.close()
+        self.plan.close()
+        self.plan = PlanStore(self.dir / "intelligence.db")
+        coord_policy = DeterministicCoordinatorPolicy(mode="DIRECT")
+        self.driver = self._driver(
+            CoordinatorPassthroughPolicy(),
+            runner=QueueRunner(sequencer=self.rt.sequencer),
+            coordinator_policy=coord_policy,
+            holder="chief-restarted")
+
+        self.driver.step()
+
+        decisions = self.plan.coordinator_decisions_for("obj-ci-prior")
+        self.assertEqual(len(decisions), 0,
+                         "Coordinator should not admit an objective"
+                         " with prior authority work")
+
     def test_node_to_proposal_produces_admittable_proposal(self):
         """node_to_proposal output is structurally compatible with
         the Engineer's disposal path."""
