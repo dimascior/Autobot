@@ -155,6 +155,8 @@ class ActiveSessionView:
     status: str = "UNKNOWN"
     started_utc: Optional[str] = None
     workspace: Optional[str] = None
+    stdout_lines: int = 0
+    stdout_tail: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

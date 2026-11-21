@@ -306,10 +306,10 @@ class AutoSwarmReader:
                 handle = d / "handle.json"
                 result = d / "result.json"
                 if handle.is_file() and not result.is_file():
+                    entry = {"call_id": d.name}
                     try:
                         h = json.loads(handle.read_text(encoding="utf-8"))
-                        sessions.append({
-                            "call_id": d.name,
+                        entry.update({
                             "native_session_id": h.get("native_session_id"),
                             "provider": h.get("provider"),
                             "model": h.get("model"),
@@ -317,7 +317,19 @@ class AutoSwarmReader:
                             "workspace": h.get("workspace"),
                         })
                     except (json.JSONDecodeError, OSError):
-                        sessions.append({"call_id": d.name})
+                        pass
+                    # Tail stdout for live execution detail
+                    stdout = d / "stdout.log"
+                    if stdout.is_file():
+                        try:
+                            text = stdout.read_text(
+                                encoding="utf-8", errors="replace")
+                            lines = text.strip().split("\n")
+                            entry["stdout_lines"] = len(lines)
+                            entry["stdout_tail"] = lines[-5:]
+                        except OSError:
+                            pass
+                    sessions.append(entry)
                 if len(sessions) >= 10:
                     break
         except OSError:

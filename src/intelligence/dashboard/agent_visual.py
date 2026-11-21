@@ -246,14 +246,21 @@ def compose(scr, snapshot, tick, routing=None):
             scr.put(3, exec_y, SPIN[tick % len(SPIN)], C["accent"])
             provider_str = ""
             if sess.provider:
-                provider_str = " %s" % sess.provider[:8]
+                provider_str = "%s" % sess.provider[:8]
                 if sess.model:
                     provider_str += "/%s" % sess.model[:12]
             _text(scr, 5, exec_y, sess.call_id[:16], C["bright"])
-            if sess.native_session_id:
-                _text(scr, 22, exec_y, sess.native_session_id[:16], C["dim"])
-            _text(scr, 40, exec_y, provider_str[:20], C["luna"])
+            _text(scr, 22, exec_y, provider_str[:20], C["luna"])
+            if sess.stdout_lines:
+                _text(scr, 44, exec_y,
+                      "%d lines" % sess.stdout_lines, C["dim"])
             exec_y += 1
+            # Show last 2 lines of stdout (what the agent is doing NOW)
+            for line in sess.stdout_tail[-2:]:
+                clean = line.strip()[:w - 8]
+                if clean:
+                    _text(scr, 6, exec_y, clean, C["dim"])
+                    exec_y += 1
         for att in snapshot.active_attempts[:3]:
             scr.put(3, exec_y, SPIN[tick % len(SPIN)], C["accent"])
             _text(scr, 5, exec_y, att.attempt_id[:16], C["bright"])

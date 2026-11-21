@@ -201,7 +201,9 @@ def build_snapshot(intelligence, authority, step_reader=None,
                 model=s.get("model"),
                 status="RUNNING",
                 started_utc=s.get("started_utc"),
-                workspace=s.get("workspace")))
+                workspace=s.get("workspace"),
+                stdout_lines=s.get("stdout_lines", 0),
+                stdout_tail=s.get("stdout_tail", [])))
 
     # --- routing ---
     routing = RoutingView()
