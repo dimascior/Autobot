@@ -1,8 +1,10 @@
 """Entry point: python -m intelligence.dashboard [options]
 
 Usage:
-    python -m intelligence.dashboard                 # live polling (default 3s)
+    python -m intelligence.dashboard                 # agent view, live (default)
+    python -m intelligence.dashboard --compact       # compact table view
     python -m intelligence.dashboard --once          # single snapshot
+    python -m intelligence.dashboard --ground        # + ground-truth state dump
     python -m intelligence.dashboard --interval 5    # poll every 5 seconds
     python -m intelligence.dashboard --json          # snapshot as JSON
     python -m intelligence.dashboard --step-log driver_steps.jsonl
@@ -43,6 +45,11 @@ def main():
                         help="print one snapshot and exit")
     parser.add_argument("--json", action="store_true",
                         help="output snapshot as JSON")
+    parser.add_argument("--compact", action="store_true",
+                        help="use the compact table view instead of"
+                             " the agent-centric view")
+    parser.add_argument("--ground", action="store_true",
+                        help="append ground-truth state dump each tick")
     args = parser.parse_args()
 
     root = args.root or _find_root()
@@ -75,11 +82,19 @@ def main():
             auth.close()
         return 0
 
-    from .cli_stream import stream
-    stream(intel_path, auth_path,
-           step_log_path=args.step_log,
-           interval=args.interval,
-           once=args.once)
+    if args.compact:
+        from .cli_stream import stream
+        stream(intel_path, auth_path,
+               step_log_path=args.step_log,
+               interval=args.interval,
+               once=args.once)
+    else:
+        from .agent_stream import stream
+        stream(intel_path, auth_path,
+               step_log_path=args.step_log,
+               interval=args.interval,
+               once=args.once,
+               ground=args.ground)
     return 0
 
 
