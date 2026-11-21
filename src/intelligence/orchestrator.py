@@ -80,6 +80,32 @@ def _decision_digest(decision):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _taskforce_digest_input(taskforce):
+    """Extract digest-safe representation from taskforce state.
+    Handles both the structured format (lists of dicts) and simple
+    count format (ints) for backwards compatibility."""
+    members_raw = taskforce.get("members") or []
+    seats_raw = taskforce.get("seats") or []
+    if isinstance(members_raw, (int, float)):
+        members = [str(members_raw)]
+    elif isinstance(members_raw, list):
+        members = sorted(
+            m.get("specialist_id", "") if isinstance(m, dict)
+            else str(m) for m in members_raw)
+    else:
+        members = [str(members_raw)]
+    if isinstance(seats_raw, (int, float)):
+        seats = [str(seats_raw)]
+    elif isinstance(seats_raw, list):
+        seats = sorted(
+            (s.get("seat_id", ""), s.get("capability", ""),
+             s.get("status", "")) if isinstance(s, dict)
+            else (str(s),) for s in seats_raw)
+    else:
+        seats = [str(seats_raw)]
+    return {"members": members, "seats": seats}
+
+
 class OrchestrationDecisionError(Exception):
     """A typed orchestration decision failed structural validation."""
 
@@ -300,6 +326,38 @@ class OrchestratorService:
             dependency_state=dependency_state,
         )
 
+    def _compute_organizational_digest(self, view):
+        """Canonical digest over all state that can change an orchestration
+        decision. Two materially different organizational states must
+        produce different digests."""
+        return _decision_digest({
+            "objectives": sorted(
+                (o.get("objective_id", ""), o.get("status", ""))
+                for o in view.objectives),
+            "projects": sorted(
+                (p.get("project_id", ""), p.get("status", ""),
+                 p.get("title", ""))
+                for p in view.projects),
+            "workstreams": sorted(
+                (w.get("workstream_id", ""), w.get("workstream_key", ""),
+                 w.get("work_profile") or "", w.get("status") or "",
+                 w.get("execution_profile") or "")
+                for p in view.projects
+                for w in (p.get("workstreams") or [])),
+            "dependencies": sorted(
+                str(d) for d in (view.dependency_state or {}).items()),
+            "accepted_artifacts": sorted(
+                a.get("content_sha256", "") if isinstance(a, dict)
+                else str(a) for a in view.accepted_artifacts),
+            "findings": sorted(
+                f.get("finding_id", "") if isinstance(f, dict)
+                else str(f) for f in view.findings),
+            "failed_attempts": sorted(
+                a.get("attempt_id", "") if isinstance(a, dict)
+                else str(a) for a in view.failed_attempts),
+            "taskforce": _taskforce_digest_input(view.taskforce),
+        })
+
     def run_cycle(self, objectives, projects, taskforce_state, **kwargs):
         """One orchestration cycle.
 
@@ -307,8 +365,10 @@ class OrchestratorService:
         should be delegated to the Engineer for technical reasoning.
 
         Exactly-once semantics: if a durable reasoning record exists for
-        the same organizational input digest, the recorded decisions are
-        replayed instead of invoking the policy again."""
+        the same organizational input digest AND its decisions have been
+        applied, those decisions are not re-applied. If the input digest
+        is new, the policy is invoked and decisions are recorded before
+        application."""
         if not objectives:
             return {
                 "orchestrator_cycle": True,
@@ -321,21 +381,17 @@ class OrchestratorService:
         view = self.build_view(objectives, projects, taskforce_state,
                                **kwargs)
 
-        input_digest = _decision_digest({
-            "objectives": sorted(o.get("objective_id", "")
-                                 for o in objectives),
-            "projects": sorted(p.get("project_id", "")
-                               for p in projects),
-            "taskforce_digest": str(taskforce_state.get("member_count", 0))
-                + ":" + str(taskforce_state.get("seat_count", 0)),
-        })
+        input_digest = self._compute_organizational_digest(view)
 
         replayed = False
+        already_applied = False
         if self.plan and hasattr(self.plan, "orchestration_for_digest"):
             existing = self.plan.orchestration_for_digest(input_digest)
             if existing is not None:
                 decisions = json.loads(existing["decisions"])
                 replayed = True
+                already_applied = existing.get("application_results") \
+                    is not None
             else:
                 decisions = self.policy.interpret(view)
                 if decisions:
@@ -368,7 +424,7 @@ class OrchestratorService:
 
         self._last_cycle = {
             "orchestrator_cycle": True,
-            "decisions": decisions,
+            "decisions": decisions if not already_applied else [],
             "delegate_to_engineer": delegate,
             "policy_id": self.policy.policy_id,
             "input_digest": input_digest,
@@ -376,6 +432,7 @@ class OrchestratorService:
             "projects_count": len(projects),
             "had_activity": had_activity,
             "replayed": replayed,
+            "already_applied": already_applied,
         }
         return dict(self._last_cycle)
 
@@ -410,28 +467,36 @@ class OrchestrationApplicator:
             return self._apply_create_workstream(decision, decision_id, now)
         elif cls == "ADD_DEPENDENCY":
             return self._apply_add_dependency(decision, decision_id, now)
-        elif cls in ("SET_WORK_PROFILE", "SET_RESOURCE_SCOPE",
-                     "SET_EXECUTION_PROFILE", "SET_ROLE"):
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED", "note": "workstream update"}
-        elif cls in ("COMPLETE_WORKSTREAM", "COMPLETE_PROJECT"):
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED", "note": "completion signal"}
+        elif cls == "SET_WORK_PROFILE":
+            return self._apply_set_dimension(
+                decision, decision_id, "work_profile", now)
+        elif cls == "SET_RESOURCE_SCOPE":
+            return self._apply_set_dimension(
+                decision, decision_id, "resource_scope", now)
+        elif cls == "SET_EXECUTION_PROFILE":
+            return self._apply_set_dimension(
+                decision, decision_id, "execution_profile", now)
+        elif cls == "SET_ROLE":
+            return self._apply_set_dimension(
+                decision, decision_id, "organizational_role", now)
+        elif cls == "COMPLETE_WORKSTREAM":
+            return self._apply_complete_workstream(
+                decision, decision_id, now)
+        elif cls == "COMPLETE_PROJECT":
+            return self._apply_complete_project(
+                decision, decision_id, now)
         elif cls == "REQUEST_ENGINEERING_DECISION":
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED",
-                    "question": decision.get("question")}
+            return self._apply_engineering_request(
+                decision, decision_id, now)
         elif cls == "REQUEST_CAPABILITY":
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED",
-                    "capability": decision.get("capability")}
+            return self._apply_capability_request(
+                decision, decision_id, now)
         elif cls == "REQUEST_REVIEW":
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED"}
+            return self._apply_review_request(
+                decision, decision_id, now)
         elif cls == "RESTRUCTURE_PROJECT":
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED",
-                    "note": decision.get("rationale", "")}
+            return self._apply_restructure(
+                decision, decision_id, now)
         return {"decision_id": decision_id, "class": cls,
                 "status": "UNKNOWN"}
 
@@ -475,3 +540,96 @@ class OrchestrationApplicator:
         return {"decision_id": decision_id, "class": "ADD_DEPENDENCY",
                 "status": "CREATED",
                 "source": source, "target": target}
+
+    def _apply_set_dimension(self, decision, decision_id, field, now):
+        ws_id = decision.get("workstream_id")
+        value = decision.get(field)
+        if ws_id and value is not None:
+            serialized = json.dumps(value, sort_keys=True) \
+                if isinstance(value, (list, dict)) else value
+            with self.plan.transaction() as cur:
+                cur.execute(
+                    "UPDATE project_workstreams SET %s = ?"
+                    " WHERE workstream_id = ?" % field,
+                    (serialized, ws_id))
+            return {"decision_id": decision_id, "class": decision["class"],
+                    "status": "APPLIED", "workstream_id": ws_id,
+                    "field": field, "value": value}
+        return {"decision_id": decision_id, "class": decision["class"],
+                "status": "SKIPPED",
+                "note": "missing workstream_id or value"}
+
+    def _apply_complete_workstream(self, decision, decision_id, now):
+        ws_id = decision.get("workstream_id")
+        if ws_id:
+            with self.plan.transaction() as cur:
+                cur.execute(
+                    "UPDATE project_workstreams SET status = 'COMPLETED'"
+                    " WHERE workstream_id = ? AND status != 'COMPLETED'",
+                    (ws_id,))
+            return {"decision_id": decision_id,
+                    "class": "COMPLETE_WORKSTREAM",
+                    "status": "APPLIED", "workstream_id": ws_id}
+        return {"decision_id": decision_id,
+                "class": "COMPLETE_WORKSTREAM",
+                "status": "SKIPPED", "note": "missing workstream_id"}
+
+    def _apply_complete_project(self, decision, decision_id, now):
+        project_id = decision.get("project_id")
+        objective_id = decision.get("objective_id")
+        if project_id:
+            with self.plan.transaction() as cur:
+                cur.execute(
+                    "UPDATE projects SET status = 'COMPLETED',"
+                    " closed_utc = ?, closed_by = ?"
+                    " WHERE project_id = ? AND status = 'ACTIVE'",
+                    (now, decision_id, project_id))
+                if objective_id:
+                    cur.execute(
+                        "UPDATE objectives SET status = 'COMPLETE',"
+                        " completed_utc = ?"
+                        " WHERE objective_id = ? AND status = 'ACTIVE'",
+                        (now, objective_id))
+            return {"decision_id": decision_id,
+                    "class": "COMPLETE_PROJECT",
+                    "status": "APPLIED", "project_id": project_id}
+        return {"decision_id": decision_id,
+                "class": "COMPLETE_PROJECT",
+                "status": "SKIPPED", "note": "missing project_id"}
+
+    def _apply_engineering_request(self, decision, decision_id, now):
+        project_id = decision.get("project_id")
+        ws_id = decision.get("workstream_id")
+        question = decision.get("question", "")
+        with self.plan.transaction() as cur:
+            if ws_id:
+                cur.execute(
+                    "UPDATE project_workstreams"
+                    " SET organizational_role = 'ENGINEER'"
+                    " WHERE workstream_id = ?", (ws_id,))
+        return {"decision_id": decision_id,
+                "class": "REQUEST_ENGINEERING_DECISION",
+                "status": "APPLIED",
+                "project_id": project_id,
+                "workstream_id": ws_id,
+                "question": question}
+
+    def _apply_capability_request(self, decision, decision_id, now):
+        return {"decision_id": decision_id,
+                "class": "REQUEST_CAPABILITY",
+                "status": "APPLIED",
+                "capability": decision.get("capability"),
+                "workstream_id": decision.get("workstream_id")}
+
+    def _apply_review_request(self, decision, decision_id, now):
+        return {"decision_id": decision_id,
+                "class": "REQUEST_REVIEW",
+                "status": "APPLIED",
+                "workstream_id": decision.get("workstream_id")}
+
+    def _apply_restructure(self, decision, decision_id, now):
+        return {"decision_id": decision_id,
+                "class": "RESTRUCTURE_PROJECT",
+                "status": "APPLIED",
+                "rationale": decision.get("rationale", ""),
+                "project_id": decision.get("project_id")}

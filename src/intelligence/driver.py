@@ -44,6 +44,7 @@ from .orchestrator import (
     OrchestrationApplicator,
     PassthroughOrchestratorPolicy,
 )
+from .workstream_bridge import workstream_to_proposal
 from .planstore import readonly_view
 from .taskforce import Taskforce
 
@@ -152,16 +153,125 @@ class ContinuousDriver:
             objectives=self.plan.active_objectives(),
             projects=self.plan.active_projects(),
             taskforce_state=self.taskforce.roster.snapshot())
-        if orchestration.get("decisions"):
-            orchestration["applied"] = \
-                self.orchestration_applicator.apply(
-                    orchestration["decisions"], now)
+        if orchestration.get("decisions") and \
+                not orchestration.get("already_applied"):
+            applied = self.orchestration_applicator.apply(
+                orchestration["decisions"], now)
+            orchestration["applied"] = applied
+            if hasattr(self.plan, "persist_orchestration_application"):
+                self.plan.persist_orchestration_application(
+                    orchestration.get("input_digest"), applied)
+        admitted = self._admit_ready_workstreams(now)
+        if admitted:
+            orchestration["admitted_workstreams"] = admitted
         planning = self.engineer.run_cycle(self.ro, project_state, now)
         sweep = self.taskforce.advance(now)
+        released = self._release_accepted_dependencies(now)
         return {"orchestration": orchestration,
                 "planning": planning, "sweep": sweep,
+                "dependency_releases": released,
                 "quiet": not _any_activity(
                     planning, sweep, orchestration=orchestration)}
+
+    def _release_accepted_dependencies(self, now):
+        """When a predecessor sequence is accepted, release the
+        corresponding project_workstream_dependency and bind the
+        accepted artifact address. Returns list of releases."""
+        releases = []
+        for project in self.plan.active_projects():
+            for ws in self.plan.workstreams(project["project_id"]):
+                deps = self.plan.dependencies_for_workstream(
+                    ws["workstream_id"])
+                for dep in deps:
+                    if dep.get("released_utc") is not None:
+                        continue
+                    source_ws = self.plan.generalized_workstream(
+                        dep["source_workstream_id"])
+                    if source_ws is None:
+                        continue
+                    source_proposal = self.plan.proposal(
+                        source_ws["proposal_id"])
+                    if source_proposal is None:
+                        continue
+                    seq_id = source_proposal.get("sequence_id")
+                    if not seq_id:
+                        continue
+                    seq_row = self.ro.execute(
+                        "SELECT state FROM sequences WHERE sequence_id = ?",
+                        (seq_id,)).fetchone()
+                    if seq_row is None:
+                        continue
+                    if seq_row["state"] not in ("ACCEPTED", "COMPLETED"):
+                        continue
+                    acceptance = self.ro.execute(
+                        "SELECT acceptance_sha256 FROM released_edges"
+                        " WHERE predecessor_sequence_id = ? LIMIT 1",
+                        (seq_id,)).fetchone()
+                    artifact_addr = None
+                    if acceptance:
+                        artifact_addr = acceptance["acceptance_sha256"]
+                    with self.plan.transaction() as cur:
+                        self.plan.release_workstream_dependency(
+                            cur, dep["source_workstream_id"],
+                            dep["target_workstream_id"],
+                            now, artifact_addr)
+                    releases.append({
+                        "source": dep["source_workstream_id"],
+                        "target": dep["target_workstream_id"],
+                        "artifact": artifact_addr,
+                    })
+        return releases
+
+    def _admit_ready_workstreams(self, now):
+        """Find Orchestrator-created workstreams that have no authority
+        sequence yet, build proposals via the bridge, compile and admit.
+
+        Returns a list of admission results, empty when nothing was ready."""
+        results = []
+        for project in self.plan.active_projects():
+            objective = self.plan.objective(project["objective_id"])
+            if objective is None:
+                continue
+            for ws in self.plan.workstreams(project["project_id"]):
+                if ws.get("work_profile") is None:
+                    continue
+                existing = self.plan.workstream_by_proposal(
+                    ws["proposal_id"])
+                if existing is None:
+                    continue
+                proposal_row = self.plan.proposal(ws["proposal_id"])
+                if proposal_row and proposal_row.get("sequence_id"):
+                    continue
+                deps = self.plan.dependencies_for_workstream(
+                    ws["workstream_id"])
+                all_released = all(
+                    d.get("released_utc") is not None for d in deps)
+                if deps and not all_released:
+                    continue
+                pred_edges = []
+                for dep in deps:
+                    addr = dep.get("accepted_artifact_address")
+                    if addr:
+                        pred_edges.append({
+                            "edge_id": "on-" + dep[
+                                "source_workstream_id"][:16],
+                            "edge_kind": "RECORD",
+                            "target": addr,
+                            "observation_requirement": "ACCEPTANCE",
+                        })
+                proposal = workstream_to_proposal(
+                    ws, objective["text"], project["project_id"],
+                    predecessors=pred_edges if pred_edges else None)
+                proposal["objective_id"] = project["objective_id"]
+                try:
+                    result = self.engineer._dispose_contract(
+                        proposal, None, self.ro, now)
+                    results.append({
+                        "workstream_id": ws["workstream_id"],
+                        "result": result})
+                except Exception:
+                    pass
+        return results
 
     def _closing(self, steps, **extra):
         report = {

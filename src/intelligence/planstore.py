@@ -1210,6 +1210,20 @@ class PlanStore:
             " WHERE input_digest = ?", (input_digest,)).fetchone()
         return dict(row) if row else None
 
+    def persist_orchestration_application(self, input_digest,
+                                          application_results):
+        """Record that orchestration decisions for this digest have been
+        applied. Prevents re-application on subsequent cycles with the
+        same organizational state."""
+        if input_digest is None:
+            return
+        with self.transaction() as cur:
+            cur.execute(
+                "UPDATE orchestration_reasoning"
+                " SET application_results = ?"
+                " WHERE input_digest = ? AND application_results IS NULL",
+                (json.dumps(application_results), input_digest))
+
     # ------------------------------------------------------- driver lease
 
     def acquire_driver_lease(self, holder, now, expires):
