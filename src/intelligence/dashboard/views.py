@@ -141,14 +141,47 @@ class RoutingView:
 
 
 @dataclass(frozen=True)
+class ActiveSessionView:
+    """A specialist session currently executing through AutoSwarm."""
+    call_id: str
+    sequence_id: Optional[str] = None
+    native_session_id: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    status: str = "UNKNOWN"
+    started_utc: Optional[str] = None
+    workspace: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CASObjectView:
+    """A content-addressed artifact summary."""
+    address: str
+    kind: Optional[str] = None
+    size_bytes: int = 0
+
+
+@dataclass(frozen=True)
 class ActivitySnapshot:
     captured_utc: str
 
+    # organizational
     objectives: List[ObjectiveView] = field(default_factory=list)
     coordinator_decisions: List[CoordinatorDecisionView] = field(default_factory=list)
     runs: List[RunView] = field(default_factory=list)
+
+    # authority
     authority: AuthorityCensus = field(default_factory=AuthorityCensus)
+    active_sequences: List[SequenceView] = field(default_factory=list)
+    active_attempts: List[AttemptView] = field(default_factory=list)
+
+    # workforce
     taskforce: TaskforceView = field(default_factory=TaskforceView)
-    routing: RoutingView = field(default_factory=RoutingView)
     recent_assignments: List[AssignmentView] = field(default_factory=list)
+
+    # execution
+    active_sessions: List[ActiveSessionView] = field(default_factory=list)
+    routing: RoutingView = field(default_factory=RoutingView)
+
+    # activity stream
     recent_events: List[ActivityEvent] = field(default_factory=list)

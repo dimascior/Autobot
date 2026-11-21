@@ -10,7 +10,7 @@ from .views import (
     ActivitySnapshot, AuthorityCensus, ObjectiveView,
     CoordinatorDecisionView, RunView, NodeView, EdgeView,
     SequenceView, AttemptView, AssignmentView, SeatView,
-    TaskforceView, RoutingView,
+    TaskforceView, RoutingView, ActiveSessionView,
 )
 from .events import events_from_transitions
 
@@ -27,7 +27,7 @@ def _parse_features(raw):
 
 
 def build_snapshot(intelligence, authority, step_reader=None,
-                   config_reader=None):
+                   config_reader=None, autoswarm_reader=None):
     """Build an ActivitySnapshot from reader instances.
 
     ``intelligence``: IntelligenceReader (intelligence.db)
@@ -166,6 +166,35 @@ def build_snapshot(intelligence, authority, step_reader=None,
     events.sort(key=lambda e: e.timestamp or "", reverse=True)
     events = events[:30]
 
+    # --- active sequences and attempts ---
+    active_sequences = [
+        SequenceView(
+            sequence_id=s["sequence_id"],
+            state=s["state"],
+            record_hash=s.get("record_hash"),
+            contract_digest=s.get("contract_digest"))
+        for s in authority.active_sequences()]
+
+    active_attempts = [
+        AttemptView(
+            attempt_id=a["attempt_id"],
+            sequence_id=a["sequence_id"],
+            state=a["state"])
+        for a in authority.running_attempts()]
+
+    # --- active AutoSwarm sessions ---
+    active_sessions = []
+    if autoswarm_reader:
+        for s in autoswarm_reader.active_sessions():
+            active_sessions.append(ActiveSessionView(
+                call_id=s.get("call_id", "?"),
+                native_session_id=s.get("native_session_id"),
+                provider=s.get("provider"),
+                model=s.get("model"),
+                status="RUNNING",
+                started_utc=s.get("started_utc"),
+                workspace=s.get("workspace")))
+
     # --- routing ---
     routing = RoutingView()
     if config_reader:
@@ -182,7 +211,10 @@ def build_snapshot(intelligence, authority, step_reader=None,
         coordinator_decisions=coord_decisions,
         runs=runs,
         authority=auth_census,
+        active_sequences=active_sequences,
+        active_attempts=active_attempts,
         taskforce=taskforce,
-        routing=routing,
         recent_assignments=recent_assignments,
+        active_sessions=active_sessions,
+        routing=routing,
         recent_events=events)

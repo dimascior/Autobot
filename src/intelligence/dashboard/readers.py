@@ -231,6 +231,151 @@ class AuthorityReader:
             return []
 
 
+class CASReader:
+    """Read-only over the content-addressed store."""
+
+    def __init__(self, store_root):
+        self.root = Path(store_root)
+
+    def object_count(self):
+        if not self.root.is_dir():
+            return 0
+        count = 0
+        for d in self.root.iterdir():
+            if d.is_dir() and len(d.name) == 2:
+                count += sum(1 for f in d.iterdir() if f.is_file())
+        return count
+
+    def exists(self, address):
+        prefix = address.replace("sha256:", "")
+        if len(prefix) < 3:
+            return False
+        path = self.root / prefix[:2] / prefix
+        return path.is_file()
+
+    def size(self, address):
+        prefix = address.replace("sha256:", "")
+        if len(prefix) < 3:
+            return 0
+        path = self.root / prefix[:2] / prefix
+        try:
+            return path.stat().st_size
+        except (OSError, FileNotFoundError):
+            return 0
+
+
+class AutoSwarmReader:
+    """Read-only over AutoSwarm call directories.
+
+    Reads $AUTOSWARM_HOME/calls/<call_id>/ for active session state:
+    handle.json (launched), result.json (finished), stdout.log."""
+
+    def __init__(self, autoswarm_home):
+        self.home = Path(autoswarm_home) if autoswarm_home else None
+        self._calls_dir = None
+        if self.home and (self.home / "calls").is_dir():
+            self._calls_dir = self.home / "calls"
+
+    def active_sessions(self):
+        """Find call directories with handle.json but no result.json."""
+        if not self._calls_dir:
+            return []
+        sessions = []
+        try:
+            for d in sorted(self._calls_dir.iterdir(), reverse=True):
+                if not d.is_dir():
+                    continue
+                handle = d / "handle.json"
+                result = d / "result.json"
+                if handle.is_file() and not result.is_file():
+                    try:
+                        h = json.loads(handle.read_text(encoding="utf-8"))
+                        sessions.append({
+                            "call_id": d.name,
+                            "native_session_id": h.get("native_session_id"),
+                            "provider": h.get("provider"),
+                            "model": h.get("model"),
+                            "started_utc": h.get("started_utc"),
+                            "workspace": h.get("workspace"),
+                        })
+                    except (json.JSONDecodeError, OSError):
+                        sessions.append({"call_id": d.name})
+                if len(sessions) >= 10:
+                    break
+        except OSError:
+            pass
+        return sessions
+
+    def recent_completed(self, limit=5):
+        """Recent calls that have result.json."""
+        if not self._calls_dir:
+            return []
+        completed = []
+        try:
+            dirs = sorted(self._calls_dir.iterdir(),
+                          key=lambda d: d.stat().st_mtime
+                          if d.is_dir() else 0, reverse=True)
+            for d in dirs:
+                if not d.is_dir():
+                    continue
+                result_path = d / "result.json"
+                if result_path.is_file():
+                    try:
+                        r = json.loads(
+                            result_path.read_text(encoding="utf-8"))
+                        completed.append({
+                            "call_id": d.name,
+                            "native_session_id": r.get(
+                                "native_session_id"),
+                            "outcome": r.get("outcome"),
+                            "provider": r.get("provider"),
+                        })
+                    except (json.JSONDecodeError, OSError):
+                        completed.append({"call_id": d.name})
+                    if len(completed) >= limit:
+                        break
+        except OSError:
+            pass
+        return completed
+
+    def call_state(self, call_id):
+        """State of one call: handle, result, stdout tail."""
+        if not self._calls_dir:
+            return None
+        d = self._calls_dir / call_id
+        if not d.is_dir():
+            return None
+        state = {"call_id": call_id}
+        handle = d / "handle.json"
+        result = d / "result.json"
+        if handle.is_file():
+            try:
+                state["handle"] = json.loads(
+                    handle.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        if result.is_file():
+            try:
+                state["result"] = json.loads(
+                    result.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+            state["status"] = "FINISHED"
+        else:
+            state["status"] = "RUNNING"
+        stdout = d / "stdout.log"
+        if stdout.is_file():
+            try:
+                text = stdout.read_text(encoding="utf-8",
+                                         errors="replace")
+                lines = text.strip().split("\n")
+                state["stdout_lines"] = len(lines)
+                state["stdout_tail"] = lines[-3:] if lines else []
+            except OSError:
+                pass
+        return state
+
+
 class ConfigReader:
     """Reads routing and specialist configuration from config.toml.
 

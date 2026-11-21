@@ -233,13 +233,53 @@ def compose(scr, snapshot, tick, routing=None):
         att_parts.append("%s:%d" % (state[:4], count))
     _text(scr, x1 + 2, 19, " ".join(att_parts)[:aw - 4], C["dim"])
 
-    # Row 21: separator
-    for cx in range(2, w - 2):
-        scr.put(cx, 21, "━", C["frame"])
-    _text(scr, 4, 21, " DAG ", C["accent"], bold=True)
+    # Active execution section
+    exec_y = 21
+    has_active = (snapshot.active_sessions or snapshot.active_attempts
+                  or snapshot.active_sequences)
+    if has_active:
+        for cx in range(2, w - 2):
+            scr.put(cx, exec_y, "━", C["frame"])
+        _text(scr, 4, exec_y, " EXECUTING ", C["trail1"], bold=True)
+        exec_y += 1
+        for sess in snapshot.active_sessions[:3]:
+            scr.put(3, exec_y, SPIN[tick % len(SPIN)], C["accent"])
+            provider_str = ""
+            if sess.provider:
+                provider_str = " %s" % sess.provider[:8]
+                if sess.model:
+                    provider_str += "/%s" % sess.model[:12]
+            _text(scr, 5, exec_y, sess.call_id[:16], C["bright"])
+            if sess.native_session_id:
+                _text(scr, 22, exec_y, sess.native_session_id[:16], C["dim"])
+            _text(scr, 40, exec_y, provider_str[:20], C["luna"])
+            exec_y += 1
+        for att in snapshot.active_attempts[:3]:
+            scr.put(3, exec_y, SPIN[tick % len(SPIN)], C["accent"])
+            _text(scr, 5, exec_y, att.attempt_id[:16], C["bright"])
+            _text(scr, 22, exec_y,
+                  "→ %s" % att.sequence_id[:14], C["dim"])
+            exec_y += 1
+        for seq in snapshot.active_sequences[:3]:
+            if seq.state in ("EXECUTING", "VERIFYING"):
+                scr.put(3, exec_y, SPIN[tick % len(SPIN)], C["accent"])
+            else:
+                si, sc = _si(seq.state, tick)
+                scr.put(3, exec_y, si, sc)
+            _text(scr, 5, exec_y, seq.sequence_id[:16], C["bright"])
+            _text(scr, 22, exec_y, seq.state[:12], C["dim"])
+            exec_y += 1
+        exec_y += 1
+    else:
+        exec_y = 21
 
-    # Row 22+: Node DAG
-    dag_y = 22
+    # DAG separator
+    for cx in range(2, w - 2):
+        scr.put(cx, exec_y, "━", C["frame"])
+    _text(scr, 4, exec_y, " DAG ", C["accent"], bold=True)
+
+    # Node DAG
+    dag_y = exec_y + 1
     for run in snapshot.runs:
         if not run.nodes:
             continue
@@ -298,7 +338,7 @@ def compose(scr, snapshot, tick, routing=None):
 def stream(intelligence_path, authority_path, step_log_path=None,
            interval=0.5, once=False, ground=False, project_root=None):
     from .readers import (IntelligenceReader, AuthorityReader,
-                          StepLogReader, ConfigReader)
+                          StepLogReader, ConfigReader, AutoSwarmReader)
     from .model import build_snapshot
     from pathlib import Path
 
@@ -307,6 +347,12 @@ def stream(intelligence_path, authority_path, step_log_path=None,
     step = StepLogReader(step_log_path) if step_log_path else None
     root = project_root or Path(intelligence_path).parent
     config = ConfigReader(root)
+    # Resolve AutoSwarm home from config or environment
+    autoswarm_home = os.environ.get("AUTOSWARM_HOME")
+    if not autoswarm_home and config:
+        autoswarm_home = config._load().get(
+            "paths", {}).get("autoswarm_home")
+    autoswarm = AutoSwarmReader(autoswarm_home) if autoswarm_home else None
 
     # Terminal size
     try:
@@ -325,7 +371,8 @@ def stream(intelligence_path, authority_path, step_log_path=None,
 
         while True:
             snapshot = build_snapshot(intel, auth, step_reader=step,
-                                     config_reader=config)
+                                     config_reader=config,
+                                     autoswarm_reader=autoswarm)
             scr.clear()
             compose(scr, snapshot, tick, routing=snapshot.routing)
 
