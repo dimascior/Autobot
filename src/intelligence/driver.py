@@ -39,12 +39,16 @@ from autobot import project_state
 from autobot.models import instant
 
 from .engineer import EngineerService
+from .coordinator import (
+    CoordinatorService,
+    PassthroughCoordinatorPolicy,
+)
 from .orchestrator import (
     OrchestratorService,
     OrchestrationApplicator,
     PassthroughOrchestratorPolicy,
 )
-from .workstream_bridge import workstream_to_proposal
+from .workstream_bridge import workstream_to_proposal, node_to_proposal
 from .planstore import readonly_view
 from .taskforce import Taskforce
 
@@ -70,7 +74,8 @@ class ContinuousDriver:
                  lease_seconds=3600, max_proposals_per_cycle=16,
                  freeze_prompts=False, established_threshold=3,
                  gate_root=None, isolate_read_only=False,
-                 orchestrator_policy=None):
+                 orchestrator_policy=None,
+                 coordinator_policy=None):
         """``pool`` is the specialist catalog (``SpecialistPool``): the
         workers that exist, whether or not any is a Taskforce member.
         ``freeze_prompts`` makes every contract
@@ -105,6 +110,10 @@ class ContinuousDriver:
             policy=orchestrator_policy or PassthroughOrchestratorPolicy(),
             clock=clock)
         self.orchestration_applicator = OrchestrationApplicator(plan)
+        self.coordinator = CoordinatorService(
+            plan=plan,
+            policy=coordinator_policy or PassthroughCoordinatorPolicy(),
+            clock=clock)
         self._acquire()
         # The organization the Engineer reasons over exists before its
         # first cycle: mirror the specialist catalog now.
@@ -162,14 +171,19 @@ class ContinuousDriver:
                 self.plan.persist_orchestration_application(
                     orchestration.get("input_digest"), applied)
         admitted = self._admit_ready_workstreams(now)
+        node_admitted = self._admit_ready_nodes(now)
         if admitted:
             orchestration["admitted_workstreams"] = admitted
+        if node_admitted:
+            orchestration["admitted_nodes"] = node_admitted
         planning = self.engineer.run_cycle(self.ro, project_state, now)
         sweep = self.taskforce.advance(now)
         released = self._release_accepted_dependencies(now)
+        edge_releases = self._release_orchestration_edges(now)
         return {"orchestration": orchestration,
                 "planning": planning, "sweep": sweep,
                 "dependency_releases": released,
+                "edge_releases": edge_releases,
                 "quiet": not _any_activity(
                     planning, sweep, orchestration=orchestration)}
 
@@ -272,6 +286,119 @@ class ContinuousDriver:
                 except Exception:
                     pass
         return results
+
+    def _admit_ready_nodes(self, now):
+        """Find OrchestrationNodes with realization_kind=TASK_CONTRACT
+        that are PENDING or READY with no authority binding, and whose
+        inbound edges are all released. Build proposals and admit them.
+
+        Returns a list of admission results."""
+        results = []
+        for run in self.plan.active_orchestration_runs():
+            run_id = run["orchestration_id"]
+            objective = self.plan.objective(run["objective_id"])
+            if objective is None:
+                continue
+            nodes = self.plan.ready_nodes(run_id)
+            for node in nodes:
+                if node.get("realization_kind") != "TASK_CONTRACT":
+                    continue
+                binding = self.plan.authority_binding_for_node(
+                    node["node_id"])
+                if binding is not None:
+                    continue
+
+                pred_edges = []
+                inbound = self.plan.edges_for_node(
+                    node["node_id"], direction="inbound")
+                for edge in inbound:
+                    if edge.get("selected_output_sha256"):
+                        pred_edges.append({
+                            "edge_id": edge["edge_id"],
+                            "edge_kind": edge.get("authority_edge_kind",
+                                                   "RECORD"),
+                            "target": edge["selected_output_sha256"],
+                            "observation_requirement": "ACCEPTANCE",
+                        })
+
+                proposal = node_to_proposal(
+                    node, objective["text"],
+                    predecessors=pred_edges if pred_edges else None)
+                proposal["objective_id"] = run["objective_id"]
+
+                try:
+                    result = self.engineer._dispose_contract(
+                        proposal, None, self.ro, now)
+                    if result and result.get("sequence_id"):
+                        from .proposals_util import canonical_json_digest
+                        binding_id = "ab_" + canonical_json_digest({
+                            "node": node["node_id"],
+                            "sequence": result["sequence_id"],
+                        })[:32]
+                        with self.plan.transaction() as cur:
+                            self.plan.create_authority_binding(
+                                cur, binding_id, node["node_id"], now,
+                                proposal_id=result.get("proposal_id"),
+                                sequence_id=result.get("sequence_id"),
+                                contract_digest=result.get(
+                                    "contract_digest"),
+                                record_hash=result.get("record_hash"))
+                            self.plan.update_node_status(
+                                cur, node["node_id"], "EXECUTING")
+                    results.append({
+                        "node_id": node["node_id"],
+                        "result": result})
+                except Exception:
+                    pass
+        return results
+
+    def _release_orchestration_edges(self, now):
+        """Project authority acceptance onto orchestration edges.
+
+        When a source node's authority sequence is accepted, release
+        its outbound orchestration edges and capture the accepted
+        artifact address."""
+        releases = []
+        for run in self.plan.active_orchestration_runs():
+            run_id = run["orchestration_id"]
+            for node in self.plan.orchestration_nodes(run_id):
+                binding = self.plan.authority_binding_for_node(
+                    node["node_id"])
+                if binding is None or not binding.get("sequence_id"):
+                    continue
+                seq_id = binding["sequence_id"]
+                seq_row = self.ro.execute(
+                    "SELECT state FROM sequences WHERE sequence_id = ?",
+                    (seq_id,)).fetchone()
+                if seq_row is None:
+                    continue
+                if seq_row["state"] not in ("ACCEPTED", "COMPLETED"):
+                    continue
+                outbound = self.plan.edges_for_node(
+                    node["node_id"], direction="outbound")
+                for edge in outbound:
+                    if edge.get("status") != "PENDING":
+                        continue
+                    acceptance = self.ro.execute(
+                        "SELECT acceptance_sha256 FROM released_edges"
+                        " WHERE predecessor_sequence_id = ? LIMIT 1",
+                        (seq_id,)).fetchone()
+                    acc_sha = acceptance["acceptance_sha256"] \
+                        if acceptance else None
+                    with self.plan.transaction() as cur:
+                        self.plan.release_orchestration_edge(
+                            cur, edge["edge_id"], now,
+                            acceptance_receipt_sha256=acc_sha)
+                    releases.append({
+                        "edge_id": edge["edge_id"],
+                        "source_node": node["node_id"],
+                        "acceptance": acc_sha,
+                    })
+                if node["status"] != "COMPLETED":
+                    with self.plan.transaction() as cur:
+                        self.plan.update_node_status(
+                            cur, node["node_id"], "COMPLETED", now)
+        return releases
 
     def _closing(self, steps, **extra):
         report = {
