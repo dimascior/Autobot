@@ -709,12 +709,29 @@ def cmd_engineer(args):
         except ConfigError as exc:
             print("cannot start the Engineer: %s" % exc, file=sys.stderr)
             return 1
+        coordinator_policy = None
+        orchestrator_policy = None
+        if getattr(args, "coordinator", False):
+            coordinator_policy = rt.production_coordinator_policy()
+            print("coordinator: %s"
+                  % coordinator_policy.policy_id)
+        if getattr(args, "orchestrator", False):
+            try:
+                orchestrator_policy = rt.production_orchestrator_policy()
+                print("orchestrator: %s"
+                      % orchestrator_policy.policy_id)
+            except ConfigError as exc:
+                print("cannot start the Orchestrator: %s" % exc,
+                      file=sys.stderr)
+                return 1
         print("engineer: %s over model %s"
               % (policy.policy_id, rt.engineer_model))
         print("running to a stable quiet state...")
         rounds = 0
         while True:
             result = rt.run(policy,
+                            coordinator_policy=coordinator_policy,
+                            orchestrator_policy=orchestrator_policy,
                             max_wall_seconds=args.max_wall_seconds,
                             poll_seconds=args.poll_seconds,
                             on_step=_progress)
@@ -1033,6 +1050,12 @@ def main():
                            help="budget: " + text)
     eng_p.add_argument("--report", type=Path, default=None,
                        help="write the closing state as JSON to this file")
+    eng_p.add_argument("--coordinator", action="store_true",
+                       help="activate the production Coordinator"
+                            " (ProductionCoordinatorPolicy)")
+    eng_p.add_argument("--orchestrator", action="store_true",
+                       help="activate the production Opus Orchestrator"
+                            " (OpusOrchestratorPolicy)")
     _add_run_controls(eng_p)
 
     run_p = sub.add_parser("run", help="one operator-directed task")

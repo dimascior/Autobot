@@ -592,7 +592,8 @@ class AuthorityRuntime:
 
     # -------------------------------------------------------------- driver
 
-    def _ensure_driver(self, policy):
+    def _ensure_driver(self, policy, coordinator_policy=None,
+                       orchestrator_policy=None):
         if self._driver is not None:
             return self._driver
         self._driver = ContinuousDriver(
@@ -603,14 +604,12 @@ class AuthorityRuntime:
             repository_context=self.repository_context,
             holder=self._holder,
             lease_seconds=self._lease_seconds,
-            # Production contracts freeze their specialist prompt as a
-            # declared specification input (prompts.py), and every
-            # specialist — READ_ONLY included — works from a frozen source
-            # revision in an isolated worktree.
             freeze_prompts=True,
             isolate_read_only=self.isolate_read_only,
             established_threshold=self.established_threshold,
-            gate_root=getattr(self.transport, "_gate_root", None))
+            gate_root=getattr(self.transport, "_gate_root", None),
+            coordinator_policy=coordinator_policy,
+            orchestrator_policy=orchestrator_policy)
         return self._driver
 
     # -------------------------------------------------------------- public
@@ -676,15 +675,53 @@ class AuthorityRuntime:
                     signalled.append(objective_id)
         return signalled
 
-    def run_until_stable(self, policy, **kwargs):
-        driver = self._ensure_driver(policy)
+    def run_until_stable(self, policy, coordinator_policy=None,
+                         orchestrator_policy=None, **kwargs):
+        driver = self._ensure_driver(
+            policy, coordinator_policy=coordinator_policy,
+            orchestrator_policy=orchestrator_policy)
         return driver.run_until_stable(**kwargs)
 
-    def run(self, policy, **kwargs):
+    def run(self, policy, coordinator_policy=None,
+            orchestrator_policy=None, **kwargs):
         """Run the loop to a stable quiet state, waiting for specialists
         that are still executing (``ContinuousDriver.run``)."""
-        driver = self._ensure_driver(policy)
+        driver = self._ensure_driver(
+            policy, coordinator_policy=coordinator_policy,
+            orchestrator_policy=orchestrator_policy)
         return driver.run(**kwargs)
+
+    def production_coordinator_policy(self):
+        """The production Coordinator admission policy."""
+        from .coordinator import ProductionCoordinatorPolicy
+        return ProductionCoordinatorPolicy()
+
+    def production_orchestrator_policy(self, reasoner=None):
+        """The production Opus Objective Orchestrator policy.
+
+        Uses the same configured model as the Engineer by default.
+        The reasoner is a headless ClaudeCliReasoner over the
+        organization's planner model."""
+        from .orchestrator_policy import OpusOrchestratorPolicy
+        from .policy import ClaudeCliReasoner
+        if reasoner is None:
+            model = self.engineer_model
+            if not model:
+                raise ConfigError(
+                    "no model configured for the Orchestrator:"
+                    " set [engineer] model or [models] planner")
+            reasoner = ClaudeCliReasoner(model)
+        return OpusOrchestratorPolicy(reasoner=reasoner)
+
+    def production_policies(self, reasoner=None):
+        """All three production policies bound to this runtime's model.
+
+        Returns (engineer_policy, coordinator_policy, orchestrator_policy)
+        — the full organizational stack."""
+        ep = self.engineer_policy(reasoner=reasoner)
+        cp = self.production_coordinator_policy()
+        op = self.production_orchestrator_policy(reasoner=reasoner)
+        return ep, cp, op
 
     def engineer_policy(self, reasoner=None):
         """The production Engineer policy for this runtime: the reasoning
