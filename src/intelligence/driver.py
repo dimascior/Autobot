@@ -609,11 +609,12 @@ class ContinuousDriver:
                     payload = _json.loads(
                         self.taskforce.store.get(addr).decode("utf-8"))
                     task_contract_id = payload.get("task_contract_id")
-                    requirement_digest = payload.get(
-                        "requirement_digest")
                     if not contract_digest:
                         contract_digest = payload.get(
                             "contract_digest")
+                    from contract_library.digests import \
+                        requirement_digest as _rd
+                    requirement_digest = _rd(payload)
                 except Exception:
                     pass
         if not task_contract_id:
