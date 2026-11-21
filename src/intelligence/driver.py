@@ -201,6 +201,14 @@ class ContinuousDriver:
             existing_runs = self.plan.active_orchestration_runs(oid)
             if existing_runs:
                 continue
+            existing_proposals = self.plan.proposals_by_status(
+                "ADMITTED", "DUPLICATE", "QUEUED_FOR_YOU",
+                "WAITING", "APPLIED")
+            has_prior_work = any(
+                p.get("objective_id") == oid
+                for p in existing_proposals)
+            if has_prior_work:
+                continue
             try:
                 result = self.coordinator.admit_objective(oid, now)
                 if not result.get("new"):
