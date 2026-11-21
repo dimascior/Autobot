@@ -284,16 +284,18 @@ class OrchestratorPlanningView:
     """Everything the Orchestrator reasons over, as plain data.
 
     Built from authority-accepted state, the intelligence store, and the
-    Taskforce roster. The Orchestrator sees the full project graph across
-    all WorkProfiles, unlike the Engineer which sees only the engineering-
-    relevant subset.
+    Taskforce roster. The canonical view is now OrchestrationRun/Node
+    oriented. Projects appear as optional bindings.
     """
 
     def __init__(self, objectives, projects, taskforce_state,
                  accepted_artifacts=None, findings=None,
                  failed_attempts=None, effect_outcomes=None,
                  work_profiles=None, resource_scopes=None,
-                 execution_profiles=None, dependency_state=None):
+                 execution_profiles=None, dependency_state=None,
+                 runs=None, nodes=None, edges=None,
+                 authority_bindings=None, engineering_bindings=None,
+                 project_bindings=None, node_outputs=None):
         self.objectives = list(objectives)
         self.projects = list(projects)
         self.taskforce = dict(taskforce_state) if taskforce_state else {}
@@ -305,6 +307,13 @@ class OrchestratorPlanningView:
         self.resource_scopes = dict(resource_scopes or {})
         self.execution_profiles = dict(execution_profiles or {})
         self.dependency_state = dict(dependency_state or {})
+        self.runs = list(runs or [])
+        self.nodes = list(nodes or [])
+        self.edges = list(edges or [])
+        self.authority_bindings = list(authority_bindings or [])
+        self.engineering_bindings = list(engineering_bindings or [])
+        self.project_bindings = list(project_bindings or [])
+        self.node_outputs = list(node_outputs or [])
 
     def for_objective(self, objective_id):
         """Return the view narrowed to one objective."""
@@ -314,6 +323,8 @@ class OrchestratorPlanningView:
             return None
         projects = [p for p in self.projects
                     if p.get("objective_id") == objective_id]
+        run_ids = {r.get("orchestration_id") for r in self.runs
+                   if r.get("objective_id") == objective_id}
         return OrchestratorPlanningView(
             objectives=[obj],
             projects=projects,
@@ -329,6 +340,16 @@ class OrchestratorPlanningView:
             resource_scopes=self.resource_scopes,
             execution_profiles=self.execution_profiles,
             dependency_state=self.dependency_state,
+            runs=[r for r in self.runs
+                  if r.get("objective_id") == objective_id],
+            nodes=[n for n in self.nodes
+                   if n.get("orchestration_id") in run_ids],
+            edges=[e for e in self.edges
+                   if e.get("orchestration_id") in run_ids],
+            authority_bindings=self.authority_bindings,
+            engineering_bindings=self.engineering_bindings,
+            project_bindings=self.project_bindings,
+            node_outputs=self.node_outputs,
         )
 
     def to_dict(self):
@@ -346,6 +367,13 @@ class OrchestratorPlanningView:
             "resource_scopes": self.resource_scopes,
             "execution_profiles": self.execution_profiles,
             "dependency_state": self.dependency_state,
+            "runs": self.runs,
+            "nodes": self.nodes,
+            "edges": self.edges,
+            "authority_bindings": self.authority_bindings,
+            "engineering_bindings": self.engineering_bindings,
+            "project_bindings": self.project_bindings,
+            "node_outputs": self.node_outputs,
         }
 
 
@@ -368,36 +396,44 @@ class OrchestratorService:
         self.clock = clock
         self._last_cycle = None
 
-    def build_view(self, objectives, projects, taskforce_state,
-                   accepted_artifacts=None, findings=None,
-                   failed_attempts=None, effect_outcomes=None,
-                   work_profiles=None, resource_scopes=None,
-                   execution_profiles=None, dependency_state=None):
+    def build_view(self, objectives, projects, taskforce_state, **kwargs):
         return OrchestratorPlanningView(
             objectives=objectives,
             projects=projects,
             taskforce_state=taskforce_state,
-            accepted_artifacts=accepted_artifacts,
-            findings=findings,
-            failed_attempts=failed_attempts,
-            effect_outcomes=effect_outcomes,
-            work_profiles=work_profiles,
-            resource_scopes=resource_scopes,
-            execution_profiles=execution_profiles,
-            dependency_state=dependency_state,
-        )
+            **kwargs)
 
     def _compute_organizational_digest(self, view):
         """Canonical digest over all state that can change an orchestration
         decision. Two materially different organizational states must
-        produce different digests."""
+        produce different digests. Uses Run/Node state as primary."""
         return _decision_digest({
             "objectives": sorted(
                 (o.get("objective_id", ""), o.get("status", ""))
                 for o in view.objectives),
+            "runs": sorted(
+                (r.get("orchestration_id", ""), r.get("mode", ""),
+                 r.get("status", ""))
+                for r in view.runs),
+            "nodes": sorted(
+                (n.get("node_id", ""), n.get("node_key", ""),
+                 n.get("work_profile") or "", n.get("status") or "",
+                 n.get("realization_kind") or "",
+                 n.get("organizational_role") or "",
+                 n.get("execution_profile") or "",
+                 n.get("capability") or "")
+                for n in view.nodes),
+            "edges": sorted(
+                (e.get("edge_id", ""), e.get("source_node_id", ""),
+                 e.get("target_node_id", ""), e.get("status") or "",
+                 e.get("dependency_kind") or "")
+                for e in view.edges),
+            "authority_bindings": sorted(
+                (b.get("node_id", ""), b.get("sequence_id") or "",
+                 b.get("status") or "")
+                for b in view.authority_bindings),
             "projects": sorted(
-                (p.get("project_id", ""), p.get("status", ""),
-                 p.get("title", ""))
+                (p.get("project_id", ""), p.get("status", ""))
                 for p in view.projects),
             "workstreams": sorted(
                 (w.get("workstream_id", ""), w.get("workstream_key", ""),
@@ -410,6 +446,10 @@ class OrchestratorService:
             "accepted_artifacts": sorted(
                 a.get("content_sha256", "") if isinstance(a, dict)
                 else str(a) for a in view.accepted_artifacts),
+            "node_outputs": sorted(
+                (o.get("node_id", ""), o.get("output_kind", ""),
+                 o.get("content_sha256") or "")
+                for o in view.node_outputs),
             "findings": sorted(
                 f.get("finding_id", "") if isinstance(f, dict)
                 else str(f) for f in view.findings),

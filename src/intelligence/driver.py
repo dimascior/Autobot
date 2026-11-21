@@ -53,7 +53,9 @@ from .planstore import readonly_view
 from .taskforce import Taskforce
 
 
-def _any_activity(planning, sweep, orchestration=None):
+def _any_activity(planning, sweep, orchestration=None, coordinator=None):
+    if coordinator and coordinator.get("admitted"):
+        return True
     if orchestration and orchestration.get("had_activity"):
         return True
     if planning["cycle_id"] is not None:
@@ -151,17 +153,39 @@ class ContinuousDriver:
     # -------------------------------------------------------------- steps
 
     def step(self):
-        """One loop iteration: an orchestration cycle, a planning cycle
-        (when something new woke the planner), and one Taskforce sweep.
-        Returns the step report; ``quiet`` means the step changed nothing
-        and proposed nothing."""
+        """One loop iteration: Coordinator admission, an orchestration
+        cycle, a planning cycle (when something new woke the planner),
+        and one Taskforce sweep. Returns the step report; ``quiet``
+        means the step changed nothing and proposed nothing."""
         self._acquire()  # renew; refuses if another driver took over
         self._renew_authority_lease()
         now = instant(self.clock.now())
+        coordinator_report = self._coordinator_admit(now)
+        all_runs = []
+        all_nodes = []
+        all_edges = []
+        all_auth_bindings = []
+        all_outputs = []
+        for run in self.plan.active_orchestration_runs():
+            all_runs.append(run)
+            rid = run["orchestration_id"]
+            nodes = self.plan.orchestration_nodes(rid)
+            all_nodes.extend(nodes)
+            for nd in nodes:
+                all_edges.extend(
+                    self.plan.edges_for_node(nd["node_id"], "inbound"))
+                ab = self.plan.authority_binding_for_node(nd["node_id"])
+                if ab:
+                    all_auth_bindings.append(ab)
+                all_outputs.extend(
+                    self.plan.outputs_for_node(nd["node_id"]))
         orchestration = self.orchestrator.run_cycle(
             objectives=self.plan.active_objectives(),
             projects=self.plan.active_projects(),
-            taskforce_state=self.taskforce.roster.snapshot())
+            taskforce_state=self.taskforce.roster.snapshot(),
+            runs=all_runs, nodes=all_nodes, edges=all_edges,
+            authority_bindings=all_auth_bindings,
+            node_outputs=all_outputs)
         if orchestration.get("decisions") and \
                 not orchestration.get("already_applied"):
             applied = self.orchestration_applicator.apply(
@@ -180,12 +204,61 @@ class ContinuousDriver:
         sweep = self.taskforce.advance(now)
         released = self._release_accepted_dependencies(now)
         edge_releases = self._release_orchestration_edges(now)
-        return {"orchestration": orchestration,
+        return {"coordinator": coordinator_report,
+                "orchestration": orchestration,
                 "planning": planning, "sweep": sweep,
                 "dependency_releases": released,
                 "edge_releases": edge_releases,
                 "quiet": not _any_activity(
-                    planning, sweep, orchestration=orchestration)}
+                    planning, sweep, orchestration=orchestration,
+                    coordinator=coordinator_report)}
+
+    def _coordinator_admit(self, now):
+        """Admit ACTIVE objectives that have no current OrchestrationRun.
+
+        For each unadmitted objective:
+        1. CoordinatorService.admit_objective() → decision + run
+        2. create_initial_node() for DIRECT and ENGINEER_ELEVATED
+        3. ORCHESTRATOR_ELEVATED leaves node creation to the Orchestrator
+
+        When the PassthroughCoordinatorPolicy is active, skip admission
+        entirely — the existing Engineer path handles everything.
+
+        Returns a report of admissions performed."""
+        if isinstance(self.coordinator.policy,
+                      PassthroughCoordinatorPolicy):
+            return {}
+        admissions = []
+        for objective in self.plan.active_objectives():
+            oid = objective["objective_id"]
+            existing_runs = self.plan.active_orchestration_runs(oid)
+            if existing_runs:
+                continue
+            try:
+                result = self.coordinator.admit_objective(oid, now)
+                if not result.get("new"):
+                    continue
+                run = result.get("run")
+                if run is None:
+                    continue
+                node = self.coordinator.create_initial_node(
+                    run, objective, now)
+                if run["mode"] == "ORCHESTRATOR_ELEVATED":
+                    self.orchestration_applicator.orchestration_id = \
+                        run["orchestration_id"]
+                admissions.append({
+                    "objective_id": oid,
+                    "decision_id": result["decision"]["decision_id"],
+                    "run_id": run["orchestration_id"],
+                    "mode": run["mode"],
+                    "initial_node": node["node_id"] if node else None,
+                })
+            except Exception as exc:
+                admissions.append({
+                    "objective_id": oid,
+                    "error": "%s: %s" % (type(exc).__name__, exc),
+                })
+        return {"admitted": admissions} if admissions else {}
 
     def _release_accepted_dependencies(self, now):
         """When a predecessor sequence is accepted, release the
@@ -308,18 +381,7 @@ class ContinuousDriver:
                 if binding is not None:
                     continue
 
-                pred_edges = []
-                inbound = self.plan.edges_for_node(
-                    node["node_id"], direction="inbound")
-                for edge in inbound:
-                    if edge.get("selected_output_sha256"):
-                        pred_edges.append({
-                            "edge_id": edge["edge_id"],
-                            "edge_kind": edge.get("authority_edge_kind",
-                                                   "RECORD"),
-                            "target": edge["selected_output_sha256"],
-                            "observation_requirement": "ACCEPTANCE",
-                        })
+                pred_edges = self._compile_node_predecessors(node)
 
                 proposal = node_to_proposal(
                     node, objective["text"],
@@ -330,34 +392,103 @@ class ContinuousDriver:
                     result = self.engineer._dispose_contract(
                         proposal, None, self.ro, now)
                     if result and result.get("sequence_id"):
-                        from .proposals_util import canonical_json_digest
-                        binding_id = "ab_" + canonical_json_digest({
-                            "node": node["node_id"],
-                            "sequence": result["sequence_id"],
-                        })[:32]
-                        with self.plan.transaction() as cur:
-                            self.plan.create_authority_binding(
-                                cur, binding_id, node["node_id"], now,
-                                proposal_id=result.get("proposal_id"),
-                                sequence_id=result.get("sequence_id"),
-                                contract_digest=result.get(
-                                    "contract_digest"),
-                                record_hash=result.get("record_hash"))
-                            self.plan.update_node_status(
-                                cur, node["node_id"], "EXECUTING")
+                        self._create_full_authority_binding(
+                            node, result, now)
                     results.append({
                         "node_id": node["node_id"],
                         "result": result})
+                except Exception as exc:
+                    results.append({
+                        "node_id": node["node_id"],
+                        "error": "%s: %s" % (type(exc).__name__, exc),
+                    })
+        return results
+
+    def _compile_node_predecessors(self, node):
+        """Compile orchestration edges into authority predecessor edges.
+
+        Uses the source node's authority binding to determine the
+        correct identity tier (record_hash, contract_digest, or
+        requirement_digest)."""
+        pred_edges = []
+        inbound = self.plan.edges_for_node(
+            node["node_id"], direction="inbound")
+        for edge in inbound:
+            if edge.get("status") != "RELEASED":
+                continue
+            source_binding = self.plan.authority_binding_for_node(
+                edge["source_node_id"])
+            if source_binding is None:
+                continue
+            edge_kind = edge.get("authority_edge_kind") or "RECORD"
+            if edge_kind == "RECORD" and source_binding.get("record_hash"):
+                target = source_binding["record_hash"]
+            elif edge_kind == "CONTRACT" and \
+                    source_binding.get("contract_digest"):
+                target = source_binding["contract_digest"]
+            elif edge_kind == "REQUIREMENT" and \
+                    source_binding.get("requirement_digest"):
+                target = source_binding["requirement_digest"]
+            elif source_binding.get("record_hash"):
+                target = source_binding["record_hash"]
+                edge_kind = "RECORD"
+            else:
+                continue
+            pred_edges.append({
+                "edge_id": edge["edge_id"],
+                "edge_kind": edge_kind,
+                "target": target,
+                "observation_requirement": "ACCEPTANCE",
+            })
+        return pred_edges
+
+    def _create_full_authority_binding(self, node, result, now):
+        """Create a complete authority binding with all identity tiers."""
+        from .proposals_util import canonical_json_digest
+        binding_id = "ab_" + canonical_json_digest({
+            "node": node["node_id"],
+            "sequence": result["sequence_id"],
+        })[:32]
+        proposal_row = self.plan.proposal(result.get("proposal_id"))
+        record_hash = None
+        requirement_digest = None
+        if proposal_row and proposal_row.get("sequence_id"):
+            seq_row = self.ro.execute(
+                "SELECT record_hash FROM sequences"
+                " WHERE sequence_id = ?",
+                (proposal_row["sequence_id"],)).fetchone()
+            if seq_row:
+                record_hash = seq_row["record_hash"]
+            rec_row = self.ro.execute(
+                "SELECT content_address FROM records"
+                " WHERE record_hash = ?",
+                (record_hash,)).fetchone() if record_hash else None
+            if rec_row:
+                import json as _json
+                try:
+                    payload = _json.loads(self.taskforce.store.get(
+                        rec_row["content_address"]).decode("utf-8"))
+                    requirement_digest = payload.get("requirement_digest")
                 except Exception:
                     pass
-        return results
+        with self.plan.transaction() as cur:
+            self.plan.create_authority_binding(
+                cur, binding_id, node["node_id"], now,
+                proposal_id=result.get("proposal_id"),
+                task_contract_id=result.get("task_contract_id"),
+                requirement_digest=requirement_digest,
+                contract_digest=result.get("contract_digest"),
+                record_hash=record_hash,
+                sequence_id=result.get("sequence_id"))
+            self.plan.update_node_status(
+                cur, node["node_id"], "EXECUTING")
 
     def _release_orchestration_edges(self, now):
         """Project authority acceptance onto orchestration edges.
 
-        When a source node's authority sequence is accepted, release
-        its outbound orchestration edges and capture the accepted
-        artifact address."""
+        When a source node's authority sequence is accepted/completed,
+        release its outbound orchestration edges, capture receipt
+        provenance, and record the accepted node output."""
         releases = []
         for run in self.plan.active_orchestration_runs():
             run_id = run["orchestration_id"]
@@ -372,33 +503,74 @@ class ContinuousDriver:
                     (seq_id,)).fetchone()
                 if seq_row is None:
                     continue
-                if seq_row["state"] not in ("ACCEPTED", "COMPLETED"):
+                if seq_row["state"] not in ("ACCEPTED", "COMPLETED",
+                                             "DEPENDENCIES_RELEASED"):
                     continue
+
+                released_row = self.ro.execute(
+                    "SELECT acceptance_sha256, release_sha256"
+                    " FROM released_edges"
+                    " WHERE predecessor_sequence_id = ? LIMIT 1",
+                    (seq_id,)).fetchone()
+                acc_sha = released_row["acceptance_sha256"] \
+                    if released_row else None
+                rel_sha = released_row["release_sha256"] \
+                    if released_row else None
+
                 outbound = self.plan.edges_for_node(
                     node["node_id"], direction="outbound")
                 for edge in outbound:
                     if edge.get("status") != "PENDING":
                         continue
-                    acceptance = self.ro.execute(
-                        "SELECT acceptance_sha256 FROM released_edges"
-                        " WHERE predecessor_sequence_id = ? LIMIT 1",
-                        (seq_id,)).fetchone()
-                    acc_sha = acceptance["acceptance_sha256"] \
-                        if acceptance else None
                     with self.plan.transaction() as cur:
                         self.plan.release_orchestration_edge(
                             cur, edge["edge_id"], now,
-                            acceptance_receipt_sha256=acc_sha)
+                            acceptance_receipt_sha256=acc_sha,
+                            dependency_release_receipt_sha256=rel_sha)
                     releases.append({
                         "edge_id": edge["edge_id"],
                         "source_node": node["node_id"],
                         "acceptance": acc_sha,
+                        "release": rel_sha,
                     })
-                if node["status"] != "COMPLETED":
+
+                if node["status"] not in ("COMPLETED", "FAILED"):
+                    artifact_sha = self._resolve_accepted_artifact(
+                        seq_id, binding)
+                    if artifact_sha:
+                        from .proposals_util import canonical_json_digest
+                        output_id = "out_" + canonical_json_digest({
+                            "node": node["node_id"],
+                            "artifact": artifact_sha,
+                        })[:32]
+                        output_kind = "RESEARCH_ARTIFACT" \
+                            if node.get("work_profile") == "RESEARCH" \
+                            else "ACCEPTED_ARTIFACT"
+                        with self.plan.transaction() as cur:
+                            self.plan.record_node_output(
+                                cur, output_id, node["node_id"],
+                                output_kind, now,
+                                content_sha256=artifact_sha,
+                                sequence_id=seq_id)
                     with self.plan.transaction() as cur:
                         self.plan.update_node_status(
                             cur, node["node_id"], "COMPLETED", now)
+                        self.plan.update_authority_binding(
+                            cur, binding["binding_id"],
+                            status="COMPLETED")
         return releases
+
+    def _resolve_accepted_artifact(self, sequence_id, binding):
+        """Resolve the accepted worker artifact SHA-256 from the
+        authority plane. Distinct from receipt addresses."""
+        try:
+            row = self.ro.execute(
+                "SELECT content_sha256 FROM attempt_artifacts"
+                " WHERE sequence_id = ? ORDER BY rowid DESC LIMIT 1",
+                (sequence_id,)).fetchone()
+            return row["content_sha256"] if row else None
+        except Exception:
+            return None
 
     def _closing(self, steps, **extra):
         report = {

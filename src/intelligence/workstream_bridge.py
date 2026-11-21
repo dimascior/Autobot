@@ -75,7 +75,7 @@ def node_to_proposal(node, objective_text, predecessors=None):
     if predecessors:
         requirement["predecessors"] = list(predecessors)
 
-    is_review = role.lower() == "reviewer" and predecessors
+    is_review = (role or "").lower() == "reviewer" and predecessors
     proposal_class = "REQUEST_REVIEW" if is_review else \
         ("INVESTIGATE" if fin_class == "READ_ONLY" else "CREATE_TASK")
 

@@ -33,6 +33,9 @@ from intelligence.coordinator import (
     CoordinatorService,
     DeterministicCoordinatorPolicy,
     PassthroughCoordinatorPolicy,
+    ProductionCoordinatorPolicy,
+    ELEVATION_MODES,
+    COMPLEXITY_FEATURES,
 )
 from intelligence.orchestrator import (
     OrchestratorService,
@@ -938,6 +941,68 @@ class TestNodeOfSequenceLookup(unittest.TestCase):
         finally:
             store.close()
             os.unlink(path)
+
+
+class TestProductionCoordinatorPolicy(unittest.TestCase):
+
+    def _evaluate(self, text, constraints=None, context=None):
+        policy = ProductionCoordinatorPolicy()
+        objective = {"text": text, "constraints": constraints or []}
+        return policy.evaluate(objective, context or {})
+
+    def test_simple_research_is_direct(self):
+        result = self._evaluate("Research current pricing models")
+        self.assertEqual(result["elevation_mode"], "DIRECT")
+
+    def test_architecture_design_is_engineer_elevated(self):
+        result = self._evaluate(
+            "Design the new authentication architecture")
+        self.assertEqual(result["elevation_mode"], "ENGINEER_ELEVATED")
+        self.assertTrue(result["features"].get("engineering_design"))
+
+    def test_complex_multi_domain_is_orchestrator(self):
+        result = self._evaluate(
+            "Research market trends and design a comprehensive "
+            "multi-domain deployment architecture including parallel "
+            "analysis across engineering and operations")
+        self.assertEqual(result["elevation_mode"],
+                         "ORCHESTRATOR_ELEVATED")
+
+    def test_bounded_implementation_is_direct(self):
+        result = self._evaluate("Fix the login button color")
+        self.assertEqual(result["elevation_mode"], "DIRECT")
+
+    def test_research_plus_engineering_elevates(self):
+        result = self._evaluate(
+            "Research and design a comprehensive migration strategy "
+            "with parallel analysis and deploy across multiple domains")
+        self.assertEqual(result["elevation_mode"],
+                         "ORCHESTRATOR_ELEVATED")
+
+    def test_deterministic_for_same_input(self):
+        policy = ProductionCoordinatorPolicy()
+        obj = {"text": "Research and architect the new system",
+               "constraints": []}
+        ctx = {"active_runs": 0}
+        r1 = policy.evaluate(obj, ctx)
+        r2 = policy.evaluate(obj, ctx)
+        self.assertEqual(r1["elevation_mode"], r2["elevation_mode"])
+        self.assertEqual(r1["features"], r2["features"])
+
+    def test_elevation_modes_valid(self):
+        for mode in ELEVATION_MODES:
+            self.assertIn(mode, {"DIRECT", "ENGINEER_ELEVATED",
+                                 "ORCHESTRATOR_ELEVATED"})
+
+    def test_high_active_runs_increases_complexity(self):
+        policy = ProductionCoordinatorPolicy()
+        obj = {"text": "Research new approaches and design architecture",
+               "constraints": []}
+        low = policy.evaluate(obj, {"active_runs": 0})
+        high = policy.evaluate(obj, {"active_runs": 5})
+        low_feats = sum(1 for v in low["features"].values() if v)
+        high_feats = sum(1 for v in high["features"].values() if v)
+        self.assertGreaterEqual(high_feats, low_feats)
 
 
 if __name__ == "__main__":

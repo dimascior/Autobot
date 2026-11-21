@@ -89,6 +89,105 @@ class DeterministicCoordinatorPolicy(CoordinatorPolicy):
         }
 
 
+class ProductionCoordinatorPolicy(CoordinatorPolicy):
+    """Production admission classifier.
+
+    Evaluates objective complexity features and routes to the
+    appropriate elevation tier. Deterministic for equivalent inputs.
+
+    DIRECT: bounded work suited to a single specialist realization.
+    ENGINEER_ELEVATED: focused complex technical reasoning.
+    ORCHESTRATOR_ELEVATED: multi-domain decomposition, parallelism,
+        research + engineering combinations, large-context synthesis.
+    """
+
+    policy_id = "production-coordinator/v1"
+
+    ORCHESTRATOR_THRESHOLD = 3
+    ENGINEER_KEYWORDS = frozenset({
+        "architect", "architecture", "design", "redesign",
+        "refactor", "migration", "schema", "protocol",
+        "technical debt", "system design",
+    })
+    RESEARCH_KEYWORDS = frozenset({
+        "research", "investigate", "analyze", "survey",
+        "evaluate", "compare", "benchmark", "assess",
+    })
+    MULTI_DOMAIN_KEYWORDS = frozenset({
+        "and", "plus", "with", "including", "across",
+        "end to end", "end-to-end", "full stack", "fullstack",
+    })
+    COMPLEXITY_KEYWORDS = frozenset({
+        "complex", "comprehensive", "extensive", "thorough",
+        "multi", "parallel", "concurrent", "distributed",
+        "large-scale", "enterprise", "production",
+    })
+
+    def evaluate(self, objective, context):
+        text = (objective.get("text") or "").lower()
+        constraints = objective.get("constraints") or []
+        features = {}
+        score = 0
+
+        if any(kw in text for kw in self.RESEARCH_KEYWORDS):
+            features["research_required"] = True
+            score += 1
+
+        if any(kw in text for kw in self.ENGINEER_KEYWORDS):
+            features["engineering_design"] = True
+            score += 1
+
+        if any(kw in text for kw in self.MULTI_DOMAIN_KEYWORDS):
+            features["multi_domain"] = True
+            score += 1
+
+        if any(kw in text for kw in self.COMPLEXITY_KEYWORDS):
+            features["organizational_complexity"] = True
+            score += 1
+
+        domains = set()
+        if features.get("research_required"):
+            domains.add("research")
+        if features.get("engineering_design"):
+            domains.add("engineering")
+        if any(w in text for w in ("deploy", "operate", "effect",
+                                    "filesystem", "publish")):
+            domains.add("operations")
+            features["external_effects"] = True
+            score += 1
+        if len(domains) >= 2:
+            features["multi_domain"] = True
+            score += 1
+
+        if len(constraints) > 3:
+            features["deep_dependencies"] = True
+            score += 1
+
+        if context.get("active_runs", 0) > 2:
+            features["organizational_complexity"] = True
+            score += 1
+
+        if features.get("engineering_design") and score < self.ORCHESTRATOR_THRESHOLD:
+            return {
+                "elevation_mode": "ENGINEER_ELEVATED",
+                "features": features,
+                "route": "opus-engineer/v1",
+            }
+
+        if score >= self.ORCHESTRATOR_THRESHOLD:
+            return {
+                "elevation_mode": "ORCHESTRATOR_ELEVATED",
+                "features": features,
+                "route": "opus-orchestrator/v1",
+            }
+
+        return {
+            "elevation_mode": "DIRECT",
+            "features": features,
+            "route": None,
+        }
+
+
 class PassthroughCoordinatorPolicy(CoordinatorPolicy):
     """Routes everything directly without elevation.
 
