@@ -583,6 +583,10 @@ class FullChainAuthorityTests(CoordinatorIntegrationTests):
                              "binding A should have record_hash")
         self.assertIsNotNone(binding_a.get("sequence_id"),
                              "binding A should have sequence_id")
+        self.assertIsNotNone(binding_a.get("contract_digest"),
+                             "binding A should have contract_digest")
+        self.assertIsNotNone(binding_a.get("task_contract_id"),
+                             "binding A should have task_contract_id")
 
         binding_b = self.plan.authority_binding_for_node(
             node_b["node_id"])

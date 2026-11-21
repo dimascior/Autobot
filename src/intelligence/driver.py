@@ -592,10 +592,12 @@ class ContinuousDriver:
         requirement_digest = None
         contract_digest = None
         seq_row = self.ro.execute(
-            "SELECT record_hash FROM sequences WHERE sequence_id = ?",
+            "SELECT record_hash, contract_digest"
+            " FROM sequences WHERE sequence_id = ?",
             (sequence_id,)).fetchone()
         if seq_row:
             record_hash = seq_row["record_hash"]
+            contract_digest = seq_row["contract_digest"]
         if record_hash:
             rec_row = self.ro.execute(
                 "SELECT content_address FROM records"
@@ -603,14 +605,23 @@ class ContinuousDriver:
                 (record_hash,)).fetchone()
             if rec_row:
                 try:
-                    payload = _json.loads(self.taskforce.store.get(
-                        rec_row["content_address"]).decode("utf-8"))
+                    addr = rec_row["content_address"]
+                    payload = _json.loads(
+                        self.taskforce.store.get(addr).decode("utf-8"))
                     task_contract_id = payload.get("task_contract_id")
                     requirement_digest = payload.get(
                         "requirement_digest")
-                    contract_digest = payload.get("contract_digest")
+                    if not contract_digest:
+                        contract_digest = payload.get(
+                            "contract_digest")
                 except Exception:
                     pass
+        if not task_contract_id:
+            task_contract_id = result.get("task_contract_id")
+        if not contract_digest:
+            proposal_row = self.plan.proposal(proposal_id)
+            if proposal_row:
+                contract_digest = proposal_row.get("contract_digest")
         with self.plan.transaction() as cur:
             self.plan.create_authority_binding(
                 cur, binding_id, node["node_id"], now,
