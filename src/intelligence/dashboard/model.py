@@ -10,7 +10,7 @@ from .views import (
     ActivitySnapshot, AuthorityCensus, ObjectiveView,
     CoordinatorDecisionView, RunView, NodeView, EdgeView,
     SequenceView, AttemptView, AssignmentView, SeatView,
-    TaskforceView,
+    TaskforceView, RoutingView,
 )
 from .events import events_from_transitions
 
@@ -26,7 +26,8 @@ def _parse_features(raw):
     return {}
 
 
-def build_snapshot(intelligence, authority, step_reader=None):
+def build_snapshot(intelligence, authority, step_reader=None,
+                   config_reader=None):
     """Build an ActivitySnapshot from reader instances.
 
     ``intelligence``: IntelligenceReader (intelligence.db)
@@ -148,7 +149,9 @@ def build_snapshot(intelligence, authority, step_reader=None):
             capability=a.get("capability", "?"),
             role=a.get("role", "?"),
             status=a.get("status", "?"),
-            selection_path=a.get("selection_path", "?"))
+            selection_path=a.get("selection_path", "?"),
+            provider=a.get("provider"),
+            model=a.get("model"))
         for a in raw_assignments]
 
     # --- activity events ---
@@ -163,6 +166,16 @@ def build_snapshot(intelligence, authority, step_reader=None):
     events.sort(key=lambda e: e.timestamp or "", reverse=True)
     events = events[:30]
 
+    # --- routing ---
+    routing = RoutingView()
+    if config_reader:
+        routes_dict = config_reader.routes()
+        routing = RoutingView(
+            default_route=config_reader.default_route(),
+            escalation_route=config_reader.escalation_route(),
+            planner_model=config_reader.planner_model(),
+            routes=routes_dict)
+
     return ActivitySnapshot(
         captured_utc=now,
         objectives=objectives,
@@ -170,5 +183,6 @@ def build_snapshot(intelligence, authority, step_reader=None):
         runs=runs,
         authority=auth_census,
         taskforce=taskforce,
+        routing=routing,
         recent_assignments=recent_assignments,
         recent_events=events)

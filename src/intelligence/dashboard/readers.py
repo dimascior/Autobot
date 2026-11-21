@@ -106,7 +106,8 @@ class IntelligenceReader:
     def recent_assignments(self, limit=10):
         try:
             return _rows(self.conn,
-                         "SELECT a.*, s.handle AS specialist_handle"
+                         "SELECT a.*, s.handle AS specialist_handle,"
+                         " s.provider AS spec_provider"
                          " FROM project_assignments a"
                          " JOIN specialists s"
                          "   ON s.specialist_id = a.specialist_id"
@@ -228,6 +229,116 @@ class AuthorityReader:
             return results
         except sqlite3.OperationalError:
             return []
+
+
+class ConfigReader:
+    """Reads routing and specialist configuration from config.toml.
+
+    This is the same data the Coordinator and driver use — the
+    routing policy, specialist catalog, and model configuration."""
+
+    def __init__(self, project_root):
+        self.root = Path(project_root)
+        self._config = None
+
+    def _load(self):
+        if self._config is not None:
+            return self._config
+        config_path = self.root / "config.toml"
+        local_path = self.root / "config.local.toml"
+        config = {}
+        for path in (config_path, local_path):
+            if path.is_file():
+                try:
+                    import tomli
+                    with open(str(path), "rb") as f:
+                        layer = tomli.load(f)
+                except ImportError:
+                    layer = _parse_toml_fallback(str(path))
+                except Exception:
+                    layer = _parse_toml_fallback(str(path))
+                for k, v in layer.items():
+                    if isinstance(v, dict) and isinstance(
+                            config.get(k), dict):
+                        config[k].update(v)
+                    else:
+                        config[k] = v
+        self._config = config
+        return config
+
+    def default_route(self):
+        c = self._load()
+        return c.get("routing", {}).get("default", "?")
+
+    def escalation_route(self):
+        c = self._load()
+        return c.get("routing", {}).get("escalation", "?")
+
+    def planner_model(self):
+        c = self._load()
+        return c.get("models", {}).get("planner", "?")
+
+    def routes(self):
+        c = self._load()
+        result = {}
+        for section_key in ("routing.routes", "routes"):
+            sect = c.get("routing", {}).get("routes", {})
+            if not sect and section_key == "routes":
+                sect = c.get("routes", {})
+            for name, spec in sect.items():
+                if isinstance(spec, dict):
+                    result[name] = {
+                        "agent": spec.get("agent", "?"),
+                        "model": spec.get("model", "?"),
+                        "effort": spec.get("effort"),
+                    }
+        return result
+
+    def specialists(self):
+        c = self._load()
+        result = {}
+        for section in (c.get("specialists", {}),
+                        c.get("taskforce", {}).get("specialists", {})):
+            if isinstance(section, dict):
+                for handle, spec in section.items():
+                    if isinstance(spec, dict):
+                        result[handle] = {
+                            "offers": spec.get("offers", []),
+                        }
+        return result
+
+
+def _parse_toml_fallback(path):
+    """Minimal TOML key=value parser for when tomli is unavailable."""
+    result = {}
+    current_section = result
+    section_path = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("["):
+                    key = line.strip("[]").strip()
+                    parts = key.split(".")
+                    current_section = result
+                    for p in parts:
+                        current_section = current_section.setdefault(p, {})
+                    section_path = parts
+                    continue
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if v.lower() in ("true", "false"):
+                        v = v.lower() == "true"
+                    elif v.isdigit():
+                        v = int(v)
+                    current_section[k] = v
+    except Exception:
+        pass
+    return result
 
 
 class StepLogReader:

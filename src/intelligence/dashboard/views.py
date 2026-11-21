@@ -91,6 +91,8 @@ class AssignmentView:
     role: str
     status: str
     selection_path: str
+    provider: Optional[str] = None
+    model: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +133,14 @@ class AuthorityCensus:
 
 
 @dataclass(frozen=True)
+class RoutingView:
+    default_route: str = "?"
+    escalation_route: str = "?"
+    planner_model: str = "?"
+    routes: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ActivitySnapshot:
     captured_utc: str
 
@@ -139,5 +149,6 @@ class ActivitySnapshot:
     runs: List[RunView] = field(default_factory=list)
     authority: AuthorityCensus = field(default_factory=AuthorityCensus)
     taskforce: TaskforceView = field(default_factory=TaskforceView)
+    routing: RoutingView = field(default_factory=RoutingView)
     recent_assignments: List[AssignmentView] = field(default_factory=list)
     recent_events: List[ActivityEvent] = field(default_factory=list)

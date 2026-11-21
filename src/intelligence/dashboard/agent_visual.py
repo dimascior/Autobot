@@ -1,435 +1,350 @@
-"""Animated agent visual dashboard with ASCII art and frame pipeline.
+"""Double-buffered agent dashboard with Screen-based diff rendering.
 
-Each organizational agent is an ASCII art box with live status.
-Connections flow between agents. Active items spin. The DAG
-renders as a visual tree.
+Uses the Screen from screen.py: structured cell buffer, front/back
+swap, diff-only ANSI output. Same pattern as RAMVISION's alt-screen
+VRAM renderer — no full redraws, only changed cells get cursor-moved.
 
-Frame-based: redraws on a timer using ANSI cursor control.
+Each agent is a box drawn into the screen buffer. Flow indicators
+animate between boxes. Active items get trail colors.
 """
 
 import os
 import sys
 import time
-from datetime import datetime, timezone
 
+from .screen import Screen, HIDE_CURSOR, SHOW_CURSOR, HOME, CLEAR_BELOW
 from .views import ActivitySnapshot
 
-# ── ANSI ──────────────────────────────────────────────────────────────
+# ── 256-color palette ─────────────────────────────────────────────────
 
-ESC = "\033["
-RESET = ESC + "0m"
-BOLD = ESC + "1m"
-DIM = ESC + "2m"
-HIDE_CURSOR = ESC + "?25l"
-SHOW_CURSOR = ESC + "?25h"
-HOME = ESC + "H"
-
-def fg(r, g, b): return "%s38;2;%d;%d;%dm" % (ESC, r, g, b)
-def bg(r, g, b): return "%s48;2;%d;%d;%dm" % (ESC, r, g, b)
-
-# ── Palette ───────────────────────────────────────────────────────────
-
-P = {
-    "frame":    fg(60, 70, 90),
-    "title":    fg(200, 220, 255),
-    "dim":      fg(80, 85, 100),
-    "text":     fg(170, 175, 190),
-    "bright":   fg(220, 225, 240),
-    "accent":   fg(100, 170, 255),
-    "success":  fg(80, 210, 130),
-    "warn":     fg(255, 190, 60),
-    "error":    fg(255, 90, 80),
-    "active":   fg(60, 190, 255),
-    "coord":    fg(255, 170, 50),
-    "orch":     fg(170, 110, 255),
-    "eng":      fg(80, 190, 255),
-    "tf":       fg(60, 210, 150),
-    "auth":     fg(190, 190, 210),
-    "seq":      fg(210, 170, 90),
-    "cas":      fg(160, 165, 185),
-    "dir":      fg(80, 200, 160),
-    "halted":   fg(200, 90, 50),
-    "blocked":  fg(200, 170, 60),
-    "flow":     fg(50, 60, 80),
-    "flowlit":  fg(100, 140, 200),
+C = {
+    "frame":    240, "dim":     243, "text":    252, "bright": 255,
+    "accent":   75,  "success": 78,  "warn":    214, "error":  196,
+    "active":   39,  "coord":   214, "orch":    135, "eng":    75,
+    "tf":       78,  "auth":    252, "cas":     248, "dir":    78,
+    "halted":   166, "blocked": 214, "trail1":  196, "trail2": 208,
+    "trail3":   220, "trail4":  228, "flow_dim": 236, "flow_lit": 75,
+    "luna":     214, "bar_fill": 78, "bar_empty": 236,
 }
 
-# ── Spinners ──────────────────────────────────────────────────────────
+SPIN = list("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+FLOW = list("·∙•●•∙·")
 
-SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-PULSE = ["░", "▒", "▓", "█", "▓", "▒"]
-FLOW_CHARS = ["·", "·", "∙", "•", "●", "•", "∙", "·"]
-
-def spinner(tick):
-    return SPIN[tick % len(SPIN)]
-
-def pulse(tick):
-    return PULSE[tick % len(PULSE)]
-
-def flow_char(tick, offset=0):
-    return FLOW_CHARS[(tick + offset) % len(FLOW_CHARS)]
-
-# ── Status rendering ──────────────────────────────────────────────────
-
-STATUS_ART = {
-    "ACTIVE":    ("●", "active"),
-    "COMPLETE":  ("✦", "success"),
-    "COMPLETED": ("✦", "success"),
-    "PENDING":   ("○", "dim"),
-    "EXECUTING": (None, "accent"),    # uses spinner
-    "RUNNING":   (None, "accent"),
-    "VERIFIED":  ("✓", "success"),
-    "ACCEPTED":  ("★", "success"),
-    "BLOCKED":   ("◫", "blocked"),
-    "HALTED":    ("⏸", "halted"),
-    "FAILED":    ("✗", "error"),
-    "READY":     ("◎", "active"),
+# Agent identities
+AGENT = {
+    "coord": ("◆", "COORDINATOR",  C["coord"]),
+    "orch":  ("◈", "ORCHESTRATOR", C["orch"]),
+    "eng":   ("⚙", "ENGINEER",     C["eng"]),
+    "tf":    ("⛊", "TASKFORCE",    C["tf"]),
+    "auth":  ("⬡", "AUTHORITY",    C["auth"]),
 }
 
-def status_icon(status, tick=0):
-    art = STATUS_ART.get(status, ("?", "dim"))
-    icon = art[0] if art[0] else spinner(tick)
-    color = P.get(art[1], P["dim"])
-    return color + icon + RESET
-
-# ── Box drawing ───────────────────────────────────────────────────────
-
-def box(lines, width, color_key="frame", title=None, icon=None):
-    """Draw a box with content lines. Returns list of strings."""
-    c = P[color_key]
-    out = []
-    top = "╔" + "═" * (width - 2) + "╗"
-    if title:
-        t = " %s%s%s %s%s%s " % (
-            P.get(color_key, c), icon or "", RESET,
-            BOLD, title, RESET)
-        # Visual width of title (sans ANSI)
-        tw = len(icon or "") + 1 + len(title) + 2
-        pad = width - 2 - tw
-        top = "╔═" + t + c + "═" * max(pad, 0) + "╗"
-    out.append(c + top + RESET)
-    for line in lines:
-        # Pad content to box width (visual)
-        out.append(c + "║" + RESET + " " + line)
-    out.append(c + "╚" + "═" * (width - 2) + "╝" + RESET)
-    return out
+ROLE_ICON = {"investigator": "⊙", "builder": "⊕", "reviewer": "⊘"}
+STATUS_ICON = {
+    "ACTIVE": "●", "COMPLETE": "✦", "COMPLETED": "✦", "PENDING": "○",
+    "EXECUTING": None, "RUNNING": None, "BLOCKED": "◫",
+    "HALTED": "⏸", "FAILED": "✗", "READY": "◎",
+}
+STATUS_COLOR = {
+    "ACTIVE": C["active"], "COMPLETE": C["success"], "COMPLETED": C["success"],
+    "PENDING": C["dim"], "EXECUTING": C["accent"], "RUNNING": C["accent"],
+    "BLOCKED": C["blocked"], "HALTED": C["halted"], "FAILED": C["error"],
+}
+MODE_SHORT = {"DIRECT": "DIR", "ENGINEER_ELEVATED": "ENG", "ORCHESTRATOR_ELEVATED": "ORC"}
+MODE_COLOR = {"DIRECT": C["dir"], "ENGINEER_ELEVATED": C["eng"], "ORCHESTRATOR_ELEVATED": C["orch"]}
 
 
-def hflow(tick, length=5):
-    """Horizontal animated flow: ····●····"""
-    s = ""
-    for i in range(length):
-        ch = flow_char(tick, i)
-        c = P["flowlit"] if ch in ("●", "•") else P["flow"]
-        s += c + ch + RESET
-    return s
+def _si(status, tick):
+    icon = STATUS_ICON.get(status)
+    if icon is None:
+        icon = SPIN[tick % len(SPIN)]
+    return icon, STATUS_COLOR.get(status, C["dim"])
 
 
-def vflow(tick):
-    """Vertical flow character."""
-    ch = flow_char(tick)
-    c = P["flowlit"] if ch in ("●", "•") else P["flow"]
-    return c + "│" + RESET
+# ── Box drawing into Screen ──────────────────────────────────────────
 
-# ── Agent panels ──────────────────────────────────────────────────────
-
-def panel_coordinator(snapshot, tick, w=36):
-    decisions = snapshot.coordinator_decisions
-    counts = {"DIRECT": 0, "ENGINEER_ELEVATED": 0, "ORCHESTRATOR_ELEVATED": 0}
-    for cd in decisions:
-        counts[cd.elevation_mode] = counts.get(cd.elevation_mode, 0) + 1
-    lines = []
-    lines.append(
-        P["dir"] + "DIR" + RESET + " " + P["bright"] + str(counts["DIRECT"]) + RESET +
-        "  " +
-        P["eng"] + "ENG" + RESET + " " + P["bright"] + str(counts["ENGINEER_ELEVATED"]) + RESET +
-        "  " +
-        P["orch"] + "ORC" + RESET + " " + P["bright"] + str(counts["ORCHESTRATOR_ELEVATED"]) + RESET)
-    for cd in decisions[-3:]:
-        badge = {"DIRECT": P["dir"] + "▸DIR", "ENGINEER_ELEVATED": P["eng"] + "▸ENG",
-                 "ORCHESTRATOR_ELEVATED": P["orch"] + "▸ORC"}.get(cd.elevation_mode, "???")
-        lines.append(badge + RESET + " " + P["dim"] + cd.objective_id[:22] + RESET)
-    return box(lines, w, "coord", "COORDINATOR", "◆")
+def _box(scr, x, y, w, h, agent_key, tick):
+    icon, label, color = AGENT[agent_key]
+    # top
+    scr.put(x, y, "╔", color); scr.put(x+1, y, "═", color)
+    scr.put(x+2, y, " ", color); scr.put(x+3, y, icon, color)
+    for i, ch in enumerate(label):
+        scr.put(x + 5 + i, y, ch, color, bold=True)
+    for cx in range(x + 5 + len(label), x + w - 1):
+        scr.put(cx, y, "═", color)
+    scr.put(x + w - 1, y, "╗", color)
+    # sides
+    for ry in range(y + 1, y + h - 1):
+        scr.put(x, ry, "║", C["frame"])
+        scr.put(x + w - 1, ry, "║", C["frame"])
+    # bottom
+    scr.put(x, y + h - 1, "╚", color)
+    for cx in range(x + 1, x + w - 1):
+        scr.put(cx, y + h - 1, "═", color)
+    scr.put(x + w - 1, y + h - 1, "╝", color)
 
 
-def panel_orchestrator(snapshot, tick, w=36):
-    runs = snapshot.runs
-    active = [r for r in runs if r.status == "ACTIVE"]
-    lines = []
-    lines.append(P["bright"] + "%d runs" % len(runs) + RESET +
-                 P["dim"] + " (%d active)" % len(active) + RESET)
-    for run in runs[-3:]:
-        node_count = len(run.nodes)
-        executing = sum(1 for n in run.nodes if n.status in ("EXECUTING", "RUNNING"))
-        completed = sum(1 for n in run.nodes if n.status in ("COMPLETED", "COMPLETE"))
-        badge = {"DIRECT": P["dir"] + "DIR", "ENGINEER_ELEVATED": P["eng"] + "ENG",
-                 "ORCHESTRATOR_ELEVATED": P["orch"] + "ORC"}.get(run.mode, "???")
-        node_txt = ""
-        if node_count:
-            node_txt = " %s%d%s" % (P["dim"], node_count, RESET)
-            if executing:
-                node_txt += " %s%s%d exec%s" % (P["accent"], spinner(tick), executing, RESET)
-            if completed:
-                node_txt += " %s✦%d%s" % (P["success"], completed, RESET)
+def _text(scr, x, y, text, fg=252, bold=False):
+    for i, ch in enumerate(text):
+        scr.put(x + i, y, ch, fg, bold=bold)
+
+
+def _flow_v(scr, x, y, tick):
+    idx = tick % len(FLOW)
+    ch = FLOW[idx]
+    c = C["flow_lit"] if ch in ("●", "•") else C["flow_dim"]
+    scr.put(x, y, "│", c)
+
+
+def _bar(scr, x, y, filled, total, w):
+    if total == 0:
+        ratio = 0
+    else:
+        ratio = filled / total
+    fill_w = int(ratio * w)
+    for i in range(w):
+        if i < fill_w:
+            scr.put(x + i, y, "█", C["bar_fill"])
         else:
-            node_txt = " %s···%s" % (P["dim"], RESET)
-        lines.append(badge + RESET + " " + P["dim"] + run.orchestration_id[:10] + RESET + node_txt)
-    return box(lines, w, "orch", "ORCHESTRATOR", "◈")
-
-
-def panel_engineer(snapshot, tick, w=36):
-    eng_nodes = [n for r in snapshot.runs for n in r.nodes
-                 if n.realization_kind and "ENGINEER" in n.realization_kind]
-    lines = []
-    if eng_nodes:
-        completed = sum(1 for n in eng_nodes if n.status in ("COMPLETED", "COMPLETE"))
-        active = sum(1 for n in eng_nodes if n.status in ("EXECUTING", "PENDING"))
-        lines.append(P["bright"] + "%d decisions" % completed + RESET +
-                     ((" %s%s%d active%s" % (P["accent"], spinner(tick), active, RESET)) if active else ""))
-        for n in eng_nodes[-2:]:
-            sha = n.output_sha256[:12] if n.output_sha256 else "···"
-            lines.append(status_icon(n.status, tick) + " " +
-                         P["dim"] + sha + RESET)
-    else:
-        lines.append(P["dim"] + "no reasoning nodes" + RESET)
-    return box(lines, w, "eng", "ENGINEER", "⚙")
-
-
-def panel_taskforce(snapshot, tick, w=36):
-    tf = snapshot.taskforce
-    lines = []
-    lines.append(P["bright"] + "%d" % tf.member_count + RESET + P["text"] + " members  " + RESET +
-                 P["bright"] + "%d" % tf.established_count + RESET + P["text"] + " established" + RESET)
-    role_icons = {"investigator": "🔍", "builder": "🔧", "reviewer": "📋"}
-    for seat in tf.seats[:3]:
-        ri = role_icons.get(seat.role, "⬢")
-        st_c = P["success"] if seat.status == "ESTABLISHED" else P["active"]
-        lines.append("%s %s%s%s %-14s %s%d%s" % (
-            ri, st_c, seat.status[:4], RESET,
-            P["dim"] + seat.specialist_handle[:14] + RESET,
-            P["accent"], seat.qualifying_count, RESET))
-    if tf.seat_count > 3:
-        lines.append(P["dim"] + "+ %d more" % (tf.seat_count - 3) + RESET)
-    return box(lines, w, "tf", "TASKFORCE", "⛊")
-
-
-def panel_authority(snapshot, tick, w=36):
-    c = snapshot.authority
-    lines = []
-    total_seq = sum(c.sequences_by_state.values())
-    completed = c.sequences_by_state.get("COMPLETED", 0)
-    blocked = c.sequences_by_state.get("BLOCKED", 0)
-    halted = c.sequences_by_state.get("HALTED", 0)
-    bar_w = 20
-    if total_seq:
-        filled = int(completed / total_seq * bar_w)
-        bar = P["success"] + "█" * filled + P["dim"] + "░" * (bar_w - filled) + RESET
-    else:
-        bar = P["dim"] + "░" * bar_w + RESET
-    lines.append(bar + " %s%d%s/%d" % (P["success"], completed, RESET, total_seq))
-    parts = []
-    if blocked:
-        parts.append(P["blocked"] + "◫%d blocked" % blocked + RESET)
-    if halted:
-        parts.append(P["halted"] + "⏸%d halted" % halted + RESET)
-    if parts:
-        lines.append("  ".join(parts))
-    lines.append(P["cas"] + "▣" + RESET + P["dim"] + " %d CAS objects" % c.cas_object_count + RESET +
-                 "  " + P["dim"] + "%d edges" % c.released_edge_count + RESET)
-    return box(lines, w, "auth", "AUTHORITY", "⬡")
-
-
-# ── DAG visual ────────────────────────────────────────────────────────
-
-def render_dag(snapshot, tick, w=78):
-    """Render the node DAG as a visual tree."""
-    lines = []
-    all_nodes = [(r, n) for r in snapshot.runs for n in r.nodes]
-    if not all_nodes:
-        return [P["dim"] + "  (no nodes)" + RESET]
-
-    for run in snapshot.runs:
-        if not run.nodes:
-            continue
-        badge = {"DIRECT": P["dir"] + "DIR", "ENGINEER_ELEVATED": P["eng"] + "ENG",
-                 "ORCHESTRATOR_ELEVATED": P["orch"] + "ORC"}.get(run.mode, "???")
-        lines.append("  " + badge + RESET + " " +
-                     P["dim"] + run.orchestration_id[:12] + RESET)
-
-        for i, node in enumerate(run.nodes):
-            is_last = (i == len(run.nodes) - 1)
-            connector = "└" if is_last else "├"
-            kind_short = {"TASK_CONTRACT": "TASK", "ENGINEER_REASONING": "ENGR",
-                          "CONTROL": "CTRL"}.get(node.realization_kind or "", "????")
-            kind_c = {"TASK": P["dir"], "ENGR": P["eng"], "CTRL": P["dim"]}.get(kind_short, P["dim"])
-
-            # Build node visual
-            si = status_icon(node.status, tick)
-            bound_info = ""
-            if node.sequence_id:
-                bound_info += P["dim"] + " ⇒" + node.sequence_id[:10] + RESET
-            if node.output_sha256:
-                bound_info += P["success"] + " ✦" + RESET
-
-            lines.append("  %s%s─%s %s%-16s%s %s%s%s%s" % (
-                P["frame"], connector, RESET,
-                si, "",
-                P["bright"] + node.node_key[:16] + RESET,
-                kind_c, kind_short, RESET,
-                bound_info))
-
-        # Edges
-        for edge in run.edges:
-            st_c = P["success"] if edge.status == "RELEASED" else P["dim"]
-            flow = hflow(tick, 3) if edge.status == "RELEASED" else P["dim"] + "···" + RESET
-            lines.append("     %s%s%s %s→%s %s  %s" % (
-                P["dim"], edge.source_node_id[:8], RESET,
-                flow, P["dim"], edge.target_node_id[:8] + RESET,
-                st_c + edge.dependency_kind[:10] + RESET))
-    return lines
-
-
-# ── Activity ticker ───────────────────────────────────────────────────
-
-def render_activity(snapshot, tick, w=78, max_lines=8):
-    lines = []
-    events = snapshot.recent_events[:max_lines]
-    if not events:
-        lines.append("  " + P["dim"] + "· · · awaiting activity · · ·" + RESET)
-        return lines
-    for ev in events:
-        ts = ev.timestamp[-12:-4] if len(ev.timestamp) > 12 else ev.timestamp[:8]
-        layer_c = {
-            "coordinator": P["coord"], "orchestrator": P["orch"],
-            "engineer": P["eng"], "taskforce": P["tf"],
-            "authority": P["auth"],
-        }.get(ev.layer, P["dim"])
-        layer_icon = {
-            "coordinator": "◆", "orchestrator": "◈",
-            "engineer": "⚙", "taskforce": "⛊",
-            "authority": "⬡",
-        }.get(ev.layer, "·")
-        summary = ev.summary
-        if len(summary) > w - 22:
-            summary = summary[:w - 23] + "…"
-        lines.append("  %s%s%s %s%s%s %s%s%s" % (
-            P["dim"], ts, RESET,
-            layer_c, layer_icon, RESET,
-            P["text"], summary, RESET))
-    return lines
+            scr.put(x + i, y, "░", C["bar_empty"])
 
 
 # ── Compose frame ─────────────────────────────────────────────────────
 
-def render_frame(snapshot, tick, width=80):
-    lines = []
-    pw = min(38, (width - 4) // 2)
-    now = snapshot.captured_utc
+def compose(scr, snapshot, tick, routing=None):
+    """Write all agents into the screen back buffer."""
+    w = scr.w
+    pw = min(37, (w - 6) // 2)  # panel width
+    gap = 2
+    x1 = 2          # left panel x
+    x2 = x1 + pw + gap  # right panel x
 
-    # Title
-    lines.append("")
-    title_line = ("  %s%s AUTOBOT ORGANIZATION %s" % (BOLD, P["title"], RESET) +
-                  " " * max(1, width - 42 - len(now)) +
-                  P["dim"] + now + RESET)
-    lines.append(title_line)
-    lines.append("  " + P["frame"] + "━" * (width - 4) + RESET)
-    lines.append("")
+    # Row 0-1: title
+    _text(scr, 2, 0, "AUTOBOT ORGANIZATION", C["bright"], bold=True)
+    _text(scr, w - 22, 0, snapshot.captured_utc[:19], C["dim"])
+    for cx in range(2, w - 2):
+        scr.put(cx, 1, "━", C["frame"])
 
-    # Top row: Coordinator | Orchestrator
-    coord_box = panel_coordinator(snapshot, tick, pw)
-    orch_box = panel_orchestrator(snapshot, tick, pw)
-    gap = "  "
-    max_h = max(len(coord_box), len(orch_box))
-    for i in range(max_h):
-        left = coord_box[i] if i < len(coord_box) else " " * pw
-        right = orch_box[i] if i < len(orch_box) else " " * pw
-        lines.append("  " + left + gap + right)
+    # Row 2-7: Coordinator (left) | Orchestrator (right)
+    bh = 6
+    _box(scr, x1, 2, pw, bh, "coord", tick)
+    _box(scr, x2, 2, pw, bh, "orch", tick)
 
-    # Flow: Coordinator → DAG
-    lines.append("  " + " " * (pw // 2) + vflow(tick) +
-                 " " * (pw // 2 + len(gap)) + vflow(tick))
-    lines.append("")
+    # Coordinator content
+    counts = {"DIR": 0, "ENG": 0, "ORC": 0}
+    for cd in snapshot.coordinator_decisions:
+        k = MODE_SHORT.get(cd.elevation_mode, "?")
+        counts[k] = counts.get(k, 0) + 1
+    cy = 3
+    for mode_key, count in counts.items():
+        mc = MODE_COLOR.get({"DIR": "DIRECT", "ENG": "ENGINEER_ELEVATED",
+                             "ORC": "ORCHESTRATOR_ELEVATED"}.get(mode_key, ""), C["dim"])
+        _text(scr, x1 + 2, cy, mode_key, mc, bold=True)
+        _text(scr, x1 + 6, cy, str(count), C["bright"])
+        cy += 1
+    # Last decision
+    if snapshot.coordinator_decisions:
+        cd = snapshot.coordinator_decisions[-1]
+        _text(scr, x1 + 2, cy, cd.objective_id[:pw - 4], C["dim"])
 
-    # Middle row: Engineer | Taskforce
-    eng_box = panel_engineer(snapshot, tick, pw)
-    tf_box = panel_taskforce(snapshot, tick, pw)
-    max_h = max(len(eng_box), len(tf_box))
-    for i in range(max_h):
-        left = eng_box[i] if i < len(eng_box) else " " * pw
-        right = tf_box[i] if i < len(tf_box) else " " * pw
-        lines.append("  " + left + gap + right)
+    # Orchestrator content
+    runs = snapshot.runs
+    _text(scr, x2 + 2, 3, "%d runs" % len(runs), C["bright"])
+    active = sum(1 for r in runs if r.status == "ACTIVE")
+    _text(scr, x2 + 10, 3, "(%d active)" % active, C["dim"])
+    ry = 4
+    for run in runs[-3:]:
+        ms = MODE_SHORT.get(run.mode, "?")
+        mc = MODE_COLOR.get(run.mode, C["dim"])
+        _text(scr, x2 + 2, ry, ms, mc, bold=True)
+        nc = len(run.nodes)
+        ec = sum(1 for n in run.nodes if n.status in ("EXECUTING", "RUNNING"))
+        cc = sum(1 for n in run.nodes if n.status in ("COMPLETED", "COMPLETE"))
+        info = " %d" % nc if nc else " ···"
+        _text(scr, x2 + 6, ry, info, C["dim"])
+        if ec:
+            _text(scr, x2 + 10, ry, SPIN[tick % len(SPIN)] + str(ec), C["accent"])
+        if cc:
+            _text(scr, x2 + 13, ry, "✦" + str(cc), C["success"])
+        ry += 1
 
-    # Flow: → Authority
-    lines.append("  " + " " * (pw // 2) + vflow(tick) +
-                 " " * (pw // 2 + len(gap)) + vflow(tick))
-    lines.append("")
+    # Flow connectors (row 8)
+    _flow_v(scr, x1 + pw // 2, 8, tick)
+    _flow_v(scr, x2 + pw // 2, 8, tick)
 
-    # Authority panel (full width)
-    auth_box = panel_authority(snapshot, tick, width - 4)
-    for line in auth_box:
-        lines.append("  " + line)
-    lines.append("")
+    # Row 9-14: Engineer (left) | Taskforce (right)
+    _box(scr, x1, 9, pw, bh, "eng", tick)
+    _box(scr, x2, 9, pw, bh, "tf", tick)
 
-    # DAG section
-    lines.append("  " + P["frame"] + "━" * 3 + RESET + " " +
-                 BOLD + P["accent"] + "NODE DAG" + RESET + " " +
-                 P["frame"] + "━" * (width - 18) + RESET)
-    dag_lines = render_dag(snapshot, tick, width - 4)
-    for line in dag_lines:
-        lines.append(line)
-    lines.append("")
+    # Engineer content
+    eng_nodes = [n for r in snapshot.runs for n in r.nodes
+                 if n.realization_kind and "ENGINEER" in n.realization_kind]
+    if eng_nodes:
+        completed = sum(1 for n in eng_nodes if n.status in ("COMPLETED", "COMPLETE"))
+        _text(scr, x1 + 2, 10, "%d decisions" % completed, C["bright"])
+        for i, n in enumerate(eng_nodes[-2:]):
+            sha = n.output_sha256[:14] if n.output_sha256 else "···"
+            si, sc = _si(n.status, tick)
+            scr.put(x1 + 2, 11 + i, si, sc)
+            _text(scr, x1 + 4, 11 + i, sha, C["dim"])
+    else:
+        _text(scr, x1 + 2, 10, "no reasoning nodes", C["dim"])
 
-    # Activity stream
-    lines.append("  " + P["frame"] + "━" * 3 + RESET + " " +
-                 BOLD + P["accent"] + "ACTIVITY" + RESET + " " +
-                 P["frame"] + "━" * (width - 18) + RESET)
-    act_lines = render_activity(snapshot, tick, width - 4)
-    for line in act_lines:
-        lines.append(line)
-    lines.append("")
+    # Taskforce content
+    tf = snapshot.taskforce
+    _text(scr, x2 + 2, 10, "%d members" % tf.member_count, C["bright"])
+    _text(scr, x2 + 14, 10, "%d estab" % tf.established_count, C["dim"])
+    # Route
+    if routing and routing.default_route != "?":
+        rd = routing.routes.get(routing.default_route, {})
+        route_str = "%s/%s" % (rd.get("agent", "?"), rd.get("model", "?"))
+        _text(scr, x2 + 2, 11, routing.default_route[:12], C["luna"], bold=True)
+        _text(scr, x2 + 15, 11, route_str[:pw - 17], C["dim"])
+    for i, seat in enumerate(tf.seats[:2]):
+        ri = ROLE_ICON.get(seat.role, "·")
+        sc = C["success"] if seat.status == "ESTABLISHED" else C["active"]
+        scr.put(x2 + 2, 12 + i, ri[0], sc)
+        cap_role = "%s/%s" % (seat.capability[:10], seat.role[:6])
+        _text(scr, x2 + 4, 12 + i, cap_role, C["text"])
+        _text(scr, x2 + 22, 12 + i, "%dq" % seat.qualifying_count, C["accent"])
 
-    return lines
+    # Flow (row 15)
+    _flow_v(scr, x1 + pw // 2, 15, tick)
+    _flow_v(scr, x2 + pw // 2, 15, tick)
+
+    # Row 16-20: Authority (full width)
+    aw = pw * 2 + gap
+    _box(scr, x1, 16, aw, 5, "auth", tick)
+    census = snapshot.authority
+    total_seq = sum(census.sequences_by_state.values())
+    completed = census.sequences_by_state.get("COMPLETED", 0)
+    blocked = census.sequences_by_state.get("BLOCKED", 0)
+    halted = census.sequences_by_state.get("HALTED", 0)
+    _bar(scr, x1 + 2, 17, completed, max(total_seq, 1), 20)
+    _text(scr, x1 + 23, 17, "%d/%d seq" % (completed, total_seq), C["bright"])
+    if blocked:
+        _text(scr, x1 + 35, 17, "◫%d" % blocked, C["blocked"])
+    if halted:
+        _text(scr, x1 + 40, 17, "⏸%d" % halted, C["halted"])
+    _text(scr, x1 + 2, 18, "▣ %d CAS" % census.cas_object_count, C["cas"])
+    _text(scr, x1 + 15, 18, "%d edges" % census.released_edge_count, C["dim"])
+    att_parts = []
+    for state, count in sorted(census.attempts_by_state.items()):
+        att_parts.append("%s:%d" % (state[:4], count))
+    _text(scr, x1 + 2, 19, " ".join(att_parts)[:aw - 4], C["dim"])
+
+    # Row 21: separator
+    for cx in range(2, w - 2):
+        scr.put(cx, 21, "━", C["frame"])
+    _text(scr, 4, 21, " DAG ", C["accent"], bold=True)
+
+    # Row 22+: Node DAG
+    dag_y = 22
+    for run in snapshot.runs:
+        if not run.nodes:
+            continue
+        ms = MODE_SHORT.get(run.mode, "?")
+        mc = MODE_COLOR.get(run.mode, C["dim"])
+        _text(scr, 3, dag_y, ms, mc, bold=True)
+        _text(scr, 7, dag_y, run.orchestration_id[:12], C["dim"])
+        dag_y += 1
+        for i, node in enumerate(run.nodes):
+            connector = "└" if i == len(run.nodes) - 1 else "├"
+            scr.put(4, dag_y, connector[0], C["frame"])
+            scr.put(5, dag_y, "─", C["frame"])
+            si, sc = _si(node.status, tick)
+            scr.put(7, dag_y, si, sc)
+            _text(scr, 9, dag_y, node.node_key[:16], C["bright"])
+            kind = {"TASK_CONTRACT": "TASK", "ENGINEER_REASONING": "ENGR",
+                    "CONTROL": "CTRL"}.get(node.realization_kind or "", "?")
+            kc = {"TASK": C["dir"], "ENGR": C["eng"]}.get(kind, C["dim"])
+            _text(scr, 26, dag_y, kind, kc)
+            if node.sequence_id:
+                _text(scr, 31, dag_y, "→" + node.sequence_id[:10], C["dim"])
+            if node.output_sha256:
+                scr.put(43, dag_y, "✦", C["success"])
+            dag_y += 1
+        if dag_y >= scr.h - 10:
+            break
+
+    # Activity stream at bottom
+    act_y = max(dag_y + 1, scr.h - 9)
+    for cx in range(2, w - 2):
+        scr.put(cx, act_y - 1, "━", C["frame"])
+    _text(scr, 4, act_y - 1, " ACTIVITY ", C["accent"], bold=True)
+
+    for i, ev in enumerate(snapshot.recent_events[:7]):
+        y = act_y + i
+        if y >= scr.h:
+            break
+        ts = ev.timestamp[-8:] if len(ev.timestamp) >= 8 else ev.timestamp[:8]
+        _text(scr, 3, y, ts, C["dim"])
+        layer_icon = {"coordinator": "◆", "orchestrator": "◈",
+                      "engineer": "⚙", "taskforce": "⛊",
+                      "authority": "⬡"}.get(ev.layer, "·")
+        lc = {"coordinator": C["coord"], "orchestrator": C["orch"],
+              "engineer": C["eng"], "taskforce": C["tf"],
+              "authority": C["auth"]}.get(ev.layer, C["dim"])
+        scr.put(12, y, layer_icon[0], lc)
+        summary = ev.summary[:w - 16]
+        _text(scr, 14, y, summary, C["text"])
+
+    if not snapshot.recent_events:
+        _text(scr, 3, act_y, "· · · awaiting activity · · ·", C["dim"])
 
 
 # ── Stream loop ───────────────────────────────────────────────────────
 
 def stream(intelligence_path, authority_path, step_log_path=None,
-           interval=2.0, once=False, ground=False):
-    from .readers import IntelligenceReader, AuthorityReader, StepLogReader
+           interval=0.5, once=False, ground=False, project_root=None):
+    from .readers import (IntelligenceReader, AuthorityReader,
+                          StepLogReader, ConfigReader)
     from .model import build_snapshot
+    from pathlib import Path
 
     intel = IntelligenceReader(intelligence_path)
     auth = AuthorityReader(authority_path)
     step = StepLogReader(step_log_path) if step_log_path else None
+    root = project_root or Path(intelligence_path).parent
+    config = ConfigReader(root)
 
+    # Terminal size
+    try:
+        sz = os.get_terminal_size()
+        tw, th = sz.columns, sz.lines
+    except Exception:
+        tw, th = 80, 40
+
+    scr = Screen(tw, th)
     tick = 0
+
     try:
         if not once:
-            sys.stdout.write(HIDE_CURSOR)
+            sys.stdout.write(HIDE_CURSOR + HOME)
             sys.stdout.flush()
+
         while True:
-            snapshot = build_snapshot(intel, auth, step_reader=step)
-            lines = render_frame(snapshot, tick)
+            snapshot = build_snapshot(intel, auth, step_reader=step,
+                                     config_reader=config)
+            scr.clear()
+            compose(scr, snapshot, tick, routing=snapshot.routing)
+
+            if tick == 0 or once:
+                out = scr.full_render()
+                sys.stdout.write(out)
+                sys.stdout.flush()
+            else:
+                changes = scr.diff()
+                out = scr.render_diff(changes)
+                scr.flush(out)
+
+            scr.swap()
 
             if once:
-                for line in lines:
-                    print(line)
+                sys.stdout.write("\n")
                 if ground:
                     _ground(snapshot)
                 break
-
-            # Clear and redraw
-            sys.stdout.write(HOME)
-            os.system("cls" if os.name == "nt" else "true")
-            sys.stdout.write(HOME)
-            for line in lines:
-                # Pad to clear previous longer lines
-                sys.stdout.write(line + ESC + "K" + "\n")
-            sys.stdout.write(ESC + "J")  # clear below
-            sys.stdout.flush()
-
-            if ground:
-                _ground(snapshot)
 
             tick += 1
             time.sleep(interval)
@@ -437,20 +352,19 @@ def stream(intelligence_path, authority_path, step_log_path=None,
         pass
     finally:
         if not once:
-            sys.stdout.write(SHOW_CURSOR)
+            sys.stdout.write(SHOW_CURSOR + "\n")
             sys.stdout.flush()
         intel.close()
         auth.close()
 
 
 def _ground(snapshot):
-    print("\n%s=== GROUND ===%s" % (P["dim"], RESET))
-    print("%sobjectives: %d active, %d complete%s" % (
-        P["dim"],
+    sys.stdout.write("\033[2m=== GROUND ===\033[0m\n")
+    sys.stdout.write("objectives: %d active, %d complete\n" % (
         sum(1 for o in snapshot.objectives if o.status == "ACTIVE"),
-        sum(1 for o in snapshot.objectives if o.status in ("COMPLETE", "COMPLETED")),
-        RESET))
-    print("%sruns: %d  nodes: %d  CAS: %d%s" % (
-        P["dim"], len(snapshot.runs),
+        sum(1 for o in snapshot.objectives
+            if o.status in ("COMPLETE", "COMPLETED"))))
+    sys.stdout.write("runs: %d  nodes: %d  CAS: %d\n" % (
+        len(snapshot.runs),
         sum(len(r.nodes) for r in snapshot.runs),
-        snapshot.authority.cas_object_count, RESET))
+        snapshot.authority.cas_object_count))
