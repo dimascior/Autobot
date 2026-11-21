@@ -1,18 +1,133 @@
-"""Extract ActivityEvents from journal transitions and step reports."""
+"""Extract ActivityEvents from journal transitions, the organization's own
+event streams (planning events, workforce events, Engineer cycles,
+Coordinator admissions, permission answers) and step reports."""
+
+import json
 
 from .views import ActivityEvent
 
 
-def events_from_transitions(transitions):
-    """Convert authority journal transitions into ActivityEvents."""
+def _facts(raw):
+    if isinstance(raw, dict):
+        return raw
+    try:
+        value = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def planning_note(row):
+    """What a planning event adds to the journal row it was derived from,
+    or None when it adds nothing the transition does not already say."""
+    kind = row.get("event_kind") or ""
+    facts = _facts(row.get("facts"))
+    if kind == "work_blocked":
+        edges = facts.get("unsatisfied_edge_ids") or []
+        return "blocked on %s" % ", ".join(edges) if edges else "blocked"
+    if kind == "work_ready":
+        edges = [e.get("edge_id") for e in facts.get("satisfied_edges") or []
+                 if isinstance(e, dict) and e.get("edge_id")]
+        return "ready: %s satisfied" % ", ".join(edges) if edges else None
+    if kind == "dependencies_released":
+        known = facts.get("known_successor_sequence_ids") or []
+        return "released to %d successor%s" % (
+            len(known), "" if len(known) == 1 else "s") if known else None
+    if kind in ("sequence_completed", "sequence_accepted",
+                "sequence_verified"):
+        return None
+    return kind.replace("_", " ") if kind else None
+
+
+def events_from_workforce(rows, assignment_names=None):
+    """Taskforce events. ``assignment_names`` maps an assignment id to
+    (specialist handle, workstream key) when known."""
+    names = assignment_names or {}
+    events = []
+    for r in rows:
+        kind = r.get("event_kind") or "?"
+        facts = _facts(r.get("facts"))
+        cap_role = "%s/%s" % (facts.get("capability", "?"),
+                              facts.get("role", "?"))
+        if kind == "retained_seat_assigned":
+            handle, key = names.get(r.get("subject_id"), (None, None))
+            summary = ("seat assigned: %s -> %s" % (handle, key)
+                       if handle and key else "seat assigned: %s" % cap_role)
+        elif kind == "demonstration_recorded":
+            summary = "demonstration %s %s" % (
+                facts.get("outcome", "?"), cap_role)
+        else:
+            summary = "%s %s" % (kind.replace("_", " "),
+                                 (r.get("subject_id") or "")[:16])
+        events.append(ActivityEvent(
+            timestamp=r.get("recorded_utc") or "", layer="taskforce",
+            kind=kind, subject_id=r.get("subject_id") or "",
+            summary=summary, details={"facts": facts}))
+    return events
+
+
+def events_from_cycles(rows):
+    """Engineer cycles: each one is a planning pass over new stimuli."""
+    events = []
+    for r in rows:
+        n = r.get("proposals") or 0
+        state = "open" if r.get("status") == "OPEN" else "ran"
+        events.append(ActivityEvent(
+            timestamp=r.get("started_utc") or "", layer="engineer",
+            kind="cycle", subject_id=str(r.get("cycle_id")),
+            summary="cycle %s %s · %d proposal%s" % (
+                r.get("cycle_id"), state, n, "" if n == 1 else "s"),
+            details=dict(r)))
+    return events
+
+
+def events_from_admissions(decisions):
+    """Coordinator admissions (CoordinatorDecisionView rows)."""
+    return [ActivityEvent(
+        timestamp=d.created_utc or "", layer="coordinator", kind="admitted",
+        subject_id=d.objective_id,
+        summary="admitted %s -> %s" % (d.objective_id, d.elevation_mode),
+        details={"decision_id": d.decision_id})
+        for d in decisions if d.created_utc]
+
+
+def events_from_approvals(rows):
+    """The Taskforce's answers to a running specialist's permission
+    requests."""
+    events = []
+    for r in rows:
+        subject = (r.get("subject") or "").strip()
+        summary = "permission %s · %s" % (r.get("decision", "?"),
+                                          r.get("tool_name") or "?")
+        if subject:
+            summary += " " + subject[:48]
+        events.append(ActivityEvent(
+            timestamp=r.get("decided_utc") or "", layer="taskforce",
+            kind="permission", subject_id=r.get("call_id") or "",
+            summary=summary, details={"decision": r.get("decision")}))
+    return events
+
+
+def events_from_transitions(transitions, name_of=None):
+    """Convert authority journal transitions into ActivityEvents.
+
+    ``name_of(transition)`` may return the name of the work a transition
+    belongs to (its workstream key); the summary then leads with that name
+    instead of the record id. A transition with no ``from_state`` admits a
+    new record (absent fields are omitted, never null: D-37), so it reads
+    ``new -> STATE``.
+    """
     events = []
     for t in transitions:
         machine = t.get("machine", "")
         subject = t.get("subject_id", "?")
-        from_s = t.get("from_state", "?")
+        from_s = t.get("from_state")
+        if from_s is None or from_s == "?":
+            from_s = "new"
         to_s = t.get("to_state", "?")
         ts = t.get("recorded_utc", "?")
         rule = t.get("rule", "")
+        name = name_of(t) if name_of is not None else None
 
         if machine == "sequence":
             rule_tag = " [%s]" % rule if rule else ""
@@ -20,14 +135,24 @@ def events_from_transitions(transitions):
                 timestamp=ts, layer="authority",
                 kind="transition", subject_id=subject,
                 summary="%s %s -> %s%s" % (
-                    subject[:16], from_s, to_s, rule_tag),
+                    name or subject[:16], from_s, to_s, rule_tag),
                 details=dict(t)))
         elif machine == "attempt":
             kind = "verified" if to_s == "VERIFIED" else "transition"
             events.append(ActivityEvent(
                 timestamp=ts, layer="authority",
                 kind=kind, subject_id=subject,
-                summary="%s %s -> %s" % (subject[:16], from_s, to_s),
+                summary=("%s attempt %s -> %s" % (name, from_s, to_s)
+                         if name else
+                         "%s %s -> %s" % (subject[:16], from_s, to_s)),
+                details=dict(t)))
+        elif name and machine.startswith("attempt_"):
+            # receipts, environments, verifications, witnesses, candidates
+            events.append(ActivityEvent(
+                timestamp=ts, layer="authority",
+                kind="transition", subject_id=subject,
+                summary="%s %s %s -> %s" % (
+                    name, machine[len("attempt_"):], from_s, to_s),
                 details=dict(t)))
         elif machine == "acceptance":
             events.append(ActivityEvent(

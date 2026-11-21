@@ -17,6 +17,25 @@ SHOW_CURSOR = "\033[?25h"
 HOME = "\033[H"
 CLEAR_LINE = "\033[K"
 CLEAR_BELOW = "\033[J"
+CLEAR_SCREEN = "\033[2J"
+ALT_SCREEN_ON = "\033[?1049h"
+ALT_SCREEN_OFF = "\033[?1049l"
+# With autowrap off, writing the bottom-right cell cannot scroll the frame.
+WRAP_OFF = "\033[?7l"
+WRAP_ON = "\033[?7h"
+
+
+def _style(fg, bg, bold):
+    """The full style of one cell, from a reset, so no attribute of the
+    previous cell (bold in particular) leaks into this one."""
+    parts = [RESET]
+    if bold:
+        parts.append("\033[1m")
+    if fg > 0:
+        parts.append(_fg256(fg))
+    if bg > 0:
+        parts.append(_bg256(bg))
+    return "".join(parts)
 
 
 def _fg256(n):
@@ -102,16 +121,7 @@ class Screen:
                 parts.append("\033[%d;%dH" % (row + 1, col + 1))
             # Style
             if fg != last_fg or bg != last_bg or bold != last_bold:
-                style = ""
-                if bold:
-                    style += "\033[1m"
-                if fg > 0:
-                    style += _fg256(fg)
-                if bg > 0:
-                    style += _bg256(bg)
-                if not bold and fg == 0 and bg == 0:
-                    style += RESET
-                parts.append(style)
+                parts.append(_style(fg, bg, bold))
                 last_fg = fg
                 last_bg = bg
                 last_bold = bold
@@ -127,21 +137,33 @@ class Screen:
             sys.stdout.write(ansi_str)
             sys.stdout.flush()
 
-    def full_render(self):
-        """Render entire back buffer (for first frame)."""
-        parts = [HOME]
-        for y in range(self.h):
-            for x in range(self.w):
-                ch, fg, bg, bold = self.back[y * self.w + x]
-                if bold:
-                    parts.append("\033[1m")
-                if fg > 0:
-                    parts.append(_fg256(fg))
-                if bg > 0:
-                    parts.append(_bg256(bg))
-                parts.append(ch)
-                if fg > 0 or bg > 0 or bold:
-                    parts.append(RESET)
-            if y < self.h - 1:
-                parts.append("\n")
+    def _row_ansi(self, y):
+        parts, last = [], None
+        for x in range(self.w):
+            ch, fg, bg, bold = self.back[y * self.w + x]
+            style = (fg, bg, bold)
+            if style != last:
+                parts.append(_style(fg, bg, bold))
+                last = style
+            parts.append(ch)
+        parts.append(RESET)
         return "".join(parts)
+
+    def full_render(self):
+        """Render the entire back buffer. Each row is placed by an absolute
+        cursor move, never by a newline, so a frame exactly as wide or as
+        tall as the terminal cannot scroll it."""
+        return "".join("\033[%d;1H" % (y + 1) + self._row_ansi(y)
+                       for y in range(self.h))
+
+    def text_lines(self, color=False):
+        """The back buffer as lines, trailing blanks trimmed: plain text,
+        or with ANSI color (for a one-shot frame printed to a terminal)."""
+        plain = ["".join(self.back[y * self.w + x][0]
+                         for x in range(self.w)).rstrip()
+                 for y in range(self.h)]
+        while plain and not plain[-1]:
+            plain.pop()
+        if not color:
+            return plain
+        return [self._row_ansi(y) for y in range(len(plain))]
