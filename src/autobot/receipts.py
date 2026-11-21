@@ -438,7 +438,11 @@ def derive_evidence(store, state, window_seconds):
     reach = {}
     correlation = {}
     if "SESSION_TRANSCRIPT" in evidence_requirements:
-        policy_id = reach_policy.DEFAULT_LUNA_POLICY
+        record_ep = state.get("record_payload", {}).get("execution_profile")
+        if record_ep and reach_policy.get_policy(record_ep) is not None:
+            policy_id = record_ep
+        else:
+            policy_id = reach_policy.DEFAULT_LUNA_POLICY
         reach = classify_execution_reach(
             store, state["witnesses"],
             authorized_reach=reach_policy.authorized_reach(policy_id))

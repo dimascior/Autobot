@@ -57,11 +57,24 @@ REACH_CLASSIFICATION = {
 # Reach classes that represent external activity beyond machine-local.
 EXTERNAL_REACH = frozenset(("PROVIDER_CONNECTOR", "PROVIDER_SUBAGENT"))
 
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
 
 def _parse_lines(data):
-    """Parse JSONL from raw bytes, tolerantly."""
+    """Parse JSONL from raw bytes, tolerantly.
+
+    Handles both plain JSONL and zstd-compressed JSONL. Admitted obj-13
+    evidence is the exact producer bytes; decompression happens in memory
+    for recognition only."""
+    raw = bytes(data)
+    if raw[:4] == _ZSTD_MAGIC:
+        try:
+            import zstandard
+            raw = zstandard.ZstdDecompressor().decompress(raw)
+        except Exception:
+            return []
     try:
-        text = bytes(data).decode("utf-8-sig")
+        text = raw.decode("utf-8-sig")
     except (UnicodeDecodeError, ValueError):
         return []
     lines = []

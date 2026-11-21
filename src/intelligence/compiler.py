@@ -207,4 +207,14 @@ def compile_proposal(proposal, environment, clock):
     payload["finalization_requirements"] = derived
     if work_profile is not None:
         payload["work_profile"] = work_profile
+        from autobot.work_profile import default_execution_profile
+        ep = requirement.get("execution_profile")
+        if ep is None:
+            ep = default_execution_profile(work_profile)
+        if ep is not None:
+            payload["execution_profile"] = ep
+    else:
+        ep = requirement.get("execution_profile")
+        if ep is not None:
+            payload["execution_profile"] = ep
     return payload

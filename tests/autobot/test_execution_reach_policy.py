@@ -115,5 +115,191 @@ class CommandCorrelationTests(unittest.TestCase):
         self.assertEqual(result["helios_only"], [])
 
 
+class ReceiptPolicyDerivationTests(unittest.TestCase):
+    """derive_evidence reads execution_profile from the frozen record."""
+
+    def test_default_policy_when_record_has_no_profile(self):
+        from autobot.receipts import derive_evidence
+        from autobot import execution_reach as rp
+        state = _make_evidence_state()
+        self.assertNotIn("execution_profile", state["record_payload"])
+        receipt = derive_evidence(_empty_store(), state, 3600)
+        if receipt.get("execution_reach", {}).get("policy_id"):
+            self.assertEqual(receipt["execution_reach"]["policy_id"],
+                             rp.DEFAULT_LUNA_POLICY)
+
+    def test_record_profile_overrides_default(self):
+        from autobot.receipts import derive_evidence
+        state = _make_evidence_state()
+        state["record_payload"]["execution_profile"] = "luna-research/v1"
+        receipt = derive_evidence(_empty_store(), state, 3600)
+        if receipt.get("execution_reach", {}).get("policy_id"):
+            self.assertEqual(receipt["execution_reach"]["policy_id"],
+                             "luna-research/v1")
+
+    def test_unknown_profile_falls_back_to_default(self):
+        from autobot.receipts import derive_evidence
+        from autobot import execution_reach as rp
+        state = _make_evidence_state()
+        state["record_payload"]["execution_profile"] = "nonexistent/v99"
+        receipt = derive_evidence(_empty_store(), state, 3600)
+        if receipt.get("execution_reach", {}).get("policy_id"):
+            self.assertEqual(receipt["execution_reach"]["policy_id"],
+                             rp.DEFAULT_LUNA_POLICY)
+
+
+class CompilerExecutionProfileTests(unittest.TestCase):
+    """The compiler freezes execution_profile from work_profile."""
+
+    def test_engineering_profile_derived(self):
+        from intelligence.compiler import compile_proposal
+        proposal = _make_proposal(work_profile="ENGINEERING")
+        env = _make_env()
+        payload = compile_proposal(proposal, env, _clock())
+        self.assertEqual(payload["work_profile"], "ENGINEERING")
+        self.assertEqual(payload["execution_profile"], "luna-local/v1")
+
+    def test_research_profile_derived(self):
+        from intelligence.compiler import compile_proposal
+        proposal = _make_proposal(work_profile="RESEARCH")
+        env = _make_env()
+        payload = compile_proposal(proposal, env, _clock())
+        self.assertEqual(payload["execution_profile"], "luna-research/v1")
+
+    def test_operations_profile_derived(self):
+        from intelligence.compiler import compile_proposal
+        proposal = _make_proposal(work_profile="GENERAL_OPERATION")
+        env = _make_env()
+        payload = compile_proposal(proposal, env, _clock())
+        self.assertEqual(payload["execution_profile"], "luna-resource/v1")
+
+    def test_explicit_profile_overrides_default(self):
+        from intelligence.compiler import compile_proposal
+        proposal = _make_proposal(work_profile="ENGINEERING",
+                                  execution_profile="opus-engineer/v1")
+        env = _make_env()
+        payload = compile_proposal(proposal, env, _clock())
+        self.assertEqual(payload["execution_profile"], "opus-engineer/v1")
+
+    def test_no_work_profile_no_execution_profile(self):
+        from intelligence.compiler import compile_proposal
+        proposal = _make_proposal()
+        env = _make_env()
+        payload = compile_proposal(proposal, env, _clock())
+        self.assertNotIn("execution_profile", payload)
+
+    def test_no_work_profile_explicit_execution_profile(self):
+        from intelligence.compiler import compile_proposal
+        proposal = _make_proposal(execution_profile="opus-high-context/v1")
+        env = _make_env()
+        payload = compile_proposal(proposal, env, _clock())
+        self.assertEqual(payload["execution_profile"],
+                         "opus-high-context/v1")
+
+
+class SessionRecognizerZstdTests(unittest.TestCase):
+    """The recognizer handles both plain and zstd-compressed JSONL."""
+
+    def test_plain_jsonl(self):
+        from autobot.session_recognizer import recognize_session
+        lines = (
+            b'{"type":"session_meta","payload":{"session_id":"s1"}}\n'
+            b'{"type":"event_msg","payload":{"item":{"type":"CommandExecution","id":"exec-001","command":["ls"],"exit_code":0,"status":"completed"}}}\n'
+        )
+        result = recognize_session(lines)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["session_id"], "s1")
+        self.assertIn("exec-001", result["command_ids"])
+
+    def test_zstd_jsonl(self):
+        try:
+            import zstandard
+        except ImportError:
+            self.skipTest("zstandard not installed")
+        from autobot.session_recognizer import recognize_session
+        plain = (
+            b'{"type":"session_meta","payload":{"session_id":"s2"}}\n'
+            b'{"type":"event_msg","payload":{"item":{"type":"CommandExecution","id":"exec-002","command":["pwd"],"exit_code":0,"status":"completed"}}}\n'
+        )
+        compressed = zstandard.ZstdCompressor().compress(plain)
+        result = recognize_session(compressed)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["session_id"], "s2")
+        self.assertIn("exec-002", result["command_ids"])
+
+    def test_zstd_and_plain_produce_same_facts(self):
+        try:
+            import zstandard
+        except ImportError:
+            self.skipTest("zstandard not installed")
+        from autobot.session_recognizer import recognize_session
+        plain = (
+            b'{"type":"session_meta","payload":{"session_id":"s3"}}\n'
+            b'{"type":"event_msg","payload":{"item":{"type":"FileChange","file_path":"/tmp/x"}}}\n'
+        )
+        compressed = zstandard.ZstdCompressor().compress(plain)
+        r_plain = recognize_session(plain)
+        r_zstd = recognize_session(compressed)
+        self.assertEqual(r_plain["session_id"], r_zstd["session_id"])
+        self.assertEqual(r_plain["item_counts"], r_zstd["item_counts"])
+        self.assertEqual(len(r_plain["execution_items"]),
+                         len(r_zstd["execution_items"]))
+
+
+def _make_evidence_state(execution_profile=None):
+    """Minimal evidence state for receipt derivation tests."""
+    record = {
+        "evidence_requirements": ["SESSION_TRANSCRIPT",
+                                  "COMMAND_GOVERNANCE"],
+        "completion_policies": {"builder": {"required": True,
+                                            "success_outcomes": ["success"]}},
+    }
+    if execution_profile:
+        record["execution_profile"] = execution_profile
+    return {
+        "record_payload": record,
+        "role": "builder",
+        "attempt_id": "at_" + "0" * 32,
+        "attempt_contract_hash": "sha256:" + "0" * 64,
+        "call_id": "call_" + "0" * 32,
+        "native_session_id": None,
+        "witnesses": [],
+        "artifacts": [],
+        "anchor_utc": "2026-11-20T00:00:00.000Z",
+    }
+
+
+class _empty_store:
+    def get(self, address):
+        raise KeyError(address)
+
+
+def _clock():
+    import datetime
+    class C:
+        def now(self):
+            return datetime.datetime(2026, 11, 20, 0, 0, 0)
+    return C()
+
+
+def _make_env():
+    return support.intelligence_environment()
+
+
+def _make_proposal(work_profile=None, execution_profile=None):
+    req = {
+        "objective": "test objective",
+        "capability": "research",
+        "roles": {"investigator": {"required": True,
+                                   "success_outcomes": ["success"]}},
+    }
+    if work_profile is not None:
+        req["work_profile"] = work_profile
+    if execution_profile is not None:
+        req["execution_profile"] = execution_profile
+    return {"class": "INVESTIGATE", "requirement": req,
+            "snapshot": {"entries": 1, "head_hash": "sha256:" + "a" * 64}}
+
+
 if __name__ == "__main__":
     unittest.main()
