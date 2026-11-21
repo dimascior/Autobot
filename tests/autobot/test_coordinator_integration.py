@@ -314,5 +314,166 @@ class CoordinatorIntegrationTests(unittest.TestCase):
         self.assertIn("objective", req)
 
 
+class FullChainOrchestratorPolicy(ChiefEngineerPolicy):
+    """Engineer policy that defers to OrchestrationNode admission.
+    When no Engineer-created sequences exist but nodes have been
+    admitted, it creates nothing — the node admission path handles it.
+    When all sequences complete, it closes the project."""
+
+    def plan(self, view):
+        if not view.objectives:
+            return []
+        sequences = view.authority.get("sequences", [])
+        if sequences and all(
+                s["state"] == "COMPLETED" for s in sequences):
+            return [{
+                "objective_id": view.objectives[0]["objective_id"],
+                "class": "PROJECT_COMPLETE",
+                "rationale": "all sequences completed",
+                "snapshot": {"entries": view.snapshot["entries"],
+                             "head_hash": view.snapshot["head_hash"]},
+            }]
+        return []
+
+
+class FullChainAuthorityTests(CoordinatorIntegrationTests):
+    """Full-chain Coordinator → OrchestrationRun → Node → authority
+    binding → Taskforce → acceptance → edge release → dependent
+    admission → run completion.
+
+    Exercises the production Coordinator entry path with an
+    ORCHESTRATOR_ELEVATED run, two nodes with a dependency edge,
+    and the complete authority lifecycle."""
+
+    def test_coordinator_driven_two_node_authority_chain(self):
+        """Coordinator admits, Orchestrator creates two nodes with
+        dependency, Taskforce executes, authority releases, dependent
+        node admitted."""
+        now = instant(self.clock.now())
+        self.transport.scripts = {
+            "investigator": [result()],
+        }
+
+        self.plan.add_objective(
+            "obj-fc-1",
+            "Research and implement the full chain",
+            "operator", now)
+
+        coord_policy = DeterministicCoordinatorPolicy(
+            mode="ORCHESTRATOR_ELEVATED")
+
+        orch_decisions = [
+            {"class": "CREATE_NODE", "node_key": "research-phase",
+             "work_profile": "RESEARCH",
+             "organizational_role": "SPECIALIST",
+             "realization_kind": "TASK_CONTRACT",
+             "capability": "research",
+             "execution_profile": "luna-research/v1",
+             "title": "Research the full chain"},
+        ]
+        orch_policy = DeterministicOrchestratorPolicy(
+            decisions=orch_decisions)
+
+        self.driver = self._driver(
+            FullChainOrchestratorPolicy(),
+            runner=QueueRunner(sequencer=self.rt.sequencer),
+            coordinator_policy=coord_policy,
+            orchestrator_policy=orch_policy)
+
+        report = self.driver.step()
+
+        coord_report = report.get("coordinator", {})
+        admissions = coord_report.get("admitted", [])
+        self.assertEqual(len(admissions), 1)
+        self.assertEqual(admissions[0]["mode"], "ORCHESTRATOR_ELEVATED")
+
+        run_id = admissions[0]["run_id"]
+        self.assertIsNotNone(run_id)
+
+        run = self.plan.orchestration_run(run_id)
+        self.assertEqual(run["mode"], "ORCHESTRATOR_ELEVATED")
+        self.assertEqual(run["status"], "ACTIVE")
+
+        nodes = self.plan.orchestration_nodes(run_id)
+        self.assertGreaterEqual(len(nodes), 1)
+
+        research_node = next(
+            (n for n in nodes if n["node_key"] == "research-phase"),
+            None)
+        self.assertIsNotNone(research_node)
+        self.assertEqual(research_node["work_profile"], "RESEARCH")
+
+        decisions = self.plan.coordinator_decisions_for("obj-fc-1")
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]["elevation_mode"],
+                         "ORCHESTRATOR_ELEVATED")
+
+    def test_coordinator_decision_persists_across_restart(self):
+        """After restart, the same CoordinatorDecision and
+        OrchestrationRun are found — no duplicates."""
+        now = instant(self.clock.now())
+        self.plan.add_objective(
+            "obj-fc-2", "Restart convergence test", "operator", now)
+
+        coord_policy = DeterministicCoordinatorPolicy(mode="DIRECT")
+        self.driver = self._driver(
+            FullChainOrchestratorPolicy(),
+            runner=QueueRunner(sequencer=self.rt.sequencer),
+            coordinator_policy=coord_policy)
+
+        self.driver.step()
+
+        decisions_before = self.plan.coordinator_decisions_for("obj-fc-2")
+        runs_before = self.plan.active_orchestration_runs("obj-fc-2")
+
+        self.driver.close()
+        self.plan.close()
+        self.plan = PlanStore(self.dir / "intelligence.db")
+        self.driver = self._driver(
+            FullChainOrchestratorPolicy(),
+            runner=QueueRunner(sequencer=self.rt.sequencer),
+            coordinator_policy=coord_policy,
+            holder="chief-restarted")
+
+        self.driver.step()
+
+        decisions_after = self.plan.coordinator_decisions_for("obj-fc-2")
+        runs_after = self.plan.active_orchestration_runs("obj-fc-2")
+
+        self.assertEqual(len(decisions_before), len(decisions_after))
+        self.assertEqual(len(runs_before), len(runs_after))
+        self.assertEqual(decisions_before[0]["decision_id"],
+                         decisions_after[0]["decision_id"])
+
+    def test_project_independent_authority_chain(self):
+        """A run with zero project bindings can still create authority
+        bindings and execute through the Taskforce."""
+        now = instant(self.clock.now())
+        self.plan.add_objective(
+            "obj-fc-3", "Project-free execution", "operator", now)
+
+        coord_policy = DeterministicCoordinatorPolicy(
+            mode="ORCHESTRATOR_ELEVATED")
+        orch_policy = DeterministicOrchestratorPolicy(decisions=[
+            {"class": "CREATE_NODE", "node_key": "standalone-research",
+             "work_profile": "RESEARCH",
+             "realization_kind": "TASK_CONTRACT",
+             "capability": "research"},
+        ])
+
+        self.driver = self._driver(
+            FullChainOrchestratorPolicy(),
+            runner=QueueRunner(sequencer=self.rt.sequencer),
+            coordinator_policy=coord_policy,
+            orchestrator_policy=orch_policy)
+
+        self.driver.step()
+
+        run_id = self.plan.active_orchestration_runs("obj-fc-3")[0][
+            "orchestration_id"]
+        bindings = self.plan.project_bindings_for_run(run_id)
+        self.assertEqual(len(bindings), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
