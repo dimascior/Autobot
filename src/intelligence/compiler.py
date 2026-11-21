@@ -217,4 +217,9 @@ def compile_proposal(proposal, environment, clock):
         ep = requirement.get("execution_profile")
         if ep is not None:
             payload["execution_profile"] = ep
+    rs = requirement.get("resource_scope")
+    if rs is not None:
+        from autobot.resource_scope import validate_scope
+        validate_scope(rs)
+        payload["resource_scope"] = rs
     return payload

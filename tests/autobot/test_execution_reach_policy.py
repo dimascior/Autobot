@@ -286,7 +286,8 @@ def _make_env():
     return support.intelligence_environment()
 
 
-def _make_proposal(work_profile=None, execution_profile=None):
+def _make_proposal(work_profile=None, execution_profile=None,
+                   resource_scope=None):
     req = {
         "objective": "test objective",
         "capability": "research",
@@ -297,8 +298,53 @@ def _make_proposal(work_profile=None, execution_profile=None):
         req["work_profile"] = work_profile
     if execution_profile is not None:
         req["execution_profile"] = execution_profile
+    if resource_scope is not None:
+        req["resource_scope"] = resource_scope
     return {"class": "INVESTIGATE", "requirement": req,
             "snapshot": {"entries": 1, "head_hash": "sha256:" + "a" * 64}}
+
+
+class CompilerResourceScopeTests(unittest.TestCase):
+    """The compiler freezes resource_scope into the TaskContractRecord."""
+
+    def test_scope_frozen_when_present(self):
+        from intelligence.compiler import compile_proposal
+        scope = [{"kind": "REPOSITORY", "identity": "/repo",
+                  "activity_class": "OBSERVATION", "constraints": {}}]
+        proposal = _make_proposal(resource_scope=scope)
+        payload = compile_proposal(proposal, _make_env(), _clock())
+        self.assertEqual(payload["resource_scope"], scope)
+
+    def test_no_scope_means_absent(self):
+        from intelligence.compiler import compile_proposal
+        proposal = _make_proposal()
+        payload = compile_proposal(proposal, _make_env(), _clock())
+        self.assertNotIn("resource_scope", payload)
+
+    def test_research_scope_with_web_source(self):
+        from intelligence.compiler import compile_proposal
+        scope = [
+            {"kind": "REPOSITORY", "identity": "/repo",
+             "activity_class": "OBSERVATION", "constraints": {}},
+            {"kind": "WEB_SOURCE", "identity": "public-web",
+             "activity_class": "OBSERVATION", "constraints": {}},
+        ]
+        proposal = _make_proposal(work_profile="RESEARCH",
+                                  resource_scope=scope)
+        payload = compile_proposal(proposal, _make_env(), _clock())
+        self.assertEqual(payload["work_profile"], "RESEARCH")
+        self.assertEqual(payload["execution_profile"], "luna-research/v1")
+        self.assertEqual(len(payload["resource_scope"]), 2)
+        kinds = [e["kind"] for e in payload["resource_scope"]]
+        self.assertIn("WEB_SOURCE", kinds)
+
+    def test_invalid_scope_rejected(self):
+        from intelligence.compiler import compile_proposal
+        scope = [{"kind": "INVALID_KIND", "identity": "x",
+                  "activity_class": "OBSERVATION"}]
+        proposal = _make_proposal(resource_scope=scope)
+        with self.assertRaises(Exception):
+            compile_proposal(proposal, _make_env(), _clock())
 
 
 if __name__ == "__main__":

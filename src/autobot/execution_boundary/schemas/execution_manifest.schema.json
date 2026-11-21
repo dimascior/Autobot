@@ -78,6 +78,20 @@
         "execution_profile": {
           "type": "string",
           "pattern": "^[a-z]"
+        },
+        "resource_scope": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "identity", "activity_class"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {"type": "string"},
+              "identity": {"type": "string"},
+              "activity_class": {"type": "string"},
+              "constraints": {"type": "object"}
+            }
+          }
         }
       }
     },

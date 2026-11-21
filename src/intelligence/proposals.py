@@ -172,6 +172,10 @@ def _validate_requirement(req, forced_read_only):
         _require(wp in VALID_PROFILES,
                  "requirement.work_profile must be one of %r"
                  % (sorted(VALID_PROFILES),))
+    rs = req.get("resource_scope")
+    if rs is not None:
+        from autobot.resource_scope import validate_scope
+        validate_scope(rs)
     fin = req.get("finalization_class")
     if forced_read_only:
         _require(fin in (None, "READ_ONLY"),
