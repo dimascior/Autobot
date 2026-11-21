@@ -24,6 +24,7 @@ Also proves:
     - Restart convergence (idempotent admission)
 """
 
+import json
 import os
 import tempfile
 import unittest
@@ -39,6 +40,7 @@ from intelligence.coordinator import (
 )
 from intelligence.orchestrator import (
     OrchestratorService,
+    OrchestratorPlanningView,
     OrchestrationApplicator,
     DeterministicOrchestratorPolicy,
     PassthroughOrchestratorPolicy,
@@ -53,6 +55,12 @@ from intelligence.orchestrator import (
 from intelligence.workstream_bridge import (
     node_to_proposal,
     workstream_to_proposal,
+)
+from intelligence.orchestrator_policy import (
+    OpusOrchestratorPolicy,
+    _render_orchestrator_view,
+    _parse_decisions,
+    OPUS_ORCHESTRATOR_POLICY_ID,
 )
 
 
@@ -941,6 +949,114 @@ class TestNodeOfSequenceLookup(unittest.TestCase):
         finally:
             store.close()
             os.unlink(path)
+
+
+class TestOpusOrchestratorPolicy(unittest.TestCase):
+
+    def test_policy_id(self):
+        policy = OpusOrchestratorPolicy()
+        self.assertEqual(policy.policy_id, OPUS_ORCHESTRATOR_POLICY_ID)
+
+    def test_no_reasoner_returns_empty(self):
+        policy = OpusOrchestratorPolicy()
+        view = OrchestratorPlanningView(
+            objectives=[{"objective_id": "obj-1", "text": "test",
+                         "status": "ACTIVE"}],
+            projects=[], taskforce_state={})
+        result = policy.interpret(view)
+        self.assertEqual(result, [])
+
+    def test_scripted_reasoner(self):
+        decisions = [
+            {"class": "CREATE_NODE", "node_key": "research",
+             "work_profile": "RESEARCH",
+             "realization_kind": "TASK_CONTRACT"},
+        ]
+
+        def fake_reasoner(prompt):
+            return json.dumps(decisions)
+
+        policy = OpusOrchestratorPolicy(reasoner=fake_reasoner)
+        view = OrchestratorPlanningView(
+            objectives=[{"objective_id": "obj-1", "text": "research",
+                         "status": "ACTIVE"}],
+            projects=[], taskforce_state={})
+        result = policy.interpret(view)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["class"], "CREATE_NODE")
+
+    def test_parse_bare_json(self):
+        text = '[{"class": "CREATE_NODE", "node_key": "a"}]'
+        result = _parse_decisions(text)
+        self.assertEqual(len(result), 1)
+
+    def test_parse_code_fence(self):
+        text = '```json\n[{"class": "CREATE_NODE", "node_key": "a"}]\n```'
+        result = _parse_decisions(text)
+        self.assertEqual(len(result), 1)
+
+    def test_parse_empty(self):
+        self.assertEqual(_parse_decisions("[]"), [])
+        self.assertEqual(_parse_decisions(""), [])
+
+    def test_parse_wrapped_object(self):
+        text = '{"decisions": [{"class": "CREATE_NODE", "node_key": "b"}]}'
+        result = _parse_decisions(text)
+        self.assertEqual(len(result), 1)
+
+    def test_parse_embedded_array(self):
+        text = 'Some text before\n[{"class": "ADD_EDGE"}]\nafter'
+        result = _parse_decisions(text)
+        self.assertEqual(len(result), 1)
+
+    def test_render_view_includes_objectives(self):
+        view = OrchestratorPlanningView(
+            objectives=[{"objective_id": "obj-1",
+                         "text": "Research market trends",
+                         "status": "ACTIVE"}],
+            projects=[], taskforce_state={})
+        prompt = _render_orchestrator_view(view)
+        self.assertIn("Research market trends", prompt)
+        self.assertIn("obj-1", prompt)
+
+    def test_render_view_includes_nodes(self):
+        view = OrchestratorPlanningView(
+            objectives=[{"objective_id": "obj-1", "text": "t",
+                         "status": "ACTIVE"}],
+            projects=[], taskforce_state={},
+            nodes=[{"node_id": "nd-1", "node_key": "research",
+                    "work_profile": "RESEARCH",
+                    "realization_kind": "TASK_CONTRACT",
+                    "status": "EXECUTING"}])
+        prompt = _render_orchestrator_view(view)
+        self.assertIn("nd-1", prompt)
+        self.assertIn("RESEARCH", prompt)
+
+    def test_invalid_decisions_filtered(self):
+        raw = [
+            {"class": "CREATE_NODE", "node_key": "valid",
+             "work_profile": "RESEARCH",
+             "realization_kind": "TASK_CONTRACT"},
+            {"class": "INVALID_CLASS"},
+            "not a dict",
+        ]
+
+        def fake_reasoner(prompt):
+            return json.dumps(raw)
+
+        policy = OpusOrchestratorPolicy(reasoner=fake_reasoner)
+        view = OrchestratorPlanningView(
+            objectives=[{"objective_id": "obj-1", "text": "t",
+                         "status": "ACTIVE"}],
+            projects=[], taskforce_state={})
+        result = policy.interpret(view)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["node_key"], "valid")
+
+    def test_does_not_delegate_to_engineer(self):
+        policy = OpusOrchestratorPolicy()
+        self.assertFalse(policy.should_delegate_to_engineer(
+            None, {"work_profile": "ENGINEERING"}))
 
 
 class TestProductionCoordinatorPolicy(unittest.TestCase):
