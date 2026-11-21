@@ -664,6 +664,12 @@ class PlanStore:
         return [dict(r) for r in self.conn.execute(
             sql + " ORDER BY opened_utc, rowid", args).fetchall()]
 
+    def active_projects(self):
+        """All projects with status ACTIVE, across all objectives."""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM projects WHERE status = 'ACTIVE'"
+            " ORDER BY opened_utc, rowid").fetchall()]
+
     def open_project(self, cur, objective_id, title, solution, opened_by,
                      proposal_id, now):
         """Open the objective's project inside the caller's transaction.
@@ -722,10 +728,18 @@ class PlanStore:
             " 'OPEN'", (now, reason, project_id))
         return released
 
-    def add_workstream(self, cur, project_id, key, proposal_id, now):
+    def add_workstream(self, cur, project_id, key, proposal_id, now,
+                       work_profile=None, organizational_role=None,
+                       resource_scope=None, execution_profile=None,
+                       status="ACTIVE", completion_policy=None):
         """Record one workstream of a project (idempotent on the
         work-creation proposal). ``key`` is the Project Manager's name for
-        it; a key already taken by other work is made unique."""
+        it; a key already taken by other work is made unique.
+
+        Generalized dimensions (work_profile, organizational_role,
+        resource_scope, execution_profile, status, completion_policy) are
+        persisted when provided. resource_scope and completion_policy are
+        stored as canonical JSON strings."""
         row = cur.execute(
             "SELECT * FROM project_workstreams WHERE proposal_id = ?",
             (proposal_id,)).fetchone()
@@ -741,11 +755,19 @@ class PlanStore:
             key = "%s-%d" % (key, count + 1)
         workstream_id = "ws_" + canonical_json_digest(
             {"project": project_id, "proposal": proposal_id})[:32]
+        rs_json = json.dumps(resource_scope, sort_keys=True) \
+            if resource_scope is not None else None
+        cp_json = json.dumps(completion_policy, sort_keys=True) \
+            if completion_policy is not None else None
         cur.execute(
             "INSERT INTO project_workstreams (workstream_id, project_id,"
-            " workstream_key, proposal_id, created_utc)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (workstream_id, project_id, key, proposal_id, now))
+            " workstream_key, proposal_id, created_utc,"
+            " work_profile, organizational_role, resource_scope,"
+            " execution_profile, status, completion_policy)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (workstream_id, project_id, key, proposal_id, now,
+             work_profile, organizational_role, rs_json,
+             execution_profile, status, cp_json))
         return dict(cur.execute(
             "SELECT * FROM project_workstreams WHERE workstream_id = ?",
             (workstream_id,)).fetchone())
@@ -776,6 +798,83 @@ class PlanStore:
             " ORDER BY p.created_utc, p.rowid LIMIT 1",
             (sequence_id,)).fetchone()
         return dict(row) if row else None
+
+    def generalized_workstream(self, workstream_id):
+        """Return a workstream with decoded generalized fields."""
+        row = self.conn.execute(
+            "SELECT * FROM project_workstreams WHERE workstream_id = ?",
+            (workstream_id,)).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        for field in ("resource_scope", "completion_policy"):
+            if d.get(field) and isinstance(d[field], str):
+                try:
+                    d[field] = json.loads(d[field])
+                except (ValueError, json.JSONDecodeError):
+                    pass
+        return d
+
+    # ----------------------------------------- workstream dependencies
+
+    def add_workstream_dependency(self, cur, source_id, target_id,
+                                 dependency_kind,
+                                 required_acceptance=True):
+        """Record a dependency between two workstreams (idempotent)."""
+        row = cur.execute(
+            "SELECT * FROM project_workstream_dependencies"
+            " WHERE source_workstream_id = ? AND target_workstream_id = ?",
+            (source_id, target_id)).fetchone()
+        if row is not None:
+            return dict(row)
+        cur.execute(
+            "INSERT INTO project_workstream_dependencies"
+            " (source_workstream_id, target_workstream_id,"
+            "  dependency_kind, required_acceptance)"
+            " VALUES (?, ?, ?, ?)",
+            (source_id, target_id, dependency_kind,
+             1 if required_acceptance else 0))
+        return dict(cur.execute(
+            "SELECT * FROM project_workstream_dependencies"
+            " WHERE source_workstream_id = ? AND target_workstream_id = ?",
+            (source_id, target_id)).fetchone())
+
+    def dependencies_for_workstream(self, workstream_id):
+        """Dependencies this workstream waits on (as target)."""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM project_workstream_dependencies"
+            " WHERE target_workstream_id = ?",
+            (workstream_id,)).fetchall()]
+
+    def dependents_of_workstream(self, workstream_id):
+        """Workstreams that depend on this one (as source)."""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM project_workstream_dependencies"
+            " WHERE source_workstream_id = ?",
+            (workstream_id,)).fetchall()]
+
+    def release_workstream_dependency(self, cur, source_id, target_id,
+                                     released_utc,
+                                     accepted_artifact_address=None):
+        """Mark a dependency as released by an accepted predecessor."""
+        cur.execute(
+            "UPDATE project_workstream_dependencies"
+            " SET released_utc = ?, accepted_artifact_address = ?"
+            " WHERE source_workstream_id = ? AND target_workstream_id = ?"
+            " AND released_utc IS NULL",
+            (released_utc, accepted_artifact_address, source_id, target_id))
+
+    def dependency_state(self, project_id):
+        """Dependency state summary for a project: total, released, pending."""
+        rows = self.conn.execute(
+            "SELECT d.* FROM project_workstream_dependencies d"
+            " JOIN project_workstreams w"
+            "   ON d.source_workstream_id = w.workstream_id"
+            " WHERE w.project_id = ?", (project_id,)).fetchall()
+        total = len(rows)
+        released = sum(1 for r in rows if r["released_utc"] is not None)
+        return {"total": total, "released": released,
+                "pending": total - released}
 
     # ------------------------------------------------ assignment decisions
 

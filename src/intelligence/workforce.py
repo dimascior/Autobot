@@ -404,6 +404,26 @@ class TaskforceRoster:
         return self._rows("SELECT * FROM specialists ORDER BY"
                           " first_seen_utc, rowid")
 
+    def snapshot(self):
+        """Plain-data snapshot of the Taskforce for reasoning views."""
+        members = self.memberships(statuses=("ACTIVE",))
+        all_seats = self.seats()
+        return {
+            "members": [{"specialist_id": m["specialist_id"],
+                         "membership_id": m["membership_id"],
+                         "status": m["status"],
+                         "joined_utc": m["joined_utc"]}
+                        for m in members],
+            "seats": [{"seat_id": s["seat_id"],
+                       "specialist_id": s["specialist_id"],
+                       "capability": s["capability"],
+                       "role": s["role"],
+                       "status": s["status"]}
+                      for s in all_seats],
+            "member_count": len(members),
+            "seat_count": len(all_seats),
+        }
+
     def membership(self, specialist_id):
         row = self.plan.conn.execute(
             "SELECT * FROM taskforce_memberships WHERE specialist_id = ?",

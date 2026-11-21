@@ -143,10 +143,8 @@ class ContinuousDriver:
         now = instant(self.clock.now())
         orchestration = self.orchestrator.run_cycle(
             objectives=self.plan.active_objectives(),
-            projects=self.plan.active_projects()
-                if hasattr(self.plan, "active_projects") else [],
-            taskforce_state=self.taskforce.roster.snapshot()
-                if hasattr(self.taskforce.roster, "snapshot") else {})
+            projects=self.plan.active_projects(),
+            taskforce_state=self.taskforce.roster.snapshot())
         planning = self.engineer.run_cycle(self.ro, project_state, now)
         sweep = self.taskforce.advance(now)
         return {"orchestration": orchestration,
