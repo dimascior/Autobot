@@ -24,10 +24,10 @@ class TestWorkstreamToProposal(unittest.TestCase):
         }
         p = workstream_to_proposal(ws, "Research actuators", "pj_test")
         self.assertEqual(p["class"], "INVESTIGATE")
-        self.assertEqual(p["requirement"]["work_profile"], "RESEARCH")
-        self.assertEqual(p["requirement"]["execution_profile"],
-                         "luna-research/v1")
-        self.assertIn("resource_scope", p["requirement"])
+        self.assertNotIn("work_profile", p["requirement"],
+                         "organizational dimension stays on node")
+        self.assertNotIn("execution_profile", p["requirement"])
+        self.assertNotIn("resource_scope", p["requirement"])
         self.assertEqual(p["requirement"]["capability"], "research")
 
     def test_engineering_source_modifying(self):
@@ -38,9 +38,8 @@ class TestWorkstreamToProposal(unittest.TestCase):
         }
         p = workstream_to_proposal(ws, "Build the feature", "pj_eng")
         self.assertEqual(p["class"], "CREATE_TASK")
-        self.assertEqual(p["requirement"]["work_profile"], "ENGINEERING")
-        self.assertEqual(p["requirement"]["execution_profile"],
-                         "luna-local/v1")
+        self.assertNotIn("work_profile", p["requirement"])
+        self.assertNotIn("execution_profile", p["requirement"])
 
     def test_general_operation(self):
         ws = {
@@ -54,9 +53,8 @@ class TestWorkstreamToProposal(unittest.TestCase):
         }
         p = workstream_to_proposal(ws, "Generate report", "pj_ops")
         self.assertEqual(p["class"], "CREATE_TASK")
-        self.assertEqual(p["requirement"]["execution_profile"],
-                         "luna-resource/v1")
-        self.assertIn("resource_scope", p["requirement"])
+        self.assertNotIn("execution_profile", p["requirement"])
+        self.assertNotIn("resource_scope", p["requirement"])
 
     def test_review_workstream(self):
         ws = {

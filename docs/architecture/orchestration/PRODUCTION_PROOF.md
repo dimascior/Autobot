@@ -2761,3 +2761,153 @@ PROVEN: measured against production evidence with deterministic tests.
 IMPLEMENTED: code, model, tests, and regression complete; production pilots pending.
 OPEN / DEFERRED: known gap with durable evidence; workaround available.
 DEFERRED BY FROZEN ROADMAP: architecture designed; implementation follows the frozen chapter sequence.
+
+## 34. Independent orchestration architecture (post-PR38, 92b57be → db2d6d8)
+
+### Architectural correction
+
+The primary organizational identity is now `orchestration_node_id`.
+Project identity, proposal identity, TaskContract identity, sequence identity,
+provider identity, and model identity are bindings or realizations of that
+organizational node. A Project is an optional organizational container selected
+when useful for durable coordinated work.
+
+The Coordinator is the universal admission and elevation layer. Every ACTIVE
+objective enters through `CoordinatorService.admit_objective()`, which creates
+a durable `CoordinatorDecision` and `OrchestrationRun`.
+
+### Schema v6
+
+Additive migration (all v5 rows preserved, no table recreation):
+
+| Table | Purpose |
+|---|---|
+| `coordinator_decisions` | Admission/elevation decisions (DIRECT, ENGINEER_ELEVATED, ORCHESTRATOR_ELEVATED) |
+| `orchestration_runs` | One coordinated realization per objective |
+| `orchestration_nodes` | Primary organizational work identity (TASK_CONTRACT, ENGINEER_REASONING, CONTROL) |
+| `orchestration_edges` | Organizational DAG with authority edge binding |
+| `orchestration_authority_bindings` | Node → proposal → TaskContract → sequence chain |
+| `orchestration_engineering_bindings` | Node → Engineer reasoning request → decision |
+| `orchestration_project_bindings` | Optional node → Project association |
+| `orchestration_node_outputs` | Accepted artifacts, engineering decisions, research artifacts |
+
+Additional: `proposals.origin_kind`, `proposals.origin_id`, sentinel cycle for
+orchestration-origin proposals, `project_assignments.orchestration_node_id`.
+
+### Coordinator entry in driver.step()
+
+```
+_coordinator_admit(now)                # for each unadmitted objective
+    ↓
+orchestrator.run_cycle(...)            # node-centric view
+    ↓
+_admit_ready_nodes(now)                # TASK_CONTRACT nodes → authority
+    ↓
+engineer.run_cycle(...)                # legacy Engineer path
+    ↓
+taskforce.advance(now)                 # staffing and execution
+    ↓
+_release_accepted_dependencies(now)    # legacy workstream deps
+    ↓
+_release_orchestration_edges(now)      # node edge projection
+```
+
+PassthroughCoordinatorPolicy skips admission entirely, preserving backward
+compatibility with the existing Engineer-driven flow.
+
+### ProductionCoordinatorPolicy
+
+Stable admission classifier using complexity feature analysis:
+
+| Feature | Maps to |
+|---|---|
+| `research_required` | +1 |
+| `engineering_design` | +1, ENGINEER_ELEVATED if alone |
+| `multi_domain` | +1 |
+| `organizational_complexity` | +1 |
+| `external_effects` | +1 |
+| `deep_dependencies` | +1 |
+| Score ≥ 3 | ORCHESTRATOR_ELEVATED |
+| `engineering_design` alone (< 3) | ENGINEER_ELEVATED |
+| Otherwise | DIRECT |
+
+Deterministic for equivalent canonical inputs.
+
+### Authority binding identity tiers
+
+Complete frozen identity chain recorded per node:
+
+```
+orchestration_authority_bindings:
+    proposal_id
+    task_contract_id
+    requirement_digest
+    contract_digest
+    record_hash
+    sequence_id
+```
+
+Authority predecessor compilation uses the correct identity tier
+(RECORD, CONTRACT, REQUIREMENT) from the source node's binding.
+
+### Decision normalization (v1 → v2)
+
+| v1 Class | v2 Class |
+|---|---|
+| `CREATE_WORKSTREAM` | `CREATE_NODE` |
+| `ADD_DEPENDENCY` | `ADD_EDGE` |
+| `COMPLETE_WORKSTREAM` | `COMPLETE_NODE` |
+| `COMPLETE_PROJECT` | `COMPLETE_RUN` |
+| `RESTRUCTURE_PROJECT` | `RESTRUCTURE_RUN` |
+
+Both accepted. v1 decisions automatically normalized before application.
+
+### Deterministic test coverage
+
+| Suite | Tests | Coverage |
+|---|---|---|
+| `test_orchestration_architecture.py` | 51 | Schema, Coordinator, nodes, edges, bindings, outputs, decisions |
+| `test_coordinator_integration.py` | 13 | Authority runtime, elevation, restart convergence, project-independent |
+| `test_orchestrator.py` | 37 | Existing orchestrator tests (backward compat) |
+| `test_workstream_bridge.py` | 13 | Bridge tests (backward compat) |
+
+### Regression
+
+```
+base:    92b57be (1089 passed)
+head:    db2d6d8 (1153 passed)
+delta:   +64 tests
+failed:  0
+```
+
+### Commits
+
+| SHA | Description |
+|---|---|
+| `77b71e4` | Schema v6, Coordinator, OrchestrationRun/Node model |
+| `6beb0fa` | Integration tests with authority runtime |
+| `8fcd90f` | Production Coordinator entry, node-centric view, generalized proposal origin |
+| `db2d6d8` | Full-chain authority tests: elevation, restart, project-independent |
+
+### Updated capability classification
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Autobot Coordinator | IMPLEMENTED | ProductionCoordinatorPolicy, 3 elevation modes, deterministic tests |
+| CoordinatorDecision persistence | IMPLEMENTED | Idempotent across restarts (tested) |
+| OrchestrationRun | IMPLEMENTED | Full lifecycle: ACTIVE → COMPLETED (tested) |
+| OrchestrationNode | IMPLEMENTED | PENDING → EXECUTING → COMPLETED (tested) |
+| OrchestrationEdge / DAG | IMPLEMENTED | PENDING → RELEASED with authority provenance (tested) |
+| Authority binding (all identity tiers) | IMPLEMENTED | proposal → contract → record → sequence (tested) |
+| Engineering binding | IMPLEMENTED | Request → adopted decision (tested) |
+| Optional Project binding | IMPLEMENTED | Zero-binding and post-creation binding (tested) |
+| Node outputs | IMPLEMENTED | ACCEPTED_ARTIFACT, RESEARCH_ARTIFACT (tested) |
+| Project-independent orchestration | IMPLEMENTED | Runs with zero project bindings (tested) |
+| v1 → v2 decision normalization | IMPLEMENTED | All 9 mappings (tested) |
+| Node-centric OrchestratorPlanningView | IMPLEMENTED | Runs, nodes, edges, bindings, outputs in view |
+| Generalized proposal origin | IMPLEMENTED | ORCHESTRATION_NODE origin, sentinel cycle |
+| Coordinator production entry | IMPLEMENTED | _coordinator_admit() in driver.step() |
+| Production Opus Orchestrator policy | PENDING | Decision types, validation, structured output route ready |
+| Production Opus Engineer reasoning | PENDING | Engineering binding schema ready |
+| Production research pilot | PENDING | Architecture ready, production execution pending |
+| Production Orchestrator pilot | PENDING | Architecture ready, production execution pending |

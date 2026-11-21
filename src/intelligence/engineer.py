@@ -526,18 +526,29 @@ class EngineerService:
 
     def _insert_proposal(self, cur, proposal_id, cycle_id, proposal, now,
                          candidate=None, contract_digest=None):
+        effective_cycle = cycle_id
+        if effective_cycle is None and \
+                hasattr(self.plan, "orchestration_sentinel_cycle"):
+            effective_cycle = self.plan.orchestration_sentinel_cycle()
+        origin_kind = proposal.get("origin_kind")
+        origin_id = proposal.get("origin_id")
+        if origin_kind is None and cycle_id is not None:
+            origin_kind = "ENGINEER_CYCLE"
+            origin_id = str(cycle_id)
         cur.execute(
             "INSERT OR IGNORE INTO proposals (proposal_id, cycle_id,"
             " class, objective_id, status, rationale, body, candidate,"
             " contract_digest, snapshot_entries, snapshot_head,"
-            " created_utc) VALUES (?, ?, ?, ?, 'EVALUATED', ?, ?, ?, ?,"
-            " ?, ?, ?)",
-            (proposal_id, cycle_id, proposal["class"],
+            " created_utc, origin_kind, origin_id)"
+            " VALUES (?, ?, ?, ?, 'EVALUATED', ?, ?, ?, ?,"
+            " ?, ?, ?, ?, ?)",
+            (proposal_id, effective_cycle, proposal["class"],
              proposal["objective_id"], proposal["rationale"],
              json.dumps(proposal, sort_keys=True),
              json.dumps(candidate, sort_keys=True) if candidate else None,
              contract_digest, proposal["snapshot"]["entries"],
-             proposal["snapshot"].get("head_hash"), now))
+             proposal["snapshot"].get("head_hash"), now,
+             origin_kind, origin_id))
         return cur.rowcount == 1
 
     def _dispose(self, proposal, cycle_id, ro_conn, now):

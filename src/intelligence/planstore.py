@@ -28,7 +28,7 @@ from contextlib import contextmanager
 
 from .proposals_util import canonical_json_digest
 
-PLAN_SCHEMA_VERSION = 5
+PLAN_SCHEMA_VERSION = 6
 
 # The objective-scoped engineering-work budget applied when you set none
 # (cap-47: the limits are yours; these are only the conservative default).
@@ -516,8 +516,209 @@ _DDL_V5 = (
         ON orchestration_reasoning(input_digest)""",
 )
 
+def _migrate_v6(cur):
+    """Schema v6: independent orchestration identity model.
+
+    OrchestrationRun and OrchestrationNode become the primary
+    organizational identities. Projects are optional bindings.
+    Proposals gain generalized origin columns (additive).
+
+    Purely additive: no table recreation. Orchestrator-opened projects
+    use opened_by='IMPLICIT' and record actual provenance through
+    orchestration_project_bindings. Orchestration-origin proposals use
+    a sentinel cycle and origin_kind/origin_id columns."""
+
+    # --- Add origin columns to proposals (additive) ---------------
+    cur.execute(
+        "ALTER TABLE proposals ADD COLUMN origin_kind TEXT")
+    cur.execute(
+        "ALTER TABLE proposals ADD COLUMN origin_id TEXT")
+
+    # --- Sentinel cycle for orchestration-origin proposals --------
+    cur.execute(
+        "INSERT INTO cycles (started_utc, snapshot_entries,"
+        " snapshot_head, status, note)"
+        " VALUES ('1970-01-01T00:00:00Z', 0, NULL, 'CLOSED',"
+        " 'orchestration_sentinel')")
+    sentinel_id = cur.lastrowid
+    cur.execute(
+        "INSERT OR REPLACE INTO meta (key, value)"
+        " VALUES ('orchestration_sentinel_cycle', ?)",
+        (str(sentinel_id),))
+
+    # --- Coordinator decisions -----------------------------------
+    cur.execute("""CREATE TABLE IF NOT EXISTS coordinator_decisions (
+        decision_id TEXT PRIMARY KEY,
+        objective_id TEXT NOT NULL REFERENCES objectives(objective_id),
+        policy_id TEXT NOT NULL,
+        input_digest TEXT NOT NULL,
+        elevation_mode TEXT NOT NULL CHECK (elevation_mode IN
+            ('DIRECT','ENGINEER_ELEVATED','ORCHESTRATOR_ELEVATED')),
+        features TEXT,
+        route TEXT,
+        created_utc TEXT NOT NULL
+    )""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_coord_objective
+        ON coordinator_decisions(objective_id)""")
+
+    # --- Orchestration runs --------------------------------------
+    cur.execute("""CREATE TABLE IF NOT EXISTS orchestration_runs (
+        orchestration_id TEXT PRIMARY KEY,
+        objective_id TEXT NOT NULL REFERENCES objectives(objective_id),
+        coordinator_decision_id TEXT
+            REFERENCES coordinator_decisions(decision_id),
+        mode TEXT NOT NULL CHECK (mode IN
+            ('DIRECT','ENGINEER_ELEVATED','ORCHESTRATOR_ELEVATED')),
+        status TEXT NOT NULL CHECK (status IN
+            ('ACTIVE','COMPLETED','CLOSED','FAILED')),
+        created_utc TEXT NOT NULL,
+        completed_utc TEXT,
+        completion_policy TEXT,
+        created_by TEXT NOT NULL
+    )""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_run_objective
+        ON orchestration_runs(objective_id, status)""")
+
+    # --- Orchestration nodes -------------------------------------
+    cur.execute("""CREATE TABLE IF NOT EXISTS orchestration_nodes (
+        node_id TEXT PRIMARY KEY,
+        orchestration_id TEXT NOT NULL
+            REFERENCES orchestration_runs(orchestration_id),
+        node_key TEXT NOT NULL,
+        title TEXT,
+        description TEXT,
+        work_profile TEXT,
+        organizational_role TEXT,
+        realization_kind TEXT CHECK (realization_kind IN
+            ('TASK_CONTRACT','ENGINEER_REASONING','CONTROL')),
+        capability TEXT,
+        resource_scope TEXT,
+        execution_profile TEXT,
+        status TEXT NOT NULL CHECK (status IN
+            ('PENDING','READY','EXECUTING','COMPLETED','FAILED',
+             'SUPERSEDED','CANCELLED')),
+        completion_policy TEXT,
+        created_by_decision TEXT,
+        supersedes_node_id TEXT REFERENCES orchestration_nodes(node_id),
+        created_utc TEXT NOT NULL,
+        completed_utc TEXT
+    )""")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_node_key
+        ON orchestration_nodes(orchestration_id, node_key)""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_node_run
+        ON orchestration_nodes(orchestration_id, status)""")
+
+    # --- Orchestration edges (DAG) -------------------------------
+    cur.execute("""CREATE TABLE IF NOT EXISTS orchestration_edges (
+        edge_id TEXT PRIMARY KEY,
+        orchestration_id TEXT NOT NULL
+            REFERENCES orchestration_runs(orchestration_id),
+        source_node_id TEXT NOT NULL
+            REFERENCES orchestration_nodes(node_id),
+        target_node_id TEXT NOT NULL
+            REFERENCES orchestration_nodes(node_id),
+        dependency_kind TEXT NOT NULL,
+        required_acceptance INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL CHECK (status IN
+            ('PENDING','RELEASED','CANCELLED')),
+        released_utc TEXT,
+        authority_edge_kind TEXT,
+        authority_edge_target TEXT,
+        acceptance_receipt_sha256 TEXT,
+        dependency_release_receipt_sha256 TEXT,
+        selected_output_sha256 TEXT
+    )""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_edge_target
+        ON orchestration_edges(target_node_id, status)""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_edge_source
+        ON orchestration_edges(source_node_id, status)""")
+
+    # --- Authority bindings (node → authority chain) -------------
+    cur.execute("""CREATE TABLE IF NOT EXISTS
+        orchestration_authority_bindings (
+        binding_id TEXT PRIMARY KEY,
+        node_id TEXT NOT NULL
+            REFERENCES orchestration_nodes(node_id),
+        binding_ordinal INTEGER NOT NULL DEFAULT 1,
+        proposal_id TEXT,
+        task_contract_id TEXT,
+        requirement_digest TEXT,
+        contract_digest TEXT,
+        record_hash TEXT,
+        sequence_id TEXT,
+        status TEXT NOT NULL CHECK (status IN
+            ('BOUND','ACTIVE','COMPLETED','SUPERSEDED','FAILED')),
+        bound_utc TEXT NOT NULL,
+        superseded_utc TEXT
+    )""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_auth_binding_node
+        ON orchestration_authority_bindings(node_id, status)""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_auth_binding_sequence
+        ON orchestration_authority_bindings(sequence_id)""")
+
+    # --- Engineering bindings (node → Engineer reasoning) --------
+    cur.execute("""CREATE TABLE IF NOT EXISTS
+        orchestration_engineering_bindings (
+        engineering_request_id TEXT PRIMARY KEY,
+        node_id TEXT NOT NULL
+            REFERENCES orchestration_nodes(node_id),
+        orchestration_id TEXT NOT NULL
+            REFERENCES orchestration_runs(orchestration_id),
+        question TEXT NOT NULL,
+        accepted_inputs TEXT,
+        constraints TEXT,
+        resource_context TEXT,
+        required_decision_shape TEXT,
+        created_utc TEXT NOT NULL,
+        engineering_decision_id TEXT,
+        content_sha256 TEXT,
+        route_metadata TEXT,
+        input_digest TEXT,
+        adopted_utc TEXT
+    )""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_eng_binding_node
+        ON orchestration_engineering_bindings(node_id)""")
+
+    # --- Project bindings (node → Project, optional) -------------
+    cur.execute("""CREATE TABLE IF NOT EXISTS
+        orchestration_project_bindings (
+        node_id TEXT NOT NULL
+            REFERENCES orchestration_nodes(node_id),
+        project_id TEXT NOT NULL REFERENCES projects(project_id),
+        project_workstream_id TEXT,
+        bound_utc TEXT NOT NULL,
+        binding_reason TEXT,
+        PRIMARY KEY (node_id, project_id)
+    )""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_proj_binding_project
+        ON orchestration_project_bindings(project_id)""")
+
+    # --- Node outputs (accepted artifacts, decisions, etc.) ------
+    cur.execute("""CREATE TABLE IF NOT EXISTS orchestration_node_outputs (
+        output_id TEXT PRIMARY KEY,
+        node_id TEXT NOT NULL
+            REFERENCES orchestration_nodes(node_id),
+        output_kind TEXT NOT NULL CHECK (output_kind IN
+            ('ACCEPTED_ARTIFACT','ENGINEERING_DECISION',
+             'RESEARCH_ARTIFACT','EFFECT_RESULT','REVIEW_RESULT')),
+        content_sha256 TEXT,
+        sequence_id TEXT,
+        attempt_id TEXT,
+        engineering_decision_id TEXT,
+        accepted_utc TEXT,
+        provenance TEXT
+    )""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_output_node
+        ON orchestration_node_outputs(node_id)""")
+
+    # --- Add orchestration_node_id to project_assignments --------
+    cur.execute(
+        "ALTER TABLE project_assignments"
+        " ADD COLUMN orchestration_node_id TEXT")
+
+
 _MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4,
-               5: _DDL_V5}
+               5: _DDL_V5, 6: _migrate_v6}
 
 
 class PlanStoreTooNew(Exception):
@@ -587,13 +788,26 @@ class PlanStore:
             # (a v1 store gains the v2 workforce tables with every
             # existing row untouched).
             for version in range(current + 1, PLAN_SCHEMA_VERSION + 1):
-                for statement in _MIGRATIONS[version]:
-                    cur.execute(statement)
+                migration = _MIGRATIONS[version]
+                if callable(migration):
+                    migration(cur)
+                else:
+                    for statement in migration:
+                        cur.execute(statement)
             if current != PLAN_SCHEMA_VERSION:
                 cur.execute(
                     "INSERT OR REPLACE INTO meta(key, value)"
                     " VALUES ('schema_version', ?)",
                     (str(PLAN_SCHEMA_VERSION),))
+
+    # ------------------------------------------- orchestration sentinel
+
+    def orchestration_sentinel_cycle(self):
+        """The cycle_id used for orchestration-origin proposals."""
+        row = self.conn.execute(
+            "SELECT value FROM meta"
+            " WHERE key = 'orchestration_sentinel_cycle'").fetchone()
+        return int(row["value"]) if row else None
 
     # ---------------------------------------------------------- watermark
 
@@ -1209,6 +1423,386 @@ class PlanStore:
             "SELECT * FROM orchestration_reasoning"
             " WHERE input_digest = ?", (input_digest,)).fetchone()
         return dict(row) if row else None
+
+    def persist_orchestration_application(self, input_digest,
+                                          application_results):
+        """Record that orchestration decisions for this digest have been
+        applied. Prevents re-application on subsequent cycles with the
+        same organizational state."""
+        if input_digest is None:
+            return
+        with self.transaction() as cur:
+            cur.execute(
+                "UPDATE orchestration_reasoning"
+                " SET application_results = ?"
+                " WHERE input_digest = ? AND application_results IS NULL",
+                (json.dumps(application_results), input_digest))
+
+    # ---------------------------------------- coordinator decisions
+
+    def record_coordinator_decision(self, cur, decision_id, objective_id,
+                                     policy_id, input_digest,
+                                     elevation_mode, features, route, now):
+        cur.execute(
+            "INSERT OR IGNORE INTO coordinator_decisions"
+            " (decision_id, objective_id, policy_id, input_digest,"
+            "  elevation_mode, features, route, created_utc)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (decision_id, objective_id, policy_id, input_digest,
+             elevation_mode,
+             json.dumps(features, sort_keys=True) if features else None,
+             route, now))
+        return decision_id
+
+    def coordinator_decision(self, decision_id):
+        row = self.conn.execute(
+            "SELECT * FROM coordinator_decisions"
+            " WHERE decision_id = ?", (decision_id,)).fetchone()
+        return dict(row) if row else None
+
+    def coordinator_decisions_for(self, objective_id):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM coordinator_decisions"
+            " WHERE objective_id = ? ORDER BY created_utc",
+            (objective_id,)).fetchall()]
+
+    # ---------------------------------------- orchestration runs
+
+    def create_orchestration_run(self, cur, orchestration_id, objective_id,
+                                  coordinator_decision_id, mode,
+                                  created_by, now, completion_policy=None):
+        cp_json = json.dumps(completion_policy, sort_keys=True) \
+            if completion_policy else None
+        cur.execute(
+            "INSERT OR IGNORE INTO orchestration_runs"
+            " (orchestration_id, objective_id, coordinator_decision_id,"
+            "  mode, status, created_utc, completion_policy, created_by)"
+            " VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, ?)",
+            (orchestration_id, objective_id, coordinator_decision_id,
+             mode, now, cp_json, created_by))
+        return self.orchestration_run(orchestration_id)
+
+    def orchestration_run(self, orchestration_id):
+        row = self.conn.execute(
+            "SELECT * FROM orchestration_runs"
+            " WHERE orchestration_id = ?",
+            (orchestration_id,)).fetchone()
+        return dict(row) if row else None
+
+    def active_orchestration_runs(self, objective_id=None):
+        sql = "SELECT * FROM orchestration_runs WHERE status = 'ACTIVE'"
+        args = ()
+        if objective_id is not None:
+            sql += " AND objective_id = ?"
+            args = (objective_id,)
+        return [dict(r) for r in self.conn.execute(
+            sql + " ORDER BY created_utc", args).fetchall()]
+
+    def complete_orchestration_run(self, cur, orchestration_id, now):
+        cur.execute(
+            "UPDATE orchestration_runs SET status = 'COMPLETED',"
+            " completed_utc = ? WHERE orchestration_id = ?"
+            " AND status = 'ACTIVE'", (now, orchestration_id))
+
+    # ---------------------------------------- orchestration nodes
+
+    def create_orchestration_node(self, cur, node_id, orchestration_id,
+                                   node_key, now, title=None,
+                                   description=None, work_profile=None,
+                                   organizational_role=None,
+                                   realization_kind=None, capability=None,
+                                   resource_scope=None,
+                                   execution_profile=None,
+                                   completion_policy=None,
+                                   created_by_decision=None,
+                                   supersedes_node_id=None):
+        rs_json = json.dumps(resource_scope, sort_keys=True) \
+            if resource_scope is not None else None
+        cp_json = json.dumps(completion_policy, sort_keys=True) \
+            if completion_policy is not None else None
+        cur.execute(
+            "INSERT OR IGNORE INTO orchestration_nodes"
+            " (node_id, orchestration_id, node_key, title, description,"
+            "  work_profile, organizational_role, realization_kind,"
+            "  capability, resource_scope, execution_profile, status,"
+            "  completion_policy, created_by_decision,"
+            "  supersedes_node_id, created_utc)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?,?)",
+            (node_id, orchestration_id, node_key, title, description,
+             work_profile, organizational_role, realization_kind,
+             capability, rs_json, execution_profile,
+             cp_json, created_by_decision, supersedes_node_id, now))
+        return self.orchestration_node(node_id)
+
+    def orchestration_node(self, node_id):
+        row = self.conn.execute(
+            "SELECT * FROM orchestration_nodes WHERE node_id = ?",
+            (node_id,)).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        for field in ("resource_scope", "completion_policy"):
+            if d.get(field) and isinstance(d[field], str):
+                try:
+                    d[field] = json.loads(d[field])
+                except (ValueError, json.JSONDecodeError):
+                    pass
+        return d
+
+    def orchestration_nodes(self, orchestration_id, status=None):
+        sql = ("SELECT * FROM orchestration_nodes"
+               " WHERE orchestration_id = ?")
+        args = [orchestration_id]
+        if status is not None:
+            sql += " AND status = ?"
+            args.append(status)
+        rows = self.conn.execute(
+            sql + " ORDER BY created_utc, rowid", tuple(args)).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            for field in ("resource_scope", "completion_policy"):
+                if d.get(field) and isinstance(d[field], str):
+                    try:
+                        d[field] = json.loads(d[field])
+                    except (ValueError, json.JSONDecodeError):
+                        pass
+            result.append(d)
+        return result
+
+    def update_node_status(self, cur, node_id, status, now=None):
+        if status == "COMPLETED" and now:
+            cur.execute(
+                "UPDATE orchestration_nodes SET status = ?,"
+                " completed_utc = ? WHERE node_id = ?",
+                (status, now, node_id))
+        else:
+            cur.execute(
+                "UPDATE orchestration_nodes SET status = ?"
+                " WHERE node_id = ?", (status, node_id))
+
+    def update_node_dimension(self, cur, node_id, field, value):
+        if field in ("resource_scope", "completion_policy") and \
+                isinstance(value, (list, dict)):
+            value = json.dumps(value, sort_keys=True)
+        cur.execute(
+            "UPDATE orchestration_nodes SET %s = ?"
+            " WHERE node_id = ?" % field, (value, node_id))
+
+    def ready_nodes(self, orchestration_id):
+        """Nodes whose inbound edges are all RELEASED or have none."""
+        nodes = self.orchestration_nodes(orchestration_id,
+                                         status="PENDING")
+        ready = []
+        for node in nodes:
+            edges = self.conn.execute(
+                "SELECT * FROM orchestration_edges"
+                " WHERE target_node_id = ? AND status = 'PENDING'",
+                (node["node_id"],)).fetchall()
+            if not edges:
+                ready.append(node)
+        return ready
+
+    # ---------------------------------------- orchestration edges
+
+    def create_orchestration_edge(self, cur, edge_id, orchestration_id,
+                                   source_node_id, target_node_id,
+                                   dependency_kind,
+                                   required_acceptance=True,
+                                   authority_edge_kind=None,
+                                   authority_edge_target=None):
+        cur.execute(
+            "INSERT OR IGNORE INTO orchestration_edges"
+            " (edge_id, orchestration_id, source_node_id,"
+            "  target_node_id, dependency_kind, required_acceptance,"
+            "  status, authority_edge_kind, authority_edge_target)"
+            " VALUES (?,?,?,?,?,?,'PENDING',?,?)",
+            (edge_id, orchestration_id, source_node_id, target_node_id,
+             dependency_kind, 1 if required_acceptance else 0,
+             authority_edge_kind, authority_edge_target))
+        return edge_id
+
+    def edges_for_node(self, node_id, direction="inbound"):
+        col = "target_node_id" if direction == "inbound" \
+            else "source_node_id"
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM orchestration_edges WHERE %s = ?"
+            " ORDER BY rowid" % col, (node_id,)).fetchall()]
+
+    def release_orchestration_edge(self, cur, edge_id, now,
+                                    acceptance_receipt_sha256=None,
+                                    dependency_release_receipt_sha256=None,
+                                    selected_output_sha256=None):
+        cur.execute(
+            "UPDATE orchestration_edges SET status = 'RELEASED',"
+            " released_utc = ?, acceptance_receipt_sha256 = ?,"
+            " dependency_release_receipt_sha256 = ?,"
+            " selected_output_sha256 = ?"
+            " WHERE edge_id = ? AND status = 'PENDING'",
+            (now, acceptance_receipt_sha256,
+             dependency_release_receipt_sha256,
+             selected_output_sha256, edge_id))
+
+    # ---------------------------------------- authority bindings
+
+    def create_authority_binding(self, cur, binding_id, node_id,
+                                  now, binding_ordinal=1,
+                                  proposal_id=None,
+                                  task_contract_id=None,
+                                  requirement_digest=None,
+                                  contract_digest=None,
+                                  record_hash=None,
+                                  sequence_id=None):
+        cur.execute(
+            "INSERT OR IGNORE INTO orchestration_authority_bindings"
+            " (binding_id, node_id, binding_ordinal, proposal_id,"
+            "  task_contract_id, requirement_digest, contract_digest,"
+            "  record_hash, sequence_id, status, bound_utc)"
+            " VALUES (?,?,?,?,?,?,?,?,?,'BOUND',?)",
+            (binding_id, node_id, binding_ordinal, proposal_id,
+             task_contract_id, requirement_digest, contract_digest,
+             record_hash, sequence_id, now))
+        return binding_id
+
+    def authority_binding_for_node(self, node_id, current_only=True):
+        sql = ("SELECT * FROM orchestration_authority_bindings"
+               " WHERE node_id = ?")
+        if current_only:
+            sql += " AND status IN ('BOUND','ACTIVE','COMPLETED')"
+        sql += " ORDER BY binding_ordinal DESC LIMIT 1"
+        row = self.conn.execute(sql, (node_id,)).fetchone()
+        return dict(row) if row else None
+
+    def authority_binding_for_sequence(self, sequence_id):
+        row = self.conn.execute(
+            "SELECT * FROM orchestration_authority_bindings"
+            " WHERE sequence_id = ?", (sequence_id,)).fetchone()
+        return dict(row) if row else None
+
+    def update_authority_binding(self, cur, binding_id, **fields):
+        allowed = ("proposal_id", "task_contract_id",
+                   "requirement_digest", "contract_digest",
+                   "record_hash", "sequence_id", "status",
+                   "superseded_utc")
+        sets, args = [], []
+        for key in allowed:
+            if key in fields:
+                sets.append("%s = ?" % key)
+                args.append(fields[key])
+        if not sets:
+            return
+        args.append(binding_id)
+        cur.execute(
+            "UPDATE orchestration_authority_bindings SET %s"
+            " WHERE binding_id = ?" % ", ".join(sets), tuple(args))
+
+    # ---------------------------------------- engineering bindings
+
+    def create_engineering_binding(self, cur, request_id, node_id,
+                                    orchestration_id, question, now,
+                                    accepted_inputs=None,
+                                    constraints=None,
+                                    resource_context=None,
+                                    required_decision_shape=None):
+        cur.execute(
+            "INSERT OR IGNORE INTO orchestration_engineering_bindings"
+            " (engineering_request_id, node_id, orchestration_id,"
+            "  question, accepted_inputs, constraints,"
+            "  resource_context, required_decision_shape, created_utc)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (request_id, node_id, orchestration_id, question,
+             json.dumps(accepted_inputs) if accepted_inputs else None,
+             json.dumps(constraints) if constraints else None,
+             resource_context, required_decision_shape, now))
+        return request_id
+
+    def adopt_engineering_decision(self, cur, request_id,
+                                    engineering_decision_id,
+                                    content_sha256, now,
+                                    route_metadata=None,
+                                    input_digest=None):
+        cur.execute(
+            "UPDATE orchestration_engineering_bindings"
+            " SET engineering_decision_id = ?, content_sha256 = ?,"
+            "  route_metadata = ?, input_digest = ?, adopted_utc = ?"
+            " WHERE engineering_request_id = ?",
+            (engineering_decision_id, content_sha256,
+             route_metadata, input_digest, now, request_id))
+
+    def engineering_binding_for_node(self, node_id):
+        row = self.conn.execute(
+            "SELECT * FROM orchestration_engineering_bindings"
+            " WHERE node_id = ?", (node_id,)).fetchone()
+        return dict(row) if row else None
+
+    # ---------------------------------------- project bindings
+
+    def create_project_binding(self, cur, node_id, project_id, now,
+                                project_workstream_id=None,
+                                binding_reason=None):
+        cur.execute(
+            "INSERT OR IGNORE INTO orchestration_project_bindings"
+            " (node_id, project_id, project_workstream_id,"
+            "  bound_utc, binding_reason)"
+            " VALUES (?,?,?,?,?)",
+            (node_id, project_id, project_workstream_id,
+             now, binding_reason))
+
+    def project_bindings_for_run(self, orchestration_id):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT pb.* FROM orchestration_project_bindings pb"
+            " JOIN orchestration_nodes n ON pb.node_id = n.node_id"
+            " WHERE n.orchestration_id = ?",
+            (orchestration_id,)).fetchall()]
+
+    def project_bindings_for_node(self, node_id):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM orchestration_project_bindings"
+            " WHERE node_id = ?", (node_id,)).fetchall()]
+
+    # ---------------------------------------- node outputs
+
+    def record_node_output(self, cur, output_id, node_id, output_kind,
+                            now, content_sha256=None, sequence_id=None,
+                            attempt_id=None,
+                            engineering_decision_id=None,
+                            provenance=None):
+        cur.execute(
+            "INSERT OR IGNORE INTO orchestration_node_outputs"
+            " (output_id, node_id, output_kind, content_sha256,"
+            "  sequence_id, attempt_id, engineering_decision_id,"
+            "  accepted_utc, provenance)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (output_id, node_id, output_kind, content_sha256,
+             sequence_id, attempt_id, engineering_decision_id,
+             now, provenance))
+
+    def outputs_for_node(self, node_id):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM orchestration_node_outputs"
+            " WHERE node_id = ? ORDER BY accepted_utc",
+            (node_id,)).fetchall()]
+
+    # ---------------------------------------- node → authority lookup
+
+    def node_of_sequence(self, sequence_id):
+        """The orchestration node a sequence realizes, or None."""
+        row = self.conn.execute(
+            "SELECT n.* FROM orchestration_nodes n"
+            " JOIN orchestration_authority_bindings b"
+            "   ON b.node_id = n.node_id"
+            " WHERE b.sequence_id = ? LIMIT 1",
+            (sequence_id,)).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        for field in ("resource_scope", "completion_policy"):
+            if d.get(field) and isinstance(d[field], str):
+                try:
+                    d[field] = json.loads(d[field])
+                except (ValueError, json.JSONDecodeError):
+                    pass
+        return d
 
     # ------------------------------------------------------- driver lease
 

@@ -51,19 +51,50 @@ ORCHESTRATOR_POLICY_ID = "reasoning-orchestrator/v1"
 ORCHESTRATOR_ROLE = "ORCHESTRATOR"
 
 ORCHESTRATOR_DECISION_CLASSES = frozenset({
+    # Node-oriented (canonical v2)
+    "CREATE_NODE",
+    "SET_NODE_WORK_PROFILE",
+    "SET_NODE_RESOURCE_SCOPE",
+    "SET_NODE_EXECUTION_PROFILE",
+    "SET_NODE_ROLE",
+    "SET_NODE_REALIZATION_KIND",
+    "ADD_EDGE",
     "CREATE_PROJECT",
+    "BIND_NODE_TO_PROJECT",
+    "COMPLETE_NODE",
+    "COMPLETE_RUN",
+    "RESTRUCTURE_RUN",
+    "REQUEST_ENGINEERING_DECISION",
+    "REQUEST_CAPABILITY",
+    "REQUEST_REVIEW",
+    # Compatibility aliases (v1 → v2 mapping)
     "CREATE_WORKSTREAM",
     "SET_WORK_PROFILE",
     "SET_RESOURCE_SCOPE",
     "SET_EXECUTION_PROFILE",
     "SET_ROLE",
     "ADD_DEPENDENCY",
-    "REQUEST_ENGINEERING_DECISION",
-    "REQUEST_CAPABILITY",
-    "REQUEST_REVIEW",
     "COMPLETE_WORKSTREAM",
     "COMPLETE_PROJECT",
     "RESTRUCTURE_PROJECT",
+})
+
+_V1_TO_V2 = {
+    "CREATE_WORKSTREAM": "CREATE_NODE",
+    "ADD_DEPENDENCY": "ADD_EDGE",
+    "COMPLETE_WORKSTREAM": "COMPLETE_NODE",
+    "COMPLETE_PROJECT": "COMPLETE_RUN",
+    "RESTRUCTURE_PROJECT": "RESTRUCTURE_RUN",
+    "SET_WORK_PROFILE": "SET_NODE_WORK_PROFILE",
+    "SET_RESOURCE_SCOPE": "SET_NODE_RESOURCE_SCOPE",
+    "SET_EXECUTION_PROFILE": "SET_NODE_EXECUTION_PROFILE",
+    "SET_ROLE": "SET_NODE_ROLE",
+}
+
+REALIZATION_KINDS = frozenset({
+    "TASK_CONTRACT",
+    "ENGINEER_REASONING",
+    "CONTROL",
 })
 
 DEPENDENCY_KINDS = frozenset({
@@ -80,8 +111,58 @@ def _decision_digest(decision):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _taskforce_digest_input(taskforce):
+    """Extract digest-safe representation from taskforce state.
+    Handles both the structured format (lists of dicts) and simple
+    count format (ints) for backwards compatibility."""
+    members_raw = taskforce.get("members") or []
+    seats_raw = taskforce.get("seats") or []
+    if isinstance(members_raw, (int, float)):
+        members = [str(members_raw)]
+    elif isinstance(members_raw, list):
+        members = sorted(
+            m.get("specialist_id", "") if isinstance(m, dict)
+            else str(m) for m in members_raw)
+    else:
+        members = [str(members_raw)]
+    if isinstance(seats_raw, (int, float)):
+        seats = [str(seats_raw)]
+    elif isinstance(seats_raw, list):
+        seats = sorted(
+            (s.get("seat_id", ""), s.get("capability", ""),
+             s.get("status", "")) if isinstance(s, dict)
+            else (str(s),) for s in seats_raw)
+    else:
+        seats = [str(seats_raw)]
+    return {"members": members, "seats": seats}
+
+
 class OrchestrationDecisionError(Exception):
     """A typed orchestration decision failed structural validation."""
+
+
+def normalize_decision(decision):
+    """Normalize a v1 decision class to v2 if applicable.
+
+    Returns a copy with the canonical v2 class and original v1 class
+    preserved as 'original_class' when translated."""
+    d = dict(decision)
+    cls = d.get("class")
+    if cls in _V1_TO_V2:
+        d["original_class"] = cls
+        d["class"] = _V1_TO_V2[cls]
+        if cls == "CREATE_WORKSTREAM" and "workstream_key" in d \
+                and "node_key" not in d:
+            d["node_key"] = d["workstream_key"]
+        if cls == "ADD_DEPENDENCY":
+            if "source_workstream" in d and "source_node" not in d:
+                d["source_node"] = d["source_workstream"]
+            if "target_workstream" in d and "target_node" not in d:
+                d["target_node"] = d["target_workstream"]
+        if cls == "COMPLETE_WORKSTREAM" and "workstream_id" in d \
+                and "node_id" not in d:
+            d["node_id"] = d["workstream_id"]
+    return d
 
 
 def validate_orchestration_decision(decision):
@@ -92,40 +173,46 @@ def validate_orchestration_decision(decision):
     if cls not in ORCHESTRATOR_DECISION_CLASSES:
         raise OrchestrationDecisionError(
             "unknown decision class %r" % cls)
-    if cls == "CREATE_PROJECT":
+
+    if cls == "CREATE_NODE" or cls == "CREATE_WORKSTREAM":
+        if not (decision.get("node_key") or decision.get("workstream_key")):
+            raise OrchestrationDecisionError(
+                "%s requires node_key" % cls)
+    elif cls == "CREATE_PROJECT":
         if not decision.get("objective_id"):
             raise OrchestrationDecisionError(
                 "CREATE_PROJECT requires objective_id")
         if not decision.get("title"):
             raise OrchestrationDecisionError(
                 "CREATE_PROJECT requires title")
-    elif cls == "CREATE_WORKSTREAM":
-        if not decision.get("project_id"):
-            raise OrchestrationDecisionError(
-                "CREATE_WORKSTREAM requires project_id")
-        if not decision.get("workstream_key"):
-            raise OrchestrationDecisionError(
-                "CREATE_WORKSTREAM requires workstream_key")
-    elif cls == "SET_WORK_PROFILE":
+    elif cls in ("SET_WORK_PROFILE", "SET_NODE_WORK_PROFILE"):
         wp = decision.get("work_profile")
         if wp not in VALID_PROFILES:
             raise OrchestrationDecisionError(
-                "SET_WORK_PROFILE requires valid work_profile, got %r" % wp)
-    elif cls == "ADD_DEPENDENCY":
-        if not decision.get("source_workstream"):
+                "%s requires valid work_profile, got %r" % (cls, wp))
+    elif cls in ("ADD_DEPENDENCY", "ADD_EDGE"):
+        src = decision.get("source_node") or decision.get("source_workstream")
+        tgt = decision.get("target_node") or decision.get("target_workstream")
+        if not src:
             raise OrchestrationDecisionError(
-                "ADD_DEPENDENCY requires source_workstream")
-        if not decision.get("target_workstream"):
+                "%s requires source_node" % cls)
+        if not tgt:
             raise OrchestrationDecisionError(
-                "ADD_DEPENDENCY requires target_workstream")
+                "%s requires target_node" % cls)
         dk = decision.get("dependency_kind")
         if dk not in DEPENDENCY_KINDS:
             raise OrchestrationDecisionError(
-                "ADD_DEPENDENCY requires valid dependency_kind, got %r" % dk)
+                "%s requires valid dependency_kind, got %r" % (cls, dk))
     elif cls == "REQUEST_ENGINEERING_DECISION":
         if not decision.get("question"):
             raise OrchestrationDecisionError(
                 "REQUEST_ENGINEERING_DECISION requires question")
+    elif cls == "SET_NODE_REALIZATION_KIND":
+        rk = decision.get("realization_kind")
+        if rk not in REALIZATION_KINDS:
+            raise OrchestrationDecisionError(
+                "SET_NODE_REALIZATION_KIND requires valid realization_kind,"
+                " got %r" % rk)
     return decision
 
 
@@ -197,16 +284,18 @@ class OrchestratorPlanningView:
     """Everything the Orchestrator reasons over, as plain data.
 
     Built from authority-accepted state, the intelligence store, and the
-    Taskforce roster. The Orchestrator sees the full project graph across
-    all WorkProfiles, unlike the Engineer which sees only the engineering-
-    relevant subset.
+    Taskforce roster. The canonical view is now OrchestrationRun/Node
+    oriented. Projects appear as optional bindings.
     """
 
     def __init__(self, objectives, projects, taskforce_state,
                  accepted_artifacts=None, findings=None,
                  failed_attempts=None, effect_outcomes=None,
                  work_profiles=None, resource_scopes=None,
-                 execution_profiles=None, dependency_state=None):
+                 execution_profiles=None, dependency_state=None,
+                 runs=None, nodes=None, edges=None,
+                 authority_bindings=None, engineering_bindings=None,
+                 project_bindings=None, node_outputs=None):
         self.objectives = list(objectives)
         self.projects = list(projects)
         self.taskforce = dict(taskforce_state) if taskforce_state else {}
@@ -218,6 +307,13 @@ class OrchestratorPlanningView:
         self.resource_scopes = dict(resource_scopes or {})
         self.execution_profiles = dict(execution_profiles or {})
         self.dependency_state = dict(dependency_state or {})
+        self.runs = list(runs or [])
+        self.nodes = list(nodes or [])
+        self.edges = list(edges or [])
+        self.authority_bindings = list(authority_bindings or [])
+        self.engineering_bindings = list(engineering_bindings or [])
+        self.project_bindings = list(project_bindings or [])
+        self.node_outputs = list(node_outputs or [])
 
     def for_objective(self, objective_id):
         """Return the view narrowed to one objective."""
@@ -227,6 +323,8 @@ class OrchestratorPlanningView:
             return None
         projects = [p for p in self.projects
                     if p.get("objective_id") == objective_id]
+        run_ids = {r.get("orchestration_id") for r in self.runs
+                   if r.get("objective_id") == objective_id}
         return OrchestratorPlanningView(
             objectives=[obj],
             projects=projects,
@@ -242,6 +340,16 @@ class OrchestratorPlanningView:
             resource_scopes=self.resource_scopes,
             execution_profiles=self.execution_profiles,
             dependency_state=self.dependency_state,
+            runs=[r for r in self.runs
+                  if r.get("objective_id") == objective_id],
+            nodes=[n for n in self.nodes
+                   if n.get("orchestration_id") in run_ids],
+            edges=[e for e in self.edges
+                   if e.get("orchestration_id") in run_ids],
+            authority_bindings=self.authority_bindings,
+            engineering_bindings=self.engineering_bindings,
+            project_bindings=self.project_bindings,
+            node_outputs=self.node_outputs,
         )
 
     def to_dict(self):
@@ -259,6 +367,13 @@ class OrchestratorPlanningView:
             "resource_scopes": self.resource_scopes,
             "execution_profiles": self.execution_profiles,
             "dependency_state": self.dependency_state,
+            "runs": self.runs,
+            "nodes": self.nodes,
+            "edges": self.edges,
+            "authority_bindings": self.authority_bindings,
+            "engineering_bindings": self.engineering_bindings,
+            "project_bindings": self.project_bindings,
+            "node_outputs": self.node_outputs,
         }
 
 
@@ -281,24 +396,68 @@ class OrchestratorService:
         self.clock = clock
         self._last_cycle = None
 
-    def build_view(self, objectives, projects, taskforce_state,
-                   accepted_artifacts=None, findings=None,
-                   failed_attempts=None, effect_outcomes=None,
-                   work_profiles=None, resource_scopes=None,
-                   execution_profiles=None, dependency_state=None):
+    def build_view(self, objectives, projects, taskforce_state, **kwargs):
         return OrchestratorPlanningView(
             objectives=objectives,
             projects=projects,
             taskforce_state=taskforce_state,
-            accepted_artifacts=accepted_artifacts,
-            findings=findings,
-            failed_attempts=failed_attempts,
-            effect_outcomes=effect_outcomes,
-            work_profiles=work_profiles,
-            resource_scopes=resource_scopes,
-            execution_profiles=execution_profiles,
-            dependency_state=dependency_state,
-        )
+            **kwargs)
+
+    def _compute_organizational_digest(self, view):
+        """Canonical digest over all state that can change an orchestration
+        decision. Two materially different organizational states must
+        produce different digests. Uses Run/Node state as primary."""
+        return _decision_digest({
+            "objectives": sorted(
+                (o.get("objective_id", ""), o.get("status", ""))
+                for o in view.objectives),
+            "runs": sorted(
+                (r.get("orchestration_id", ""), r.get("mode", ""),
+                 r.get("status", ""))
+                for r in view.runs),
+            "nodes": sorted(
+                (n.get("node_id", ""), n.get("node_key", ""),
+                 n.get("work_profile") or "", n.get("status") or "",
+                 n.get("realization_kind") or "",
+                 n.get("organizational_role") or "",
+                 n.get("execution_profile") or "",
+                 n.get("capability") or "")
+                for n in view.nodes),
+            "edges": sorted(
+                (e.get("edge_id", ""), e.get("source_node_id", ""),
+                 e.get("target_node_id", ""), e.get("status") or "",
+                 e.get("dependency_kind") or "")
+                for e in view.edges),
+            "authority_bindings": sorted(
+                (b.get("node_id", ""), b.get("sequence_id") or "",
+                 b.get("status") or "")
+                for b in view.authority_bindings),
+            "projects": sorted(
+                (p.get("project_id", ""), p.get("status", ""))
+                for p in view.projects),
+            "workstreams": sorted(
+                (w.get("workstream_id", ""), w.get("workstream_key", ""),
+                 w.get("work_profile") or "", w.get("status") or "",
+                 w.get("execution_profile") or "")
+                for p in view.projects
+                for w in (p.get("workstreams") or [])),
+            "dependencies": sorted(
+                str(d) for d in (view.dependency_state or {}).items()),
+            "accepted_artifacts": sorted(
+                a.get("content_sha256", "") if isinstance(a, dict)
+                else str(a) for a in view.accepted_artifacts),
+            "node_outputs": sorted(
+                (o.get("node_id", ""), o.get("output_kind", ""),
+                 o.get("content_sha256") or "")
+                for o in view.node_outputs),
+            "findings": sorted(
+                f.get("finding_id", "") if isinstance(f, dict)
+                else str(f) for f in view.findings),
+            "failed_attempts": sorted(
+                a.get("attempt_id", "") if isinstance(a, dict)
+                else str(a) for a in view.failed_attempts),
+            "taskforce": _taskforce_digest_input(view.taskforce),
+        })
 
     def run_cycle(self, objectives, projects, taskforce_state, **kwargs):
         """One orchestration cycle.
@@ -307,8 +466,10 @@ class OrchestratorService:
         should be delegated to the Engineer for technical reasoning.
 
         Exactly-once semantics: if a durable reasoning record exists for
-        the same organizational input digest, the recorded decisions are
-        replayed instead of invoking the policy again."""
+        the same organizational input digest AND its decisions have been
+        applied, those decisions are not re-applied. If the input digest
+        is new, the policy is invoked and decisions are recorded before
+        application."""
         if not objectives:
             return {
                 "orchestrator_cycle": True,
@@ -321,21 +482,17 @@ class OrchestratorService:
         view = self.build_view(objectives, projects, taskforce_state,
                                **kwargs)
 
-        input_digest = _decision_digest({
-            "objectives": sorted(o.get("objective_id", "")
-                                 for o in objectives),
-            "projects": sorted(p.get("project_id", "")
-                               for p in projects),
-            "taskforce_digest": str(taskforce_state.get("member_count", 0))
-                + ":" + str(taskforce_state.get("seat_count", 0)),
-        })
+        input_digest = self._compute_organizational_digest(view)
 
         replayed = False
+        already_applied = False
         if self.plan and hasattr(self.plan, "orchestration_for_digest"):
             existing = self.plan.orchestration_for_digest(input_digest)
             if existing is not None:
                 decisions = json.loads(existing["decisions"])
                 replayed = True
+                already_applied = existing.get("application_results") \
+                    is not None
             else:
                 decisions = self.policy.interpret(view)
                 if decisions:
@@ -368,7 +525,7 @@ class OrchestratorService:
 
         self._last_cycle = {
             "orchestrator_cycle": True,
-            "decisions": decisions,
+            "decisions": decisions if not already_applied else [],
             "delegate_to_engineer": delegate,
             "policy_id": self.policy.policy_id,
             "input_digest": input_digest,
@@ -376,6 +533,7 @@ class OrchestratorService:
             "projects_count": len(projects),
             "had_activity": had_activity,
             "replayed": replayed,
+            "already_applied": already_applied,
         }
         return dict(self._last_cycle)
 
@@ -383,12 +541,17 @@ class OrchestratorService:
 class OrchestrationApplicator:
     """Apply validated orchestration decisions to durable organizational state.
 
-    The Orchestrator produces typed decisions. This layer persists them.
+    The Orchestrator produces typed decisions. This layer persists them
+    to both the new OrchestrationNode model and the legacy workstream
+    model (for backward compatibility with the existing driver and
+    Taskforce paths).
+
     The Orchestrator itself holds no persistence handle.
     """
 
-    def __init__(self, plan):
+    def __init__(self, plan, orchestration_id=None):
         self.plan = plan
+        self.orchestration_id = orchestration_id
 
     def apply(self, decisions, now):
         """Apply a batch of validated orchestration decisions.
@@ -396,9 +559,28 @@ class OrchestrationApplicator:
         Returns a list of application results, one per decision."""
         results = []
         for decision in decisions:
-            result = self._apply_one(decision, now)
+            normalized = normalize_decision(decision)
+            result = self._apply_one(normalized, now)
             results.append(result)
         return results
+
+    def _resolve_node_ref(self, ref, orchestration_id):
+        """Resolve a node reference to a node_id.
+
+        Accepts either a node_id (returned as-is) or a node_key
+        (looked up within the given run). This lets the Opus
+        Orchestrator use node_keys in ADD_EDGE decisions for nodes
+        it created in the same batch."""
+        if hasattr(self.plan, "orchestration_node"):
+            node = self.plan.orchestration_node(ref)
+            if node is not None:
+                return ref
+        if orchestration_id and \
+                hasattr(self.plan, "orchestration_nodes"):
+            for n in self.plan.orchestration_nodes(orchestration_id):
+                if n.get("node_key") == ref:
+                    return n["node_id"]
+        return ref
 
     def _apply_one(self, decision, now):
         cls = decision["class"]
@@ -406,32 +588,46 @@ class OrchestrationApplicator:
 
         if cls == "CREATE_PROJECT":
             return self._apply_create_project(decision, decision_id, now)
-        elif cls == "CREATE_WORKSTREAM":
-            return self._apply_create_workstream(decision, decision_id, now)
-        elif cls == "ADD_DEPENDENCY":
-            return self._apply_add_dependency(decision, decision_id, now)
-        elif cls in ("SET_WORK_PROFILE", "SET_RESOURCE_SCOPE",
-                     "SET_EXECUTION_PROFILE", "SET_ROLE"):
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED", "note": "workstream update"}
-        elif cls in ("COMPLETE_WORKSTREAM", "COMPLETE_PROJECT"):
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED", "note": "completion signal"}
+        elif cls == "CREATE_NODE":
+            return self._apply_create_node(decision, decision_id, now)
+        elif cls == "ADD_EDGE":
+            return self._apply_add_edge(decision, decision_id, now)
+        elif cls in ("SET_NODE_WORK_PROFILE", "SET_WORK_PROFILE"):
+            return self._apply_set_node_dimension(
+                decision, decision_id, "work_profile", now)
+        elif cls in ("SET_NODE_RESOURCE_SCOPE", "SET_RESOURCE_SCOPE"):
+            return self._apply_set_node_dimension(
+                decision, decision_id, "resource_scope", now)
+        elif cls in ("SET_NODE_EXECUTION_PROFILE", "SET_EXECUTION_PROFILE"):
+            return self._apply_set_node_dimension(
+                decision, decision_id, "execution_profile", now)
+        elif cls in ("SET_NODE_ROLE", "SET_ROLE"):
+            return self._apply_set_node_dimension(
+                decision, decision_id, "organizational_role", now)
+        elif cls == "SET_NODE_REALIZATION_KIND":
+            return self._apply_set_node_dimension(
+                decision, decision_id, "realization_kind", now)
+        elif cls in ("COMPLETE_NODE", "COMPLETE_WORKSTREAM"):
+            return self._apply_complete_node(
+                decision, decision_id, now)
+        elif cls in ("COMPLETE_RUN", "COMPLETE_PROJECT"):
+            return self._apply_complete_run(
+                decision, decision_id, now)
+        elif cls == "BIND_NODE_TO_PROJECT":
+            return self._apply_bind_to_project(
+                decision, decision_id, now)
         elif cls == "REQUEST_ENGINEERING_DECISION":
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED",
-                    "question": decision.get("question")}
+            return self._apply_engineering_request(
+                decision, decision_id, now)
         elif cls == "REQUEST_CAPABILITY":
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED",
-                    "capability": decision.get("capability")}
+            return self._apply_capability_request(
+                decision, decision_id, now)
         elif cls == "REQUEST_REVIEW":
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED"}
-        elif cls == "RESTRUCTURE_PROJECT":
-            return {"decision_id": decision_id, "class": cls,
-                    "status": "RECORDED",
-                    "note": decision.get("rationale", "")}
+            return self._apply_review_request(
+                decision, decision_id, now)
+        elif cls in ("RESTRUCTURE_RUN", "RESTRUCTURE_PROJECT"):
+            return self._apply_restructure(
+                decision, decision_id, now)
         return {"decision_id": decision_id, "class": cls,
                 "status": "UNKNOWN"}
 
@@ -442,36 +638,248 @@ class OrchestrationApplicator:
         with self.plan.transaction() as cur:
             project, created = self.plan.open_project(
                 cur, objective_id, title, solution,
-                "ORCHESTRATOR", decision_id, now)
+                "IMPLICIT", decision_id, now)
         return {"decision_id": decision_id, "class": "CREATE_PROJECT",
                 "status": "CREATED" if created else "EXISTS",
-                "project_id": project["project_id"]}
+                "project_id": project["project_id"],
+                "opened_by_orchestrator": True}
 
-    def _apply_create_workstream(self, decision, decision_id, now):
-        project_id = decision["project_id"]
-        key = decision["workstream_key"]
+    def _apply_create_node(self, decision, decision_id, now):
+        from .proposals_util import canonical_json_digest
+        node_key = decision.get("node_key") \
+            or decision.get("workstream_key")
         wp = decision.get("work_profile")
         ep = decision.get("execution_profile")
         rs = decision.get("resource_scope")
         role = decision.get("organizational_role")
+        rk = decision.get("realization_kind")
+        cap = decision.get("capability")
         cp = decision.get("completion_policy")
-        with self.plan.transaction() as cur:
-            ws = self.plan.add_workstream(
-                cur, project_id, key, decision_id, now,
-                work_profile=wp, organizational_role=role,
-                resource_scope=rs, execution_profile=ep,
-                completion_policy=cp)
-        return {"decision_id": decision_id, "class": "CREATE_WORKSTREAM",
-                "status": "CREATED",
-                "workstream_id": ws["workstream_id"]}
+        project_id = decision.get("project_id")
 
-    def _apply_add_dependency(self, decision, decision_id, now):
-        source = decision["source_workstream"]
-        target = decision["target_workstream"]
+        orch_id = self.orchestration_id or decision.get("orchestration_id")
+
+        if orch_id:
+            node_id = "nd_" + canonical_json_digest({
+                "run": orch_id, "key": node_key,
+            })[:32]
+            with self.plan.transaction() as cur:
+                node = self.plan.create_orchestration_node(
+                    cur, node_id, orch_id, node_key, now,
+                    title=decision.get("title"),
+                    description=decision.get("description"),
+                    work_profile=wp, organizational_role=role,
+                    realization_kind=rk, capability=cap,
+                    resource_scope=rs, execution_profile=ep,
+                    completion_policy=cp,
+                    created_by_decision=decision_id)
+            result = {"decision_id": decision_id, "class": "CREATE_NODE",
+                      "status": "CREATED", "node_id": node_id,
+                      "node_key": node_key}
+        else:
+            result = {"decision_id": decision_id, "class": "CREATE_NODE",
+                      "status": "SKIPPED",
+                      "note": "no orchestration_id available"}
+
+        if project_id and hasattr(self.plan, "add_workstream"):
+            with self.plan.transaction() as cur:
+                ws = self.plan.add_workstream(
+                    cur, project_id, node_key, decision_id, now,
+                    work_profile=wp, organizational_role=role,
+                    resource_scope=rs, execution_profile=ep,
+                    completion_policy=cp)
+            result["workstream_id"] = ws["workstream_id"]
+
+        return result
+
+    def _apply_add_edge(self, decision, decision_id, now):
+        source = decision.get("source_node") \
+            or decision.get("source_workstream")
+        target = decision.get("target_node") \
+            or decision.get("target_workstream")
         kind = decision["dependency_kind"]
-        with self.plan.transaction() as cur:
-            dep = self.plan.add_workstream_dependency(
-                cur, source, target, kind)
-        return {"decision_id": decision_id, "class": "ADD_DEPENDENCY",
+        orch_id = self.orchestration_id or decision.get("orchestration_id")
+        if orch_id:
+            source = self._resolve_node_ref(source, orch_id)
+            target = self._resolve_node_ref(target, orch_id)
+
+        if orch_id and hasattr(self.plan, "create_orchestration_edge"):
+            from .proposals_util import canonical_json_digest
+            edge_id = "oe_" + canonical_json_digest({
+                "source": source, "target": target, "kind": kind,
+            })[:32]
+            with self.plan.transaction() as cur:
+                self.plan.create_orchestration_edge(
+                    cur, edge_id, orch_id, source, target, kind)
+
+        if hasattr(self.plan, "add_workstream_dependency"):
+            try:
+                with self.plan.transaction() as cur:
+                    self.plan.add_workstream_dependency(
+                        cur, source, target, kind)
+            except Exception:
+                pass
+
+        return {"decision_id": decision_id, "class": "ADD_EDGE",
                 "status": "CREATED",
                 "source": source, "target": target}
+
+    def _apply_set_node_dimension(self, decision, decision_id, field, now):
+        node_id = decision.get("node_id") or decision.get("workstream_id")
+        value = decision.get(field)
+        if not node_id or value is None:
+            return {"decision_id": decision_id, "class": decision["class"],
+                    "status": "SKIPPED",
+                    "note": "missing node_id or value"}
+
+        if hasattr(self.plan, "update_node_dimension"):
+            try:
+                with self.plan.transaction() as cur:
+                    self.plan.update_node_dimension(
+                        cur, node_id, field, value)
+            except Exception:
+                pass
+
+        serialized = json.dumps(value, sort_keys=True) \
+            if isinstance(value, (list, dict)) else value
+        try:
+            with self.plan.transaction() as cur:
+                cur.execute(
+                    "UPDATE project_workstreams SET %s = ?"
+                    " WHERE workstream_id = ?" % field,
+                    (serialized, node_id))
+        except Exception:
+            pass
+
+        return {"decision_id": decision_id, "class": decision["class"],
+                "status": "APPLIED", "node_id": node_id,
+                "field": field, "value": value}
+
+    def _apply_complete_node(self, decision, decision_id, now):
+        node_id = decision.get("node_id") or decision.get("workstream_id")
+        if not node_id:
+            return {"decision_id": decision_id,
+                    "class": "COMPLETE_NODE",
+                    "status": "SKIPPED", "note": "missing node_id"}
+
+        if hasattr(self.plan, "update_node_status"):
+            with self.plan.transaction() as cur:
+                self.plan.update_node_status(
+                    cur, node_id, "COMPLETED", now)
+
+        try:
+            with self.plan.transaction() as cur:
+                cur.execute(
+                    "UPDATE project_workstreams SET status = 'COMPLETED'"
+                    " WHERE workstream_id = ? AND status != 'COMPLETED'",
+                    (node_id,))
+        except Exception:
+            pass
+
+        return {"decision_id": decision_id, "class": "COMPLETE_NODE",
+                "status": "APPLIED", "node_id": node_id}
+
+    def _apply_complete_run(self, decision, decision_id, now):
+        run_id = decision.get("orchestration_id") \
+            or decision.get("project_id")
+        objective_id = decision.get("objective_id")
+
+        if run_id and hasattr(self.plan, "complete_orchestration_run"):
+            with self.plan.transaction() as cur:
+                self.plan.complete_orchestration_run(cur, run_id, now)
+
+        project_id = decision.get("project_id")
+        if project_id:
+            with self.plan.transaction() as cur:
+                cur.execute(
+                    "UPDATE projects SET status = 'COMPLETED',"
+                    " closed_utc = ?, closed_by = ?"
+                    " WHERE project_id = ? AND status = 'ACTIVE'",
+                    (now, decision_id, project_id))
+                if objective_id:
+                    cur.execute(
+                        "UPDATE objectives SET status = 'COMPLETE',"
+                        " completed_utc = ?"
+                        " WHERE objective_id = ? AND status = 'ACTIVE'",
+                        (now, objective_id))
+
+        return {"decision_id": decision_id, "class": "COMPLETE_RUN",
+                "status": "APPLIED",
+                "orchestration_id": run_id,
+                "project_id": project_id}
+
+    def _apply_bind_to_project(self, decision, decision_id, now):
+        node_id = decision.get("node_id")
+        project_id = decision.get("project_id")
+        if not node_id or not project_id:
+            return {"decision_id": decision_id,
+                    "class": "BIND_NODE_TO_PROJECT",
+                    "status": "SKIPPED",
+                    "note": "missing node_id or project_id"}
+        with self.plan.transaction() as cur:
+            self.plan.create_project_binding(
+                cur, node_id, project_id, now,
+                binding_reason=decision.get("reason"))
+        return {"decision_id": decision_id,
+                "class": "BIND_NODE_TO_PROJECT",
+                "status": "APPLIED",
+                "node_id": node_id, "project_id": project_id}
+
+    def _apply_engineering_request(self, decision, decision_id, now):
+        node_id = decision.get("node_id") or decision.get("workstream_id")
+        question = decision.get("question", "")
+        orch_id = self.orchestration_id or decision.get("orchestration_id")
+
+        if node_id and orch_id and \
+                hasattr(self.plan, "create_engineering_binding"):
+            from .proposals_util import canonical_json_digest
+            req_id = "er_" + canonical_json_digest({
+                "node": node_id, "question": question,
+            })[:32]
+            with self.plan.transaction() as cur:
+                self.plan.create_engineering_binding(
+                    cur, req_id, node_id, orch_id, question, now)
+
+        if node_id:
+            try:
+                with self.plan.transaction() as cur:
+                    self.plan.update_node_dimension(
+                        cur, node_id, "organizational_role", "ENGINEER")
+            except Exception:
+                pass
+            try:
+                with self.plan.transaction() as cur:
+                    cur.execute(
+                        "UPDATE project_workstreams"
+                        " SET organizational_role = 'ENGINEER'"
+                        " WHERE workstream_id = ?", (node_id,))
+            except Exception:
+                pass
+
+        return {"decision_id": decision_id,
+                "class": "REQUEST_ENGINEERING_DECISION",
+                "status": "APPLIED",
+                "node_id": node_id, "question": question}
+
+    def _apply_capability_request(self, decision, decision_id, now):
+        return {"decision_id": decision_id,
+                "class": "REQUEST_CAPABILITY",
+                "status": "APPLIED",
+                "capability": decision.get("capability"),
+                "node_id": decision.get("node_id")
+                or decision.get("workstream_id")}
+
+    def _apply_review_request(self, decision, decision_id, now):
+        return {"decision_id": decision_id,
+                "class": "REQUEST_REVIEW",
+                "status": "APPLIED",
+                "node_id": decision.get("node_id")
+                or decision.get("workstream_id")}
+
+    def _apply_restructure(self, decision, decision_id, now):
+        return {"decision_id": decision_id,
+                "class": "RESTRUCTURE_RUN",
+                "status": "APPLIED",
+                "rationale": decision.get("rationale", ""),
+                "orchestration_id": decision.get("orchestration_id")
+                or decision.get("project_id")}
