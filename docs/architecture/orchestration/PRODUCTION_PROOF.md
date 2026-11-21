@@ -2675,16 +2675,18 @@ different native provider sessions.
 
 | Item | Value |
 |---|---|
-| `main` | `46a769e` = `origin/main` |
+| Item | Value |
+|---|---|
+| `main` | `9e54344` = `origin/main` |
 | autobot.db | 31 COMPLETED + 2 HALTED + 2 BLOCKED sequences (35 total) |
-| intelligence.db | 2 ACTIVE objectives (Pilots 9/10), 11 COMPLETE |
+| intelligence.db | 2 ACTIVE objectives (Pilots 9/10), 11 COMPLETE; schema v4 |
 | Projects | 10 COMPLETED, 2 ACTIVE (Pilots 9/10 with HALTED builders) |
 | Taskforce | 4 ACTIVE members, 4 seats (3 ESTABLISHED + 1 RETAINED) |
 | Content store | 1327 objects |
 | Authority objects | 101 (autobot.db) |
 | Transition journal | 1578 entries |
 | Specialists | 6 registered |
-| Total tests | 1023 passed, 0 failed |
+| Total tests | 1055 passed, 0 failed |
 
 ### Publication history (complete)
 
@@ -2696,15 +2698,17 @@ different native provider sessions.
 | 33 | Production proof sections 27-29 | `bc0a5c9` | docs |
 | 34 | Research, effects, mixed project graph | `1026bea` | 1004 |
 | 35 | Final proof closure and capability classification | `4e7860c` | 1004 |
+| 36 | Post-PR35 reconciliation: Pilots 9/10/11 and F-TF-33/34/35 | `525d0c7` | 1023 |
 
-### Post-PR35 direct commits on main
+### Post-PR36 commits on main
 
 | Commit | Change | Tests |
 |---|---|---|
-| `23b191a` | Execution-evidence schema fix and generalized dimension integration | 1023 |
-| `7000a54` | F-TF-34 intermediate correction | 1023 |
-| `06921de` | F-TF-34 final: helios-only as measurements | 1023 |
-| `46a769e` | Specialist's Pilot 11 confirmation (governed publication) | 1023 |
+| `df3b6f5` | OrchestratorService, OrchestratorPolicy, OrchestratorPlanningView | 1043 |
+| `0f0fff0` | Orchestrator integrated into ContinuousDriver loop | 1043 |
+| `1e4c89a` | intelligence.db schema v4: generalized workstream dimensions + dependency table | 1043 |
+| `f89d21d` | Execution-evidence generalization: profile binding, receipt derivation, zstd | 1055 |
+| `9e54344` | Live schema v4: generalized writers, dependency APIs, real Orchestrator data | 1055 |
 
 ## 33. Capability classification
 
@@ -2721,8 +2725,8 @@ different native provider sessions.
 | SESSION_TRANSCRIPT | LIVE — PRODUCTION CONFIRMED | Pilot 11 |
 | CommandExecution-to-Helios correlation | PROVEN — SEMANTICS CORRECTED | F-TF-34, Pilot 11 |
 | Observed execution reach | AUTHORITY VISIBLE | Pilot 11 |
-| ExecutionProfile identity | FROZEN | |
-| Reach-policy identity | FROZEN | |
+| ExecutionProfile authority binding | IMPLEMENTED | Compiler freezes from work_profile; receipt reads from record |
+| Reach-policy derivation from frozen profile | IMPLEMENTED | Receipt resolves registered policy; historical fallback to luna-local/v1 |
 | Execution-reach integrity | LIVE — PRODUCTION CONFIRMED | Pilot 11 |
 | Engineering WorkProfile | IMPLEMENTED | Pilot 11 (implicit ENGINEERING) |
 | Research WorkProfile | IMPLEMENTED | |
@@ -2732,10 +2736,14 @@ different native provider sessions.
 | Filesystem effect | IMPLEMENTED | |
 | Git CAS effect | PROVEN | |
 | Research evidence model | IMPLEMENTED | |
-| Objective Orchestrator role | IMPLEMENTED | |
+| Objective Orchestrator runtime seam | IMPLEMENTED | Service, policy, view; integrated into driver; passthrough default |
+| Orchestrator production reasoning | PENDING | Requires production Opus policy |
 | Luna research specialists (luna-research/v1) | IMPLEMENTED | |
 | Luna operation specialists (luna-resource/v1) | IMPLEMENTED | |
 | Opus high-context escalation (opus-high-context/v1) | IMPLEMENTED | |
+| Generalized workstream persistence (schema v4) | IMPLEMENTED | Writers, readers, dependency APIs live |
+| JSONL.ZST native recognition | IMPLEMENTED | Session recognizer decompresses; CAS stores exact producer bytes |
+| Finding F-TF-36: governed builder false claim | RECORDED | Specialist published incorrect F-TF-35 claim; verification does not check prose |
 | HALTED recovery (F-TF-35) | OPEN / DEFERRED | Pilots 9/10 as evidence |
 | Acceptance reuse (Chapter 5) | DEFERRED BY FROZEN ROADMAP | |
 | Remote verification/publication (Chapter 6) | DEFERRED BY FROZEN ROADMAP | |
