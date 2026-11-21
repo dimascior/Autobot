@@ -2677,16 +2677,16 @@ different native provider sessions.
 |---|---|
 | Item | Value |
 |---|---|
-| `main` | `9e54344` = `origin/main` |
+| `main` | `484d6fd` = `origin/main` |
 | autobot.db | 31 COMPLETED + 2 HALTED + 2 BLOCKED sequences (35 total) |
-| intelligence.db | 2 ACTIVE objectives (Pilots 9/10), 11 COMPLETE; schema v4 |
+| intelligence.db | 2 ACTIVE objectives (Pilots 9/10), 11 COMPLETE; schema v5 |
 | Projects | 10 COMPLETED, 2 ACTIVE (Pilots 9/10 with HALTED builders) |
 | Taskforce | 4 ACTIVE members, 4 seats (3 ESTABLISHED + 1 RETAINED) |
 | Content store | 1327 objects |
 | Authority objects | 101 (autobot.db) |
 | Transition journal | 1578 entries |
 | Specialists | 6 registered |
-| Total tests | 1055 passed, 0 failed |
+| Total tests | 1089 passed, 0 failed |
 
 ### Publication history (complete)
 
@@ -2709,6 +2709,9 @@ different native provider sessions.
 | `1e4c89a` | intelligence.db schema v4: generalized workstream dimensions + dependency table | 1043 |
 | `f89d21d` | Execution-evidence generalization: profile binding, receipt derivation, zstd | 1055 |
 | `9e54344` | Live schema v4: generalized writers, dependency APIs, real Orchestrator data | 1055 |
+| `b39aea7` | ResourceScope authority binding: compiler, manifest, proposal validation | 1059 |
+| `623965e` | Functional Orchestrator: 13 typed decisions, validation, application, convergence | 1076 |
+| `484d6fd` | Workstream-to-authority bridge, durable orchestration reasoning, schema v5 | 1089 |
 
 ## 33. Capability classification
 
@@ -2736,8 +2739,10 @@ different native provider sessions.
 | Filesystem effect | IMPLEMENTED | |
 | Git CAS effect | PROVEN | |
 | Research evidence model | IMPLEMENTED | |
-| Objective Orchestrator runtime seam | IMPLEMENTED | Service, policy, view; integrated into driver; passthrough default |
-| Orchestrator production reasoning | PENDING | Requires production Opus policy |
+| Objective Orchestrator typed decisions | IMPLEMENTED | 13 decision classes, validation, deterministic application |
+| Orchestrator exactly-once reasoning | IMPLEMENTED | Durable orchestration_reasoning table; input-digest replay |
+| Orchestrator → authority bridge | IMPLEMENTED | workstream_to_proposal converts organizational to executable contracts |
+| Orchestrator production Opus policy | PENDING | Decision types and application ready; production reasoning route pending |
 | Luna research specialists (luna-research/v1) | IMPLEMENTED | |
 | Luna operation specialists (luna-resource/v1) | IMPLEMENTED | |
 | Opus high-context escalation (opus-high-context/v1) | IMPLEMENTED | |
