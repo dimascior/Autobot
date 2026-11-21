@@ -89,7 +89,7 @@ def main():
                interval=args.interval,
                once=args.once)
     else:
-        from .agent_stream import stream
+        from .agent_visual import stream
         stream(intel_path, auth_path,
                step_log_path=args.step_log,
                interval=args.interval,
