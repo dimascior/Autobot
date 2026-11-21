@@ -66,15 +66,28 @@ def main():
         return 1
 
     if args.json:
-        from .readers import IntelligenceReader, AuthorityReader, StepLogReader
+        import os
+        from .readers import (IntelligenceReader, AuthorityReader,
+                              StepLogReader, ConfigReader, AutoSwarmReader,
+                              CASReader)
         from .model import build_snapshot
         import dataclasses
 
         intel = IntelligenceReader(intel_path)
         auth = AuthorityReader(auth_path)
         step = StepLogReader(args.step_log) if args.step_log else None
+        # the same readers the screens use, so --json carries the same
+        # sessions and routes they show
+        config = ConfigReader(Path(intel_path).parent)
+        home = os.environ.get("AUTOSWARM_HOME") or config._load().get(
+            "paths", {}).get("autoswarm_home")
+        autoswarm = AutoSwarmReader(home) if home else None
+        cas = CASReader(Path(auth_path).parent / "store" / "objects")
         try:
-            snapshot = build_snapshot(intel, auth, step_reader=step)
+            snapshot = build_snapshot(intel, auth, step_reader=step,
+                                      config_reader=config,
+                                      autoswarm_reader=autoswarm,
+                                      cas_reader=cas)
             print(json.dumps(dataclasses.asdict(snapshot),
                              indent=2, default=str))
         finally:
