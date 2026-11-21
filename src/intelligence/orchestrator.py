@@ -564,6 +564,24 @@ class OrchestrationApplicator:
             results.append(result)
         return results
 
+    def _resolve_node_ref(self, ref, orchestration_id):
+        """Resolve a node reference to a node_id.
+
+        Accepts either a node_id (returned as-is) or a node_key
+        (looked up within the given run). This lets the Opus
+        Orchestrator use node_keys in ADD_EDGE decisions for nodes
+        it created in the same batch."""
+        if hasattr(self.plan, "orchestration_node"):
+            node = self.plan.orchestration_node(ref)
+            if node is not None:
+                return ref
+        if orchestration_id and \
+                hasattr(self.plan, "orchestration_nodes"):
+            for n in self.plan.orchestration_nodes(orchestration_id):
+                if n.get("node_key") == ref:
+                    return n["node_id"]
+        return ref
+
     def _apply_one(self, decision, now):
         cls = decision["class"]
         decision_id = "orc_" + _decision_digest(decision)[:32]
@@ -681,6 +699,9 @@ class OrchestrationApplicator:
             or decision.get("target_workstream")
         kind = decision["dependency_kind"]
         orch_id = self.orchestration_id or decision.get("orchestration_id")
+        if orch_id:
+            source = self._resolve_node_ref(source, orch_id)
+            target = self._resolve_node_ref(target, orch_id)
 
         if orch_id and hasattr(self.plan, "create_orchestration_edge"):
             from .proposals_util import canonical_json_digest

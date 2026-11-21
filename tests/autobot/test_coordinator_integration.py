@@ -309,9 +309,11 @@ class CoordinatorIntegrationTests(unittest.TestCase):
 
         req = proposal["requirement"]
         self.assertEqual(req["capability"], "research")
-        self.assertEqual(req["work_profile"], "RESEARCH")
+        self.assertNotIn("work_profile", req,
+                         "organizational dimension stays on the node")
         self.assertIn("roles", req)
         self.assertIn("objective", req)
+        self.assertIn("guidance", req)
 
 
 class FullChainOrchestratorPolicy(ChiefEngineerPolicy):
@@ -473,6 +475,180 @@ class FullChainAuthorityTests(CoordinatorIntegrationTests):
             "orchestration_id"]
         bindings = self.plan.project_bindings_for_run(run_id)
         self.assertEqual(len(bindings), 0)
+
+
+    def test_full_chain_authority_lifecycle(self):
+        """Complete lifecycle:
+            Coordinator → Run → A/B with edge
+            → A admitted (no predecessors)
+            → B admitted with predecessor A.record_hash
+            → A execution → verification → acceptance
+            → t-s41 → orchestration edge released
+            → B dispatched → execution → acceptance
+            → node outputs recorded → nodes COMPLETED"""
+        now = instant(self.clock.now())
+        self.transport.scripts = {
+            "investigator": [result(artifact=b"research findings\n")],
+            "builder": [result(artifact=b"implementation\n")],
+        }
+
+        self.plan.add_objective(
+            "obj-fc-full",
+            "Research and implement full authority chain",
+            "operator", now)
+
+        coord_policy = DeterministicCoordinatorPolicy(
+            mode="ORCHESTRATOR_ELEVATED")
+
+        orch_decisions = [
+            {"class": "CREATE_NODE", "node_key": "research",
+             "work_profile": "RESEARCH",
+             "realization_kind": "TASK_CONTRACT",
+             "capability": "research",
+             "description": "Research the full authority chain"},
+            {"class": "CREATE_NODE", "node_key": "implement",
+             "work_profile": "ENGINEERING",
+             "realization_kind": "TASK_CONTRACT",
+             "capability": "software_implementation",
+             "description": "Implement the full authority chain"},
+            {"class": "ADD_EDGE",
+             "source_node": "research",
+             "target_node": "implement",
+             "dependency_kind": "ACCEPTED_ARTIFACT"},
+        ]
+        orch_policy = DeterministicOrchestratorPolicy(
+            decisions=orch_decisions)
+
+        self.driver = self._driver(
+            FullChainOrchestratorPolicy(),
+            runner=QueueRunner(sequencer=self.rt.sequencer),
+            coordinator_policy=coord_policy,
+            orchestrator_policy=orch_policy)
+
+        report = self.driver.run_until_stable(max_steps=32)
+
+        # --- Verify organizational structure ----------------------
+        run_id = self.plan.active_orchestration_runs(
+            "obj-fc-full")[0]["orchestration_id"]
+        nodes = self.plan.orchestration_nodes(run_id)
+        node_a = next(n for n in nodes if n["node_key"] == "research")
+        node_b = next(n for n in nodes if n["node_key"] == "implement")
+
+        # Both nodes should have authority bindings
+        binding_a = self.plan.authority_binding_for_node(
+            node_a["node_id"])
+        self.assertIsNotNone(binding_a,
+                             "node A should have authority binding")
+        self.assertIsNotNone(binding_a.get("record_hash"),
+                             "binding A should have record_hash")
+        self.assertIsNotNone(binding_a.get("sequence_id"),
+                             "binding A should have sequence_id")
+
+        binding_b = self.plan.authority_binding_for_node(
+            node_b["node_id"])
+        self.assertIsNotNone(binding_b,
+                             "node B should have authority binding")
+        self.assertIsNotNone(binding_b.get("sequence_id"),
+                             "binding B should have sequence_id")
+
+        # B was admitted with A as predecessor
+        seq_b = binding_b["sequence_id"]
+        b_edges = self.plan.edges_for_node(
+            node_b["node_id"], direction="inbound")
+        self.assertGreaterEqual(len(b_edges), 1,
+                                "B should have inbound edge from A")
+
+        # Orchestration edge should be RELEASED
+        edge = b_edges[0]
+        self.assertEqual(edge["status"], "RELEASED",
+                         "A→B edge should be released after acceptance")
+        self.assertIsNotNone(edge.get("acceptance_receipt_sha256"),
+                             "edge should carry acceptance receipt")
+
+        # Node outputs should be recorded for A
+        outputs_a = self.plan.outputs_for_node(node_a["node_id"])
+        self.assertGreaterEqual(len(outputs_a), 1,
+                                "A should have recorded output")
+
+        # Zero project bindings (project-independent)
+        bindings = self.plan.project_bindings_for_run(run_id)
+        self.assertEqual(len(bindings), 0)
+
+    def test_full_chain_restart_convergence(self):
+        """Restart mid-chain produces the same final state.
+
+        Steps through partial execution, then restarts the driver
+        and runs to completion. Verifies no duplicate nodes,
+        bindings, or sequences are created."""
+        now = instant(self.clock.now())
+        self.transport.scripts = {
+            "investigator": [result(artifact=b"research output\n")],
+            "builder": [result(artifact=b"build output\n")],
+        }
+
+        self.plan.add_objective(
+            "obj-fc-restart",
+            "Restart convergence full chain",
+            "operator", now)
+
+        coord_policy = DeterministicCoordinatorPolicy(
+            mode="ORCHESTRATOR_ELEVATED")
+        orch_decisions = [
+            {"class": "CREATE_NODE", "node_key": "phase-a",
+             "work_profile": "RESEARCH",
+             "realization_kind": "TASK_CONTRACT",
+             "capability": "research",
+             "description": "Research phase A"},
+            {"class": "CREATE_NODE", "node_key": "phase-b",
+             "work_profile": "ENGINEERING",
+             "realization_kind": "TASK_CONTRACT",
+             "capability": "software_implementation",
+             "description": "Build phase B"},
+            {"class": "ADD_EDGE",
+             "source_node": "phase-a",
+             "target_node": "phase-b",
+             "dependency_kind": "ACCEPTED_ARTIFACT"},
+        ]
+        orch_policy = DeterministicOrchestratorPolicy(
+            decisions=orch_decisions)
+
+        self.driver = self._driver(
+            FullChainOrchestratorPolicy(),
+            runner=QueueRunner(sequencer=self.rt.sequencer),
+            coordinator_policy=coord_policy,
+            orchestrator_policy=orch_policy)
+
+        # Partial execution: a few steps
+        for _ in range(3):
+            self.driver.step()
+
+        run_id = self.plan.active_orchestration_runs(
+            "obj-fc-restart")[0]["orchestration_id"]
+        nodes_before = self.plan.orchestration_nodes(run_id)
+        self.assertEqual(len(nodes_before), 2,
+                         "exactly two nodes before restart")
+
+        # Restart
+        self.driver.close()
+        self.plan.close()
+        self.plan = PlanStore(self.dir / "intelligence.db")
+        self.driver = self._driver(
+            FullChainOrchestratorPolicy(),
+            runner=QueueRunner(sequencer=self.rt.sequencer),
+            coordinator_policy=coord_policy,
+            orchestrator_policy=orch_policy,
+            holder="chief-restarted")
+
+        self.driver.run_until_stable(max_steps=32)
+
+        nodes_after = self.plan.orchestration_nodes(run_id)
+        self.assertEqual(len(nodes_after), 2,
+                         "still exactly two nodes after restart")
+
+        decisions = self.plan.coordinator_decisions_for(
+            "obj-fc-restart")
+        self.assertEqual(len(decisions), 1,
+                         "one coordinator decision, not duplicated")
 
 
 if __name__ == "__main__":

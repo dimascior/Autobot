@@ -57,19 +57,15 @@ def node_to_proposal(node, objective_text, predecessors=None):
         cap = _infer_capability(wp, role)
     roles = _build_roles(role, cap, cp)
 
+    guidance = node.get("description") or objective_text
     requirement = {
         "objective": objective_text,
         "capability": cap,
         "roles": roles,
         "subsystem": key,
+        "guidance": guidance,
     }
 
-    if wp is not None:
-        requirement["work_profile"] = wp
-    if ep is not None:
-        requirement["execution_profile"] = ep
-    if rs is not None:
-        requirement["resource_scope"] = rs
     if fin_class and fin_class != "READ_ONLY":
         requirement["finalization_class"] = fin_class
     if predecessors:

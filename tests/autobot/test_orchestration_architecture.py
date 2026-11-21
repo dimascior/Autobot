@@ -631,8 +631,10 @@ class TestNodeToProposal(unittest.TestCase):
         self.assertEqual(proposal["origin_kind"], "ORCHESTRATION_NODE")
         self.assertEqual(proposal["origin_id"], "nd-r1")
         req = proposal["requirement"]
-        self.assertEqual(req["work_profile"], "RESEARCH")
-        self.assertEqual(req["execution_profile"], "luna-research/v1")
+        self.assertNotIn("work_profile", req,
+                         "organizational dimension stays on the node")
+        self.assertNotIn("execution_profile", req,
+                         "organizational dimension stays on the node")
 
     def test_engineering_node(self):
         node = {
@@ -646,7 +648,7 @@ class TestNodeToProposal(unittest.TestCase):
         proposal = node_to_proposal(node, "Implement the feature")
         self.assertEqual(proposal["class"], "CREATE_TASK")
         req = proposal["requirement"]
-        self.assertEqual(req["work_profile"], "ENGINEERING")
+        self.assertNotIn("work_profile", req)
 
     def test_operations_node(self):
         node = {

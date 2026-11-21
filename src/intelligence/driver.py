@@ -111,7 +111,6 @@ class ContinuousDriver:
             plan=plan,
             policy=orchestrator_policy or PassthroughOrchestratorPolicy(),
             clock=clock)
-        self.orchestration_applicator = OrchestrationApplicator(plan)
         self.coordinator = CoordinatorService(
             plan=plan,
             policy=coordinator_policy or PassthroughCoordinatorPolicy(),
@@ -161,39 +160,7 @@ class ContinuousDriver:
         self._renew_authority_lease()
         now = instant(self.clock.now())
         coordinator_report = self._coordinator_admit(now)
-        all_runs = []
-        all_nodes = []
-        all_edges = []
-        all_auth_bindings = []
-        all_outputs = []
-        for run in self.plan.active_orchestration_runs():
-            all_runs.append(run)
-            rid = run["orchestration_id"]
-            nodes = self.plan.orchestration_nodes(rid)
-            all_nodes.extend(nodes)
-            for nd in nodes:
-                all_edges.extend(
-                    self.plan.edges_for_node(nd["node_id"], "inbound"))
-                ab = self.plan.authority_binding_for_node(nd["node_id"])
-                if ab:
-                    all_auth_bindings.append(ab)
-                all_outputs.extend(
-                    self.plan.outputs_for_node(nd["node_id"]))
-        orchestration = self.orchestrator.run_cycle(
-            objectives=self.plan.active_objectives(),
-            projects=self.plan.active_projects(),
-            taskforce_state=self.taskforce.roster.snapshot(),
-            runs=all_runs, nodes=all_nodes, edges=all_edges,
-            authority_bindings=all_auth_bindings,
-            node_outputs=all_outputs)
-        if orchestration.get("decisions") and \
-                not orchestration.get("already_applied"):
-            applied = self.orchestration_applicator.apply(
-                orchestration["decisions"], now)
-            orchestration["applied"] = applied
-            if hasattr(self.plan, "persist_orchestration_application"):
-                self.plan.persist_orchestration_application(
-                    orchestration.get("input_digest"), applied)
+        orchestration = self._run_orchestration_cycles(now)
         admitted = self._admit_ready_workstreams(now)
         node_admitted = self._admit_ready_nodes(now)
         if admitted:
@@ -243,9 +210,6 @@ class ContinuousDriver:
                     continue
                 node = self.coordinator.create_initial_node(
                     run, objective, now)
-                if run["mode"] == "ORCHESTRATOR_ELEVATED":
-                    self.orchestration_applicator.orchestration_id = \
-                        run["orchestration_id"]
                 admissions.append({
                     "objective_id": oid,
                     "decision_id": result["decision"]["decision_id"],
@@ -259,6 +223,62 @@ class ContinuousDriver:
                     "error": "%s: %s" % (type(exc).__name__, exc),
                 })
         return {"admitted": admissions} if admissions else {}
+
+    def _run_orchestration_cycles(self, now):
+        """Run the Orchestrator per active ORCHESTRATOR_ELEVATED run.
+
+        Each run gets its own scoped view and a fresh applicator so
+        decisions from simultaneous objectives never land in the wrong
+        run."""
+        combined = {
+            "orchestrator_cycle": True,
+            "decisions": [],
+            "had_activity": False,
+            "delegate_to_engineer": [],
+        }
+        for run in self.plan.active_orchestration_runs():
+            if run["mode"] != "ORCHESTRATOR_ELEVATED":
+                continue
+            run_id = run["orchestration_id"]
+            obj = self.plan.objective(run["objective_id"])
+            if obj is None:
+                continue
+            run_nodes = self.plan.orchestration_nodes(run_id)
+            run_edges = []
+            run_bindings = []
+            run_outputs = []
+            for nd in run_nodes:
+                run_edges.extend(
+                    self.plan.edges_for_node(nd["node_id"], "inbound"))
+                ab = self.plan.authority_binding_for_node(nd["node_id"])
+                if ab:
+                    run_bindings.append(ab)
+                run_outputs.extend(
+                    self.plan.outputs_for_node(nd["node_id"]))
+            orch = self.orchestrator.run_cycle(
+                objectives=[obj],
+                projects=self.plan.projects(run["objective_id"]),
+                taskforce_state=self.taskforce.roster.snapshot(),
+                runs=[run], nodes=run_nodes, edges=run_edges,
+                authority_bindings=run_bindings,
+                node_outputs=run_outputs)
+            if orch.get("decisions") and \
+                    not orch.get("already_applied"):
+                applicator = OrchestrationApplicator(
+                    self.plan, orchestration_id=run_id)
+                applied = applicator.apply(orch["decisions"], now)
+                orch["applied"] = applied
+                if hasattr(self.plan,
+                           "persist_orchestration_application"):
+                    self.plan.persist_orchestration_application(
+                        orch.get("input_digest"), applied)
+            combined["decisions"].extend(
+                orch.get("decisions", []))
+            if orch.get("had_activity"):
+                combined["had_activity"] = True
+            combined["delegate_to_engineer"].extend(
+                orch.get("delegate_to_engineer", []))
+        return combined
 
     def _release_accepted_dependencies(self, now):
         """When a predecessor sequence is accepted, release the
@@ -361,9 +381,15 @@ class ContinuousDriver:
         return results
 
     def _admit_ready_nodes(self, now):
-        """Find OrchestrationNodes with realization_kind=TASK_CONTRACT
-        that are PENDING or READY with no authority binding, and whose
-        inbound edges are all released. Build proposals and admit them.
+        """Admit TASK_CONTRACT nodes whose predecessor authority identities
+        are available. Nodes are admitted as BLOCKED in the authority
+        plane when predecessors exist; t-s41 releases them when
+        predecessors accept.
+
+        Eligibility: every inbound edge's source node has an authority
+        binding (so its identity tier is available for predecessor
+        compilation). The orchestration edge may still be PENDING —
+        authority readiness, not organizational release, gates admission.
 
         Returns a list of admission results."""
         results = []
@@ -372,13 +398,23 @@ class ContinuousDriver:
             objective = self.plan.objective(run["objective_id"])
             if objective is None:
                 continue
-            nodes = self.plan.ready_nodes(run_id)
+            nodes = self.plan.orchestration_nodes(
+                run_id, status="PENDING")
             for node in nodes:
                 if node.get("realization_kind") != "TASK_CONTRACT":
                     continue
                 binding = self.plan.authority_binding_for_node(
                     node["node_id"])
                 if binding is not None:
+                    continue
+
+                inbound = self.plan.edges_for_node(
+                    node["node_id"], direction="inbound")
+                all_bound = all(
+                    self.plan.authority_binding_for_node(
+                        e["source_node_id"]) is not None
+                    for e in inbound)
+                if not all_bound:
                     continue
 
                 pred_edges = self._compile_node_predecessors(node)
@@ -409,13 +445,13 @@ class ContinuousDriver:
 
         Uses the source node's authority binding to determine the
         correct identity tier (record_hash, contract_digest, or
-        requirement_digest)."""
+        requirement_digest). Compiles from all inbound edges regardless
+        of organizational release status — authority readiness is
+        determined by binding availability, not edge RELEASED state."""
         pred_edges = []
         inbound = self.plan.edges_for_node(
             node["node_id"], direction="inbound")
         for edge in inbound:
-            if edge.get("status") != "RELEASED":
-                continue
             source_binding = self.plan.authority_binding_for_node(
                 edge["source_node_id"])
             if source_binding is None:
@@ -443,43 +479,56 @@ class ContinuousDriver:
         return pred_edges
 
     def _create_full_authority_binding(self, node, result, now):
-        """Create a complete authority binding with all identity tiers."""
+        """Create a complete authority binding with all six identity tiers.
+
+        Recovers every tier from the authority plane:
+            proposal_id      — the intelligence-side proposal
+            task_contract_id — from the TaskContractRecord payload
+            requirement_digest — from the TaskContractRecord payload
+            contract_digest  — from the TaskContractRecord payload
+            record_hash      — from sequences
+            sequence_id      — from admission result"""
+        import json as _json
         from .proposals_util import canonical_json_digest
+        sequence_id = result["sequence_id"]
         binding_id = "ab_" + canonical_json_digest({
             "node": node["node_id"],
-            "sequence": result["sequence_id"],
+            "sequence": sequence_id,
         })[:32]
-        proposal_row = self.plan.proposal(result.get("proposal_id"))
+        proposal_id = result.get("proposal_id")
         record_hash = None
+        task_contract_id = None
         requirement_digest = None
-        if proposal_row and proposal_row.get("sequence_id"):
-            seq_row = self.ro.execute(
-                "SELECT record_hash FROM sequences"
-                " WHERE sequence_id = ?",
-                (proposal_row["sequence_id"],)).fetchone()
-            if seq_row:
-                record_hash = seq_row["record_hash"]
+        contract_digest = None
+        seq_row = self.ro.execute(
+            "SELECT record_hash FROM sequences WHERE sequence_id = ?",
+            (sequence_id,)).fetchone()
+        if seq_row:
+            record_hash = seq_row["record_hash"]
+        if record_hash:
             rec_row = self.ro.execute(
                 "SELECT content_address FROM records"
                 " WHERE record_hash = ?",
-                (record_hash,)).fetchone() if record_hash else None
+                (record_hash,)).fetchone()
             if rec_row:
-                import json as _json
                 try:
                     payload = _json.loads(self.taskforce.store.get(
                         rec_row["content_address"]).decode("utf-8"))
-                    requirement_digest = payload.get("requirement_digest")
+                    task_contract_id = payload.get("task_contract_id")
+                    requirement_digest = payload.get(
+                        "requirement_digest")
+                    contract_digest = payload.get("contract_digest")
                 except Exception:
                     pass
         with self.plan.transaction() as cur:
             self.plan.create_authority_binding(
                 cur, binding_id, node["node_id"], now,
-                proposal_id=result.get("proposal_id"),
-                task_contract_id=result.get("task_contract_id"),
+                proposal_id=proposal_id,
+                task_contract_id=task_contract_id,
                 requirement_digest=requirement_digest,
-                contract_digest=result.get("contract_digest"),
+                contract_digest=contract_digest,
                 record_hash=record_hash,
-                sequence_id=result.get("sequence_id"))
+                sequence_id=sequence_id)
             self.plan.update_node_status(
                 cur, node["node_id"], "EXECUTING")
 
@@ -503,8 +552,8 @@ class ContinuousDriver:
                     (seq_id,)).fetchone()
                 if seq_row is None:
                     continue
-                if seq_row["state"] not in ("ACCEPTED", "COMPLETED",
-                                             "DEPENDENCIES_RELEASED"):
+                if seq_row["state"] not in ("DEPENDENCIES_RELEASED",
+                                             "COMPLETED"):
                     continue
 
                 released_row = self.ro.execute(
@@ -512,10 +561,10 @@ class ContinuousDriver:
                     " FROM released_edges"
                     " WHERE predecessor_sequence_id = ? LIMIT 1",
                     (seq_id,)).fetchone()
-                acc_sha = released_row["acceptance_sha256"] \
-                    if released_row else None
-                rel_sha = released_row["release_sha256"] \
-                    if released_row else None
+                if released_row is None:
+                    continue
+                acc_sha = released_row["acceptance_sha256"]
+                rel_sha = released_row["release_sha256"]
 
                 outbound = self.plan.edges_for_node(
                     node["node_id"], direction="outbound")
@@ -561,9 +610,36 @@ class ContinuousDriver:
         return releases
 
     def _resolve_accepted_artifact(self, sequence_id, binding):
-        """Resolve the accepted worker artifact SHA-256 from the
-        authority plane. Distinct from receipt addresses."""
+        """Resolve the artifact from the specific accepted attempt.
+
+        Uses the acceptance receipt to identify the exact attempt
+        authority accepted, so retries/repairs don't substitute a
+        different attempt's artifact. Falls back to the latest artifact
+        when the receipt cannot be resolved."""
         try:
+            accepted_attempt = None
+            rel_row = self.ro.execute(
+                "SELECT acceptance_sha256 FROM released_edges"
+                " WHERE predecessor_sequence_id = ? LIMIT 1",
+                (sequence_id,)).fetchone()
+            if rel_row and rel_row["acceptance_sha256"]:
+                try:
+                    import json as _json
+                    receipt_bytes = self.taskforce.store.get(
+                        rel_row["acceptance_sha256"])
+                    if receipt_bytes:
+                        receipt = _json.loads(
+                            receipt_bytes.decode("utf-8"))
+                        accepted_attempt = receipt.get("attempt_id")
+                except Exception:
+                    pass
+            if accepted_attempt:
+                art_row = self.ro.execute(
+                    "SELECT content_sha256 FROM attempt_artifacts"
+                    " WHERE attempt_id = ? LIMIT 1",
+                    (accepted_attempt,)).fetchone()
+                if art_row:
+                    return art_row["content_sha256"]
             row = self.ro.execute(
                 "SELECT content_sha256 FROM attempt_artifacts"
                 " WHERE sequence_id = ? ORDER BY rowid DESC LIMIT 1",
