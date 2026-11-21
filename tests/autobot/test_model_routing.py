@@ -1487,7 +1487,7 @@ class EscalationColumnMigrationTests(unittest.TestCase):
             raw.close()
             store = PlanStore(path)
             try:
-                self.assertEqual(PLAN_SCHEMA_VERSION, 4)
+                self.assertEqual(PLAN_SCHEMA_VERSION, 5)
                 version = store.conn.execute(
                     "SELECT value FROM meta WHERE key = 'schema_version'"
                 ).fetchone()["value"]

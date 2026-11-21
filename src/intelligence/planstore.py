@@ -28,7 +28,7 @@ from contextlib import contextmanager
 
 from .proposals_util import canonical_json_digest
 
-PLAN_SCHEMA_VERSION = 4
+PLAN_SCHEMA_VERSION = 5
 
 # The objective-scoped engineering-work budget applied when you set none
 # (cap-47: the limits are yours; these are only the conservative default).
@@ -501,7 +501,23 @@ _DDL_V4 = (
     )""",
 )
 
-_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4}
+_DDL_V5 = (
+    """CREATE TABLE IF NOT EXISTS orchestration_reasoning (
+        orchestration_cycle_id INTEGER PRIMARY KEY,
+        input_digest TEXT NOT NULL,
+        policy_id TEXT NOT NULL,
+        decisions TEXT NOT NULL,
+        application_results TEXT,
+        objectives TEXT,
+        route_metadata TEXT,
+        recorded_utc TEXT NOT NULL
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_orch_input
+        ON orchestration_reasoning(input_digest)""",
+)
+
+_MIGRATIONS = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4,
+               5: _DDL_V5}
 
 
 class PlanStoreTooNew(Exception):
@@ -1156,6 +1172,43 @@ class PlanStore:
                 " note = ? WHERE cycle_id = ? AND status = 'OPEN'",
                 (now, "interrupted; replayed by cycle %d" % by_cycle_id,
                  cycle_id))
+
+    # ---------------------------------------- orchestration reasoning
+
+    def record_orchestration_reasoning(self, input_digest, policy_id,
+                                       decisions_json, now,
+                                       application_results=None,
+                                       objectives=None,
+                                       route_metadata=None):
+        """Persist one orchestration reasoning cycle (exactly-once).
+
+        Returns the cycle id. If the same input_digest was already
+        recorded, returns the existing cycle id without duplicating."""
+        existing = self.conn.execute(
+            "SELECT orchestration_cycle_id FROM orchestration_reasoning"
+            " WHERE input_digest = ?", (input_digest,)).fetchone()
+        if existing is not None:
+            return existing["orchestration_cycle_id"]
+        with self.transaction() as cur:
+            cur.execute(
+                "INSERT INTO orchestration_reasoning"
+                " (input_digest, policy_id, decisions, application_results,"
+                "  objectives, route_metadata, recorded_utc)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (input_digest, policy_id, decisions_json,
+                 json.dumps(application_results) if application_results
+                 else None,
+                 json.dumps(objectives) if objectives else None,
+                 json.dumps(route_metadata) if route_metadata else None,
+                 now))
+            return cur.lastrowid
+
+    def orchestration_for_digest(self, input_digest):
+        """Return the recorded orchestration reasoning for a digest."""
+        row = self.conn.execute(
+            "SELECT * FROM orchestration_reasoning"
+            " WHERE input_digest = ?", (input_digest,)).fetchone()
+        return dict(row) if row else None
 
     # ------------------------------------------------------- driver lease
 

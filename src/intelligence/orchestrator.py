@@ -305,7 +305,10 @@ class OrchestratorService:
 
         Returns a report with orchestration decisions and which projects
         should be delegated to the Engineer for technical reasoning.
-        """
+
+        Exactly-once semantics: if a durable reasoning record exists for
+        the same organizational input digest, the recorded decisions are
+        replayed instead of invoking the policy again."""
         if not objectives:
             return {
                 "orchestrator_cycle": True,
@@ -327,16 +330,41 @@ class OrchestratorService:
                 + ":" + str(taskforce_state.get("seat_count", 0)),
         })
 
-        decisions = self.policy.interpret(view)
-        if decisions:
-            decisions = validate_orchestration_decisions(decisions)
+        replayed = False
+        if self.plan and hasattr(self.plan, "orchestration_for_digest"):
+            existing = self.plan.orchestration_for_digest(input_digest)
+            if existing is not None:
+                decisions = json.loads(existing["decisions"])
+                replayed = True
+            else:
+                decisions = self.policy.interpret(view)
+                if decisions:
+                    decisions = validate_orchestration_decisions(decisions)
+        else:
+            decisions = self.policy.interpret(view)
+            if decisions:
+                decisions = validate_orchestration_decisions(decisions)
+
         delegate = []
         for project in projects:
             if self.policy.should_delegate_to_engineer(view, project):
                 delegate.append(project.get("project_id")
                                 or project.get("title", "unnamed"))
 
-        had_activity = bool(decisions)
+        had_activity = bool(decisions) and not replayed
+
+        if had_activity and self.plan and \
+                hasattr(self.plan, "record_orchestration_reasoning"):
+            from autobot.models import instant
+            now = instant(self.clock.now()) if self.clock else None
+            if now:
+                self.plan.record_orchestration_reasoning(
+                    input_digest=input_digest,
+                    policy_id=self.policy.policy_id,
+                    decisions_json=json.dumps(decisions, sort_keys=True),
+                    now=now,
+                    objectives=[o.get("objective_id")
+                                for o in objectives])
 
         self._last_cycle = {
             "orchestrator_cycle": True,
@@ -347,6 +375,7 @@ class OrchestratorService:
             "objectives_count": len(objectives),
             "projects_count": len(projects),
             "had_activity": had_activity,
+            "replayed": replayed,
         }
         return dict(self._last_cycle)
 
