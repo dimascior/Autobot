@@ -58,6 +58,10 @@ def _any_activity(planning, sweep, orchestration=None, coordinator=None):
         return True
     if orchestration and orchestration.get("had_activity"):
         return True
+    if orchestration and (orchestration.get("admitted_nodes")
+                          or orchestration.get("admitted_workstreams")
+                          or orchestration.get("engineer_nodes")):
+        return True
     if planning["cycle_id"] is not None:
         return True
     for key in ("allocated", "adopted", "collected", "verified",

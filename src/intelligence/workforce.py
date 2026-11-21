@@ -719,6 +719,7 @@ class TaskforceRoster:
     def open_assignment(self, sequence_id, attempt_ordinal, selection,
                         objective_id, authorized_by_proposal, now,
                         execution=None, project_id=None, workstream_id=None,
+                        orchestration_node_id=None,
                         assignment_decision=None):
         """Persist one ProjectAssignment — who executes this attempt, on
         which staffing path and why — atomically and BEFORE anything
@@ -755,9 +756,10 @@ class TaskforceRoster:
                 " sequence_id, attempt_ordinal, objective_id, capability,"
                 " role, provider, model, selection_path, decided_by,"
                 " selected_reason, standing_at_assignment,"
-                " authorized_by_proposal, assignment_decision, execution,"
+                " authorized_by_proposal, assignment_decision,"
+                " orchestration_node_id, execution,"
                 " status, selected_utc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,"
-                " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SELECTED', ?)",
+                " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SELECTED', ?)",
                 (assignment_id, project_id, workstream_id,
                  specialist["specialist_id"], seat_id, sequence_id,
                  attempt_ordinal, objective_id, capability, role,
@@ -765,6 +767,7 @@ class TaskforceRoster:
                  decided_by,
                  json.dumps(selection["reason"], sort_keys=True), standing,
                  authorized_by_proposal, assignment_decision,
+                 orchestration_node_id,
                  json.dumps(execution, sort_keys=True) if execution
                  else None, now))
             if through_seat:

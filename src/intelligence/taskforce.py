@@ -293,6 +293,7 @@ class Taskforce:
         # capability request to the Taskforce.
         decision = self.plan.open_staffing_decision(sequence_id)
         workstream = self.plan.workstream_of_sequence(sequence_id) or {}
+        node = self.plan.node_of_sequence(sequence_id)
         return {
             "capability": capability, "role": role, "guidance": guidance,
             "findings": findings,
@@ -301,14 +302,13 @@ class Taskforce:
                 decision["specialist_id"] if decision else None,
             "staffing_decision":
                 decision["decision_id"] if decision else None,
-            # The escalation class that decision asked for, if any: an
-            # execution-routing input, recorded with the assignment.
             "escalation": decision.get("escalation") if decision else None,
             "authorization": authorization,
             "authorized_by": authorized_by,
             "objective_id": origin["objective_id"] if origin else None,
             "project_id": workstream.get("project_id"),
             "workstream_id": workstream.get("workstream_id"),
+            "orchestration_node_id": node["node_id"] if node else None,
             "subsystem": origin_requirement.get("subsystem"),
             "independent_of": query.review_authors(self.plan, self.ro,
                                                    work),
@@ -444,6 +444,25 @@ class Taskforce:
             environment=environment, subsystem=request["subsystem"],
             directive=directive,
             independent_of=request["independent_of"])
+        if selection is None and directive is None \
+                and request.get("orchestration_node_id"):
+            candidates = self.resolver.outside_candidates(
+                request["capability"], request["role"],
+                exclude=request["independent_of"] or [])
+            eligible = [c for c in candidates
+                        if c["eligible"] and c["available"]]
+            if eligible:
+                sp = self.roster.specialist(
+                    eligible[0]["specialist_id"])
+                role_key = eligible[0].get("role") or request["role"]
+                selection = {
+                    "specialist": sp,
+                    "capability": request["capability"],
+                    "role": role_key,
+                    "reason": {"path": "OUTSIDE_SPECIALIST",
+                               "decided_by": "TASKFORCE",
+                               "node_fallback": True},
+                    "decided_by": "TASKFORCE"}
         if selection is None:
             self._staffing_wait(
                 sequence_id, ordinal, request,
@@ -471,6 +490,7 @@ class Taskforce:
             request["authorized_by"], now, execution=execution or None,
             project_id=request["project_id"],
             workstream_id=request["workstream_id"],
+            orchestration_node_id=request.get("orchestration_node_id"),
             assignment_decision=request["staffing_decision"])
         return assignment
 

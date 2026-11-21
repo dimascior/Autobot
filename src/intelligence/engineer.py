@@ -672,8 +672,11 @@ class EngineerService:
             self._insert_proposal(cur, proposal_id, cycle_id, proposal,
                                   now, candidate=candidate,
                                   contract_digest=cd)
-            workstream = self._bind_workstream(cur, proposal_id, proposal,
-                                               now)
+            if proposal.get("origin_kind") != "ORCHESTRATION_NODE":
+                workstream = self._bind_workstream(cur, proposal_id,
+                                                   proposal, now)
+            else:
+                workstream = None
         if existing is not None and existing["candidate"]:
             # A durable candidate from an interrupted cycle is resubmitted
             # byte-for-byte: identical identity, Registry convergence.
@@ -703,11 +706,14 @@ class EngineerService:
         if budget_refused and "note" not in fields:
             fields["note"] = "admitted after a budget grant"
         self.plan.set_proposal_status(proposal_id, status, now, **fields)
-        return {"proposal_id": proposal_id, "class": proposal["class"],
-                "status": status,
-                "sequence_id": fields.get("sequence_id"),
-                "project_id": workstream["project_id"],
-                "workstream": workstream["workstream_key"]}
+        result = {"proposal_id": proposal_id, "class": proposal["class"],
+                  "status": status,
+                  "sequence_id": fields.get("sequence_id"),
+                  "task_contract_id": fields.get("task_contract_id")}
+        if workstream is not None:
+            result["project_id"] = workstream["project_id"]
+            result["workstream"] = workstream["workstream_key"]
+        return result
 
     def _dispose_decompose(self, proposal, cycle_id, ro_conn, now):
         results = []

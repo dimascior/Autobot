@@ -697,5 +697,119 @@ class FullChainAuthorityTests(CoordinatorIntegrationTests):
                          "one coordinator decision, not duplicated")
 
 
+    def test_operational_project_independence(self):
+        """Phase 1: a TASK_CONTRACT node executes through the complete
+        lifecycle without creating any legacy Projects or workstreams."""
+        now = instant(self.clock.now())
+        self.transport.scripts = {
+            "investigator": [result(artifact=b"project-free result\n")],
+        }
+
+        self.plan.add_objective(
+            "obj-opind",
+            "Demonstrate operational project independence",
+            "operator", now)
+
+        coord_policy = DeterministicCoordinatorPolicy(mode="DIRECT")
+        orch_policy = DeterministicOrchestratorPolicy(decisions=[])
+
+        self.driver = self._driver(
+            FullChainOrchestratorPolicy(),
+            runner=QueueRunner(sequencer=self.rt.sequencer),
+            coordinator_policy=coord_policy,
+            orchestrator_policy=orch_policy)
+
+        # Step 1: Coordinator admits + initial node created + node admitted
+        r1 = self.driver.step()
+
+        runs = self.plan.active_orchestration_runs("obj-opind")
+        self.assertEqual(len(runs), 1, "run created after step 1")
+        run_id = runs[0]["orchestration_id"]
+
+        nodes = self.plan.orchestration_nodes(run_id)
+        self.assertEqual(len(nodes), 1, "node created after step 1")
+        node = nodes[0]
+        self.assertEqual(node["realization_kind"], "TASK_CONTRACT")
+
+        ab = self.plan.authority_binding_for_node(node["node_id"])
+        self.assertIsNotNone(ab,
+                             "authority binding exists after step 1")
+        seq_id = ab["sequence_id"]
+        self.assertIsNotNone(seq_id, "sequence_id in binding")
+
+        # Verify no legacy project was created
+        projects = self.plan.projects("obj-opind")
+        self.assertEqual(len(projects), 0,
+                         "zero legacy Projects after node admission")
+
+        # Verify authority state
+        seq_state = self.driver.taskforce.ro.execute(
+            "SELECT state FROM sequences WHERE sequence_id = ?",
+            (seq_id,)).fetchone()
+        self.assertIsNotNone(seq_state,
+                             "sequence exists in authority store")
+        self.assertEqual(seq_state["state"], "READY",
+                         "sequence is READY (no predecessors)")
+
+        # Verify proposal has ADMITTED status and sequence_id
+        proposal_id = ab["proposal_id"]
+        proposal_row = self.plan.proposal(proposal_id)
+        self.assertEqual(proposal_row["status"], "ADMITTED")
+        self.assertEqual(proposal_row["sequence_id"], seq_id)
+
+        # Verify the READY sequence is visible to Taskforce
+        ready_seqs = [dict(r) for r in self.driver.taskforce.ro.execute(
+            "SELECT * FROM sequences WHERE state = 'READY'").fetchall()]
+        self.assertGreaterEqual(len(ready_seqs), 1,
+                                "at least 1 READY sequence visible to TF")
+        self.assertIn(seq_id, [s["sequence_id"] for s in ready_seqs],
+                      "our sequence is in READY list")
+
+        # Verify work_requirement resolves
+        from intelligence import query
+        work = query.work_requirement(self.plan, seq_id)
+        self.assertIsNotNone(work,
+                             "work_requirement resolves for sequence")
+        self.assertEqual(work["capability"], "research")
+
+        # Continue until stable
+        report = self.driver.run_until_stable(max_steps=48)
+        self.assertGreater(report["steps"], 1,
+                           "run_until_stable executes steps beyond step 1")
+
+        # --- Authority binding (all 6 tiers) ---
+        ab = self.plan.authority_binding_for_node(node["node_id"])
+        for tier in ("proposal_id", "task_contract_id",
+                     "requirement_digest", "contract_digest",
+                     "record_hash", "sequence_id"):
+            self.assertIsNotNone(ab.get(tier),
+                                 "binding tier %s present" % tier)
+
+        # Zero project bindings
+        bindings = self.plan.project_bindings_for_run(run_id)
+        self.assertEqual(len(bindings), 0)
+
+        # --- Assignment verification ---
+        assignments = self.plan.conn.execute(
+            "SELECT * FROM project_assignments"
+            " WHERE sequence_id = ?", (seq_id,)).fetchall()
+        self.assertGreaterEqual(len(assignments), 1,
+                                "at least one assignment for sequence")
+
+        asgn = dict(assignments[0])
+        self.assertIsNone(asgn["project_id"],
+                          "assignment.project_id is NULL")
+        self.assertIsNone(asgn["workstream_id"],
+                          "assignment.workstream_id is NULL")
+        self.assertEqual(asgn["orchestration_node_id"],
+                         node["node_id"],
+                         "assignment.orchestration_node_id = node_id")
+
+        # --- Node output ---
+        outputs = self.plan.outputs_for_node(node["node_id"])
+        self.assertGreaterEqual(len(outputs), 1,
+                                "node has recorded output")
+
+
 if __name__ == "__main__":
     unittest.main()
