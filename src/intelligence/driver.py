@@ -161,6 +161,7 @@ class ContinuousDriver:
         now = instant(self.clock.now())
         coordinator_report = self._coordinator_admit(now)
         orchestration = self._run_orchestration_cycles(now)
+        self._repair_incomplete_bindings(now)
         engineer_nodes = self._realize_engineer_nodes(now)
         admitted = self._admit_ready_workstreams(now)
         node_admitted = self._admit_ready_nodes(now)
@@ -370,6 +371,53 @@ class ContinuousDriver:
                             type(exc).__name__, exc),
                     })
         return results
+
+    def _repair_incomplete_bindings(self, now):
+        """One-time repair: backfill missing identity tiers on existing
+        authority bindings. Runs during the step that detects them."""
+        import json as _json
+        for run in self.plan.active_orchestration_runs():
+            for node in self.plan.orchestration_nodes(
+                    run["orchestration_id"]):
+                binding = self.plan.authority_binding_for_node(
+                    node["node_id"])
+                if binding is None:
+                    continue
+                if binding.get("contract_digest") and \
+                        binding.get("requirement_digest"):
+                    continue
+                seq_id = binding.get("sequence_id")
+                if not seq_id:
+                    continue
+                updates = {}
+                seq_row = self.ro.execute(
+                    "SELECT contract_digest FROM sequences"
+                    " WHERE sequence_id = ?",
+                    (seq_id,)).fetchone()
+                if seq_row and not binding.get("contract_digest"):
+                    updates["contract_digest"] = seq_row[
+                        "contract_digest"]
+                rh = binding.get("record_hash")
+                if rh and not binding.get("requirement_digest"):
+                    rec = self.ro.execute(
+                        "SELECT content_address FROM records"
+                        " WHERE record_hash = ?",
+                        (rh,)).fetchone()
+                    if rec:
+                        try:
+                            payload = _json.loads(
+                                self.taskforce.store.get(
+                                    rec["content_address"]
+                                ).decode("utf-8"))
+                            from contract_library.digests import \
+                                requirement_digest as _rd
+                            updates["requirement_digest"] = _rd(payload)
+                        except Exception:
+                            pass
+                if updates:
+                    with self.plan.transaction() as cur:
+                        self.plan.update_authority_binding(
+                            cur, binding["binding_id"], **updates)
 
     def _release_accepted_dependencies(self, now):
         """When a predecessor sequence is accepted, release the
