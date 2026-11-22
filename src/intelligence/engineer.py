@@ -1014,11 +1014,18 @@ class EngineerService:
                       "note": "no Taskforce roster is attached to this"
                               " planning service"}
         elif proposal["class"] == "RETAIN_SPECIALIST":
-            result = self.roster.retain(
-                proposal["specialist_id"], proposal["capability"],
-                proposal["role"], proposal["demonstrations"],
-                proposal["rationale"], now, proposal_id=proposal_id,
-                objective_id=proposal["objective_id"])
+            pool_ids = {p["specialist_id"]
+                        for p in self.roster.pool.profiles()}
+            if proposal["specialist_id"] not in pool_ids:
+                result = {"status": "REJECTED",
+                          "note": "specialist is not in the current"
+                                  " catalog (pool reconciliation)"}
+            else:
+                result = self.roster.retain(
+                    proposal["specialist_id"], proposal["capability"],
+                    proposal["role"], proposal["demonstrations"],
+                    proposal["rationale"], now, proposal_id=proposal_id,
+                    objective_id=proposal["objective_id"])
         else:
             project = self.plan.active_project(proposal["objective_id"])
             result = self.roster.release(
