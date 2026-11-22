@@ -953,10 +953,10 @@ def _dag_lines(snapshot, now, wide=True):
     for p in live:
         done = sum(1 for it in p.items if it.state == "COMPLETED")
         if p.kind == "plan" and unbound.get(p.objective_id):
-            where = "Orchestrator plan, not bound to %s" % ", ".join(
-                unbound[p.objective_id])
+            where = "%s, not bound to %s" % (
+                p.title, ", ".join(unbound[p.objective_id]))
         elif p.kind == "plan":
-            where = "Orchestrator plan, no project"
+            where = "%s, no project" % p.title
         else:
             where = p.project_id[:7]
         lines.append(L(P(
@@ -1214,7 +1214,7 @@ def compose(scr, snapshot, tick=0, routing=None):
         _band_title(scr, y, w, "DAG", C["accent"],
                     "work graph · %d active project%s%s" % (
                         live, "" if live == 1 else "s",
-                        " · %d plan%s without a project" % (
+                        " · %d run%s without a project" % (
                             plans, "" if plans == 1 else "s")
                         if plans else ""))
         y += 1
