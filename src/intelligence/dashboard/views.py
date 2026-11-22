@@ -315,12 +315,38 @@ class StaffingView:
 
 
 @dataclass(frozen=True)
+@dataclass(frozen=True)
+class EngineeringDecisionView:
+    """An ENGINEER_REASONING binding: a request to the Engineer and
+    its adopted decision."""
+    request_id: str
+    node_id: Optional[str] = None
+    decision_id: Optional[str] = None
+    content_sha256: Optional[str] = None
+    created_utc: Optional[str] = None
+    adopted_utc: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class RecentProposalView:
+    """A recently disposed proposal: what the Engineer produced."""
+    proposal_class: str
+    status: str
+    objective_id: Optional[str] = None
+    workstream_key: Optional[str] = None
+    created_utc: Optional[str] = None
+
+
+@dataclass
 class EngineerView:
     """The Project Manager's live state: its cycles, what waits, what it
     has not staffed yet, and whether its reasoning is retrievable."""
     cycles: List[CycleView] = field(default_factory=list)
     waiting: List[ProposalView] = field(default_factory=list)
     staffing_open: List[StaffingView] = field(default_factory=list)
+    engineering_decisions: List[EngineeringDecisionView] = field(
+        default_factory=list)
+    recent_proposals: List[RecentProposalView] = field(default_factory=list)
     decisions_total: int = 0
     decisions_stored: int = 0
 

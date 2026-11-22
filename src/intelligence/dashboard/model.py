@@ -18,6 +18,7 @@ from .views import (
     SequenceView, AttemptView, AssignmentView, SeatView,
     TaskforceView, RoutingView, ActiveSessionView, SessionView,
     LivenessView, CycleView, ProposalView, StaffingView, EngineerView,
+    EngineeringDecisionView, RecentProposalView,
     EdgeRefView, WorkItemView, ProjectView, TrustView, AttentionItem,
     OrchestratorView,
 )
@@ -971,6 +972,21 @@ def build_snapshot(intelligence, authority, step_reader=None,
         if sha and cas_reader is not None and cas_reader.exists(
                 sha if sha.startswith("sha256:") else "sha256:" + sha):
             stored += 1
+    eng_bindings = [EngineeringDecisionView(
+        request_id=d.get("engineering_request_id", ""),
+        node_id=d.get("node_id"),
+        decision_id=d.get("engineering_decision_id"),
+        content_sha256=d.get("content_sha256"),
+        created_utc=d.get("created_utc"),
+        adopted_utc=d.get("adopted_utc"))
+        for d in decisions]
+    recent_props = [RecentProposalView(
+        proposal_class=p.get("class") or "?",
+        status=p.get("status") or "?",
+        objective_id=p.get("objective_id"),
+        workstream_key=name_of(p.get("sequence_id")),
+        created_utc=p.get("created_utc"))
+        for p in _call(intelligence, "recent_proposals", [])]
     engineer = EngineerView(
         cycles=[CycleView(
             cycle_id=c["cycle_id"], started_utc=c.get("started_utc") or "",
@@ -987,6 +1003,8 @@ def build_snapshot(intelligence, authority, step_reader=None,
             workstream_key=name_of(p.get("sequence_id")))
             for p in _call(intelligence, "open_proposals", [])],
         staffing_open=staffing,
+        engineering_decisions=eng_bindings,
+        recent_proposals=recent_props,
         decisions_total=len(decisions),
         decisions_stored=stored)
 

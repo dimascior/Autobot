@@ -418,6 +418,19 @@ class IntelligenceReader:
         except sqlite3.OperationalError:
             return []
 
+    def recent_proposals(self, limit=10):
+        """Recently disposed proposals (last N by created_utc)."""
+        try:
+            return _rows(self.conn,
+                         "SELECT proposal_id, class, status, objective_id,"
+                         " sequence_id, created_utc"
+                         " FROM proposals WHERE status IN"
+                         " ('ADMITTED','APPLIED','REJECTED')"
+                         " ORDER BY created_utc DESC LIMIT ?",
+                         (limit,))
+        except sqlite3.OperationalError:
+            return []
+
     def engineering_decisions(self):
         """The Engineer's reasoning bindings; content_sha256 names the
         decision text the driver hashed."""

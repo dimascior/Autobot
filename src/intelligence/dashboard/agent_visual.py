@@ -476,81 +476,75 @@ def _orch_lines(snapshot, now, narrow=False):
 def _eng_lines(snapshot, now, narrow=False):
     e = snapshot.engineer
     lines = []
+    planner = snapshot.routing.planner_model
     if e.cycles:
         c = e.cycles[0]
         is_open = c.status == "OPEN"
-        lines.append(L(
+        line = L(
             P(S("cycle %s " % c.cycle_id, C["bright"], True),
               S(c.status, C["accent"] if is_open else C["dim"], is_open)),
-            P(S(" · started %s (%s)" % (_when(c.started_utc, now),
-                                        _ago(c.started_utc, now)), C["dim"])),
+            P(S(" %s" % _ago(c.started_utc, now), C["dim"])),
             P(S(" · %d proposal%s" % (c.proposals,
-                                      "" if c.proposals == 1 else "s")))))
+                                      "" if c.proposals == 1 else "s"))))
+        if planner and planner != "?":
+            line.append(P(S(" · %s" % planner, C["luna"])))
+        lines.append(line)
     else:
         lines.append(L(P(S("no cycles recorded", C["dim"]))))
-    planner = snapshot.routing.planner_model
-    if planner and planner != "?":
-        lines.append(L(P(S("reasons on ", C["dim"]), S(planner, C["luna"]))))
+
+    if e.engineering_decisions:
+        for d in e.engineering_decisions[-3:]:
+            adopted = "adopted" if d.adopted_utc else "pending"
+            lines.append(L(
+                P(S("  eng ", C["dim"])),
+                P(S(d.request_id[:20], C["bright"])),
+                P(S(" %s" % adopted,
+                    C["success"] if d.adopted_utc else C["warn"])),
+                P(S(" %s" % _ago(d.adopted_utc or d.created_utc, now),
+                    C["dim"]))))
+
+    if e.recent_proposals:
+        by_class = {}
+        for p in e.recent_proposals:
+            by_class[p.proposal_class] = by_class.get(
+                p.proposal_class, 0) + 1
+        lines.append(L(P(S("recent ", C["dim"])),
+                       *_sep_parts(
+            [[S("%s ×%d" % (k, n), C["accent"])]
+             for k, n in sorted(by_class.items())], first="", sep=" · ")))
+
     projects = [p for p in snapshot.projects if p.status == "ACTIVE"]
     with_work = [p for p in projects if p.items]
     closed = len(snapshot.projects) - len(projects)
-    lines.append(L(P(S("projects ", C["dim"]),
-                     S("%d active" % len(projects), C["bright"]),
+    lines.append(L(P(S("projects %d active" % len(projects), C["dim"]),
                      S(" · %d closed" % closed, C["dim"]))))
     for p in sorted(with_work, key=lambda p: p.opened_utc or "",
                     reverse=True):
         done = sum(1 for it in p.items if it.state == "COMPLETED")
-        progress = P(S("  %d/%d done" % (done, len(p.items)),
-                       C["success"] if p.items and done == len(p.items)
-                       else C["dim"]))
-        if narrow:
-            lines.append(L(P(S("  %s" % p.project_id[:7], C["dim"])),
-                           progress, P(S("  " + (p.title or "(untitled)")))))
-        else:
-            lines.append(L(
-                P(S("  %s " % p.project_id[:7], C["dim"]),
-                  S(p.title or "(untitled)")), progress))
+        total = len(p.items)
+        lines.append(L(
+            P(S("  %s " % p.project_id[:7], C["dim"]),
+              S(_short(p.title or "(untitled)", 40 if narrow else 50)),
+              S("  %d/%d" % (done, total),
+                C["success"] if total and done == total else C["dim"]))))
     empty = len(projects) - len(with_work)
     if empty:
-        lines.append(L(P(S("  + %d with no workstreams" % empty, C["dim"]))))
-    if e.waiting:
-        # a wait names its sequence; one that does not is shown by the
-        # halted work of its objective, else by the objective
-        halted = {}
-        for p in snapshot.projects:
-            for it in p.items:
-                if (it.state or "").startswith("HALTED"):
-                    halted.setdefault(p.objective_id, []).append(
-                        it.workstream_key)
-        by_class = {}
-        for p in e.waiting:
-            subjects = by_class.setdefault(p.proposal_class, [])
-            for name in ([p.workstream_key] if p.workstream_key else
-                         halted.get(p.objective_id)
-                         or [p.objective_id or "?"]):
-                if name not in subjects:
-                    subjects.append(name)
-        counts = {}
-        for p in e.waiting:
-            counts[p.proposal_class] = counts.get(p.proposal_class, 0) + 1
-        for klass, subjects in sorted(by_class.items()):
-            lines.append(L(P(S("⚑ waiting ", C["warn"]),
-                             S("%s ×%d" % (klass, counts[klass]), C["warn"])),
-                           *_sep_parts([[S(_short(s, 40), C["dim"])]
-                                        for s in subjects], first=" · ")))
-    if e.staffing_open:
-        lines.append(L(P(S("staffing open %d" % len(e.staffing_open))),
-                       *_sep_parts([[S("%s → %s" % (
-                           _short(s.workstream_key or s.sequence_id[:12], 40),
-                           s.specialist_handle or s.mode.replace("_", " ")),
-                           C["dim"])] for s in e.staffing_open],
-                           first=" · ")))
-    if e.decisions_total:
-        missing = e.decisions_total - e.decisions_stored
-        lines.append(L(
-            P(S("reasoning %d decisions" % e.decisions_total, C["dim"])),
-            P(S(" · %d text not stored (O4)" % missing, C["warn"])
-              if missing else S(" · all stored", C["dim"]))))
+        lines.append(L(P(S("  + %d empty" % empty, C["dim"]))))
+
+    if e.waiting or e.staffing_open:
+        parts = []
+        if e.waiting:
+            counts = {}
+            for p in e.waiting:
+                counts[p.proposal_class] = counts.get(
+                    p.proposal_class, 0) + 1
+            for k, n in sorted(counts.items()):
+                parts.append([S("%s ×%d" % (k, n), C["warn"])])
+        if e.staffing_open:
+            parts.append([S("staffing ×%d" % len(e.staffing_open),
+                            C["accent"])])
+        lines.append(L(P(S("blocked ", C["warn"])),
+                       *_sep_parts(parts, first="", sep=" · ")))
     return lines
 
 
