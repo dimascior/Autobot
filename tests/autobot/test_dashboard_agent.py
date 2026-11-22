@@ -191,7 +191,7 @@ class AgentFixture(CompactFixture):
         try:
             snap = build_snapshot(intel, auth,
                                   config_reader=ConfigReader(self.root),
-                                  autoswarm_reader=AutoSwarmReader(self.home),
+                                  autoswarm_reader=self.autoswarm(),
                                   cas_reader=CASReader(self.cas_root),
                                   now=captured)
         finally:
@@ -367,15 +367,20 @@ class AgentViewTests(unittest.TestCase):
 
     # --- bands ------------------------------------------------------------
 
-    def test_executing_band_lists_attempts_in_flight_only(self):
+    def test_executing_band_lists_live_sessions_only(self):
         rows = band(self.lines, "EXECUTING")
-        self.assertIn_any("▶ w1  res-holder (seat) → luna-6-max"
-                          "  RUNNING since 17:58:32 · session 1m32s"
-                          " · pid 18800 · READ_ONLY · obj-live", rows)
-        self.assertIn_any("call_live · no output yet", rows)
+        # one row per session, the route first (a handle is a name)
+        live = next(r for r in rows if r.startswith("▶ w1"))
+        self.assertIn("▶ w1  luna-6-max · res-holder (seat)  RUNNING since"
+                      " 17:58:32 · session 1m32s", live)
+        for part in ("no activity recorded yet", "pid 18800", "READ_ONLY",
+                     "obj-live"):
+            self.assertIn(part, live)
+        self.assertIn("━━ EXECUTING ━ 1 running ", self.text)
         for row in rows:
             self.assertNotIn("HALTED", row)
             self.assertNotIn("BLOCKED", row)
+            self.assertNotIn("no output yet", row)
 
     def test_dag_band_draws_the_project_work_graph(self):
         rows = band(self.lines, "DAG")
@@ -426,7 +431,8 @@ class AgentViewTests(unittest.TestCase):
     # --- sizes ------------------------------------------------------------
 
     def test_every_size_draws_all_three_bands(self):
-        for width, height in ((146, 53), (120, 40), (100, 30), (80, 24)):
+        for width, height in ((230, 53), (146, 53), (120, 40), (100, 30),
+                              (80, 24)):
             lines = frame(self.snap, width, height)
             text = "\n".join(lines)
             for title in ("EXECUTING", "DAG", "ACTIVITY"):
@@ -445,6 +451,18 @@ class AgentViewTests(unittest.TestCase):
     def test_wide_terminal_uses_its_full_width(self):
         top = next(line for line in self.lines if "ORCHESTRATOR═" in line)
         self.assertGreater(len(top), 140)
+
+    def test_from_200_columns_the_four_boxes_share_one_row(self):
+        lines = frame(self.snap, 230, 53)
+        top = next(line for line in lines if "COORDINATOR═" in line)
+        for title in ("ORCHESTRATOR═", "ENGINEER═", "TASKFORCE═"):
+            self.assertIn(title, top)
+        # and the rows they free go to the live bands
+        rows_146 = sum(len(band(self.lines, b)) for b in
+                       ("EXECUTING", "DAG", "ACTIVITY"))
+        rows_230 = sum(len(band(lines, b)) for b in
+                       ("EXECUTING", "DAG", "ACTIVITY"))
+        self.assertGreater(rows_230, rows_146)
 
 
 class FollowsActivityTests(unittest.TestCase):
@@ -565,14 +583,16 @@ class StreamTests(unittest.TestCase):
         try:
             fx = AgentFixture(tmp)
             sizes = iter(sizes)
+            kwargs.setdefault("interval", 0.01)
             with mock.patch.object(agent_visual.time, "sleep", sleep), \
                     mock.patch.object(agent_visual.sys, "stdout", out), \
                     mock.patch.dict(os.environ,
-                                    {"AUTOSWARM_HOME": str(fx.home)}), \
+                                    {"AUTOSWARM_HOME": str(fx.home),
+                                     "CODEX_HOME": str(fx.codex_home)}), \
                     mock.patch.object(agent_visual, "_terminal_size",
                                       lambda: next(sizes)):
                 agent_visual.stream(str(fx.intel_path), str(fx.auth_path),
-                                    interval=0.01, **kwargs)
+                                    **kwargs)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         return out.getvalue()
@@ -593,6 +613,18 @@ class StreamTests(unittest.TestCase):
         last = text.rsplit("\033[2J", 1)[1]
         self.assertIn("\033[40;1H", last)
         self.assertNotIn("\033[41;1H", last)
+
+    def test_the_frame_after_a_resize_is_drawn_whole_too(self):
+        # a terminal can redraw content it kept from before the resize
+        text = self.run_stream(_TTY(), [(146, 53), (146, 53), (120, 40),
+                                        (120, 40)], ticks=3)
+        self.assertEqual(text.count("\033[2J"), 4)  # start, frame, 2 resize
+
+    def test_every_tenth_second_the_frame_is_drawn_whole(self):
+        # with a 5 s interval every second frame is a full repaint, so no
+        # cell an earlier frame left on the terminal stays
+        text = self.run_stream(_TTY(), [(146, 53)] * 5, ticks=4, interval=5)
+        self.assertEqual(text.count("\033[2J"), 3)  # start, frames 0 and 2
 
     def test_once_prints_plain_lines_when_not_a_terminal(self):
         text = self.run_stream(io.StringIO(), [(146, 53)] * 2, ticks=1,
