@@ -49,7 +49,7 @@ from .model import SEQUENCE_TERMINAL
 from .readers import ATTEMPT_TERMINAL
 from .screen import (
     Screen, HIDE_CURSOR, SHOW_CURSOR, ALT_SCREEN_ON, ALT_SCREEN_OFF,
-    CLEAR_SCREEN, WRAP_OFF, WRAP_ON)
+    CLEAR_SCREEN, WRAP_OFF, WRAP_ON, ALT_SCROLL_ON, ALT_SCROLL_OFF)
 
 # ── 256-color palette ─────────────────────────────────────────────────
 
@@ -1000,17 +1000,138 @@ def _dag_lines(snapshot, now, wide=True):
     return lines
 
 
-def _activity_lines(snapshot, now):
+def _event_lines(events, now):
     lines = []
-    for ev in snapshot.recent_events:
+    for ev in events:
         icon, color = LAYER.get(ev.layer, ("·", C["dim"]))
         subject, _, change = (ev.summary or "").partition(" ")
         lines.append(L(P(S(_precise(ev.timestamp, now), C["dim"]),
                          S(" "), S(icon, color), S(" " + subject)),
                        P(S(" " + change)) if change else None))
-    if not lines:
-        lines.append(L(P(S("no activity recorded", C["dim"]))))
     return lines
+
+
+def _activity_lines(snapshot, now):
+    return _event_lines(snapshot.recent_events, now) or [
+        L(P(S("no activity recorded", C["dim"])))]
+
+
+# ── the ACTIVITY band: a window over the history, scrolled by keys ──────
+
+class ActivityView:
+    """What the viewer has done to the ACTIVITY band of the live view: how
+    far back it is scrolled (the event at its top, counted from the
+    newest) and whether it fills the screen. Scrolled back, the band keeps
+    the same event at its top while new ones arrive; Home follows the
+    newest again."""
+
+    def __init__(self):
+        self.top = 0          # index of the event at the band's top
+        self.anchor = None    # (timestamp, layer, summary) of that event
+        self.expanded = False
+        self.page = 10        # events the band showed in the last frame
+
+    def scroll(self, events):
+        self.top = max(0, self.top + events)
+        self.anchor = None    # the next frame anchors the new top
+
+    def newest(self):
+        self.top, self.anchor = 0, None
+
+
+KEY_HELP = "↓↑ PgDn PgUp scroll · Home newest · a expand · q quit"
+
+
+def apply_key(view, key):
+    """Change ``view`` for one key. Returns "quit" for q."""
+    if key in ("q", "Q"):
+        return "quit"
+    if key in ("down", "j"):
+        view.scroll(1)
+    elif key in ("up", "k"):
+        view.scroll(-1)
+    elif key in ("pgdn", " "):
+        view.scroll(max(1, view.page - 1))
+    elif key == "pgup":
+        view.scroll(-max(1, view.page - 1))
+    elif key in ("home", "g"):
+        view.newest()
+    elif key in ("end", "G"):
+        view.top, view.anchor = 10 ** 9, None
+    elif key in ("a", "A"):
+        view.expanded = not view.expanded
+    return None
+
+
+def _activity_window(snapshot, now, view, width, rows):
+    """The band's rows from the view's top event; (rows, events shown,
+    events in the history). The last row counts the older events when
+    they do not all fit."""
+    events = snapshot.recent_events
+    total = len(events)
+    top = 0
+    if view is not None and total:
+        top = view.top
+        if top and view.anchor is not None:
+            for i, ev in enumerate(events):
+                if (ev.timestamp, ev.layer, ev.summary) == view.anchor:
+                    top = i
+                    break
+        top = max(0, min(top, total - 1))
+        view.top = top
+        ev = events[top]
+        view.anchor = (ev.timestamp, ev.layer, ev.summary) if top else None
+    lines = (_event_lines(events[top:], now) if total else
+             [L(P(S("no activity recorded", C["dim"])))])
+
+    def lay(limit):
+        out, shown = [], 0
+        for line in lines:
+            laid = _wrap(line, width, indent=16)
+            if len(out) + len(laid) > limit:
+                break
+            out.extend(laid)
+            shown += 1
+        return out, shown
+
+    out, shown = lay(rows)
+    if total and top + shown < total and rows > 1:
+        out, shown = lay(rows - 1)
+        older = total - top - shown
+        out.append([S("  ↓ %d older event%s%s" % (
+            older, "" if older == 1 else "s",
+            " · PgDn" if view is not None else ""), C["dim"])])
+    if view is not None:
+        view.page = max(1, shown)
+    return out, (shown if total else 0), total
+
+
+def _activity_tail(snapshot, now, view, shown, total):
+    events = snapshot.recent_events
+    if not events:
+        return None
+    if view is not None and view.top:
+        return "events %d–%d of %d · back to %s · PgUp newer · Home newest" \
+            " · a %s" % (view.top + 1, view.top + shown, total,
+                         _when(events[view.top].timestamp, now),
+                         "back" if view.expanded else "expand")
+    newest = events[0].timestamp
+    tail = "newest %s · %s" % (_when(newest, now), _ago(newest, now))
+    if view is not None:
+        tail += " · %d events · %s" % (total, KEY_HELP if not view.expanded
+                                       else KEY_HELP.replace("a expand",
+                                                             "a back"))
+    return tail
+
+
+def _activity_band(scr, y, w, snapshot, now, view, rows):
+    band_w = w - 5
+    body, shown, total = _activity_window(snapshot, now, view, band_w,
+                                          max(rows, 0))
+    _band_title(scr, y, w, "ACTIVITY", C["accent"],
+                _activity_tail(snapshot, now, view, shown, total))
+    for i, segs in enumerate(body[:max(rows, 0)]):
+        _paint(scr, 3, y + 1 + i, segs, band_w)
 
 
 def _summary_lines(snapshot, now):
@@ -1076,13 +1197,13 @@ def _band_title(scr, y, w, title, color, tail=None):
 def _split_bands(rows, exec_n, dag_n, act_n):
     """Rows for the three band bodies (each band also takes a title row):
     EXECUTING first (every live session while it can), then the work
-    graph; activity takes what is left, but never less than 2/5."""
+    graph; activity takes what is left, and never less than half."""
     body = rows - 3
     if body <= 0:
         return 0, 0, 0
     e = min(max(exec_n, 1), max(1, body * 2 // 5))
     rest = body - e
-    act_floor = min(max(act_n, 1), max(4, rest * 2 // 5), rest)
+    act_floor = min(max(act_n, 1), max(4, (rest + 1) // 2), rest)
     d = min(max(dag_n, 1), max(rest - act_floor, 0))
     return e, d, rest - d
 
@@ -1094,10 +1215,12 @@ FOUR_ACROSS = 200
 
 # ── compose frame ─────────────────────────────────────────────────────
 
-def compose(scr, snapshot, tick=0, routing=None):
-    """Write the whole frame into the screen's back buffer. ``tick`` and
-    ``routing`` are accepted for compatibility: liveness now comes from
-    recorded heartbeats, and each seat shows its own route."""
+def compose(scr, snapshot, tick=0, routing=None, view=None):
+    """Write the whole frame into the screen's back buffer. ``view`` is the
+    live loop's ActivityView (scroll position, expanded): None draws the
+    newest activity with no key hints. ``tick`` and ``routing`` are
+    accepted for compatibility: liveness now comes from recorded
+    heartbeats, and each seat shows its own route."""
     w, h = scr.w, scr.h
     now = _parse_utc(snapshot.captured_utc)
     if now is None:
@@ -1121,6 +1244,11 @@ def compose(scr, snapshot, tick=0, routing=None):
     for cx in range(2, w - 2):
         scr.put(cx, y, "━", C["frame"])
     y += 1
+
+    if view is not None and view.expanded:
+        # ACTIVITY fills the screen under the header; a puts the boxes back
+        _activity_band(scr, y, w, snapshot, now, view, h - y - 1)
+        return
 
     band_w = w - 5
     exec_rows = _layout(_exec_lines(snapshot, now), band_w)
@@ -1222,23 +1350,102 @@ def compose(scr, snapshot, tick=0, routing=None):
             _paint(scr, 3, y, segs, band_w)
             y += 1
     if y < h:
-        newest = snapshot.recent_events[0].timestamp \
-            if snapshot.recent_events else None
-        _band_title(scr, y, w, "ACTIVITY", C["accent"],
-                    "newest %s · %s" % (_when(newest, now),
-                                        _ago(newest, now))
-                    if newest else None)
-        y += 1
-        for segs in _more(act_rows, a_rows):
-            if y >= h:
-                break
-            _paint(scr, 3, y, segs, band_w)
-            y += 1
+        _activity_band(scr, y, w, snapshot, now, view,
+                       min(a_rows, h - y - 1))
 
 
 # ── stream loop ───────────────────────────────────────────────────────
 
 FULL_REPAINT_SECONDS = 10.0
+
+# Keys: a Windows console reports a special key as "\x00" or "\xe0" and a
+# scan code; a VT terminal as an escape sequence.
+_WIN_KEYS = {"H": "up", "P": "down", "I": "pgup", "Q": "pgdn",
+             "G": "home", "O": "end"}
+_VT_KEYS = (("\x1b[5~", "pgup"), ("\x1b[6~", "pgdn"), ("\x1b[1~", "home"),
+            ("\x1b[4~", "end"), ("\x1b[H", "home"), ("\x1b[F", "end"),
+            ("\x1bOH", "home"), ("\x1bOF", "end"), ("\x1b[A", "up"),
+            ("\x1b[B", "down"), ("\x1bOA", "up"), ("\x1bOB", "down"))
+
+
+def _parse_vt(data):
+    """Key names from what a VT terminal sent: named keys for the escape
+    sequences above, characters for the rest (other sequences dropped)."""
+    keys, i = [], 0
+    while i < len(data):
+        for seq, name in _VT_KEYS:
+            if data.startswith(seq, i):
+                keys.append(name)
+                i += len(seq)
+                break
+        else:
+            if data[i] == "\x1b":  # an escape sequence not named above
+                j = i + 1
+                if j < len(data) and data[j] in "[O":
+                    j += 1
+                    while j < len(data) and not data[j].isalpha() \
+                            and data[j] != "~":
+                        j += 1
+                i = j + 1
+                continue
+            keys.append(data[i])
+            i += 1
+    return keys
+
+
+def _read_keys(timeout):
+    """The keys pressed within ``timeout`` seconds, returned as soon as one
+    arrives; [] once the time is up, or when no keys can be read."""
+    if timeout <= 0:
+        timeout = 0
+    if os.name == "nt":
+        try:
+            import msvcrt
+        except ImportError:
+            time.sleep(timeout)
+            return []
+        end = time.monotonic() + timeout
+        keys = []
+        while True:
+            try:
+                while msvcrt.kbhit():
+                    ch = msvcrt.getwch()
+                    if ch in ("\x00", "\xe0"):
+                        keys.append(_WIN_KEYS.get(msvcrt.getwch()))
+                    else:
+                        keys.append(ch)
+            except OSError:
+                time.sleep(max(0.0, end - time.monotonic()))
+                return []
+            if keys or time.monotonic() >= end:
+                return [k for k in keys if k]
+            time.sleep(0.03)
+    try:
+        import select
+        ready, _, _ = select.select([sys.stdin], [], [], timeout)
+        if not ready:
+            return []
+        return _parse_vt(os.read(sys.stdin.fileno(), 64).decode(
+            "utf-8", "replace"))
+    except (OSError, ValueError, ImportError):
+        time.sleep(timeout)
+        return []
+
+
+def _cbreak():
+    """Put a POSIX terminal's input in cbreak mode (keys arrive one by one,
+    unechoed); returns the restore function, or None."""
+    if os.name == "nt":
+        return None
+    try:
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        saved = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+    except Exception:
+        return None
+    return lambda: termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
 def _terminal_size():
@@ -1257,7 +1464,8 @@ def _write(text):
 
 
 def stream(intelligence_path, authority_path, step_log_path=None,
-           interval=0.5, once=False, ground=False, project_root=None):
+           interval=0.5, once=False, ground=False, project_root=None,
+           history=None):
     from pathlib import Path
     from .readers import (IntelligenceReader, AuthorityReader,
                           StepLogReader, ConfigReader, AutoSwarmReader,
@@ -1280,23 +1488,37 @@ def stream(intelligence_path, authority_path, step_log_path=None,
     tw, th = _terminal_size()
     scr = Screen(tw, th)
     tick = 0
+    # the viewer's scroll position and expansion of ACTIVITY (live only)
+    view = ActivityView() if interactive else None
     # frames still to draw whole: the first one; after a resize, that frame
     # and the next (a terminal can redraw its old content late); and one
-    # every FULL_REPAINT_SECONDS, so a cell the terminal kept from an
-    # earlier frame cannot stay (the diff rewrites only what it thinks
-    # changed)
+    # every FULL_REPAINT_SECONDS of snapshots, so a cell the terminal kept
+    # from an earlier frame cannot stay (the diff rewrites only what it
+    # thinks changed)
     repaint = 1
     full_every = max(1, int(round(FULL_REPAINT_SECONDS / interval))) \
         if interval > 0 else 1
+    since_full = 0
+    restore = None
 
     try:
         if interactive:
-            _write(ALT_SCREEN_ON + CLEAR_SCREEN + HIDE_CURSOR + WRAP_OFF)
+            restore = _cbreak()
+            _write(ALT_SCREEN_ON + CLEAR_SCREEN + HIDE_CURSOR + WRAP_OFF
+                   + ALT_SCROLL_ON)
+        snapshot, rebuild, due = None, True, 0.0
         while True:
-            snapshot = build_snapshot(intel, auth, step_reader=step,
-                                      config_reader=config,
-                                      autoswarm_reader=autoswarm,
-                                      cas_reader=cas)
+            # a new snapshot every interval; a key redraws the last one at
+            # once, so scrolling does not wait for the next poll
+            built = False
+            if rebuild or snapshot is None or time.monotonic() >= due:
+                snapshot = build_snapshot(intel, auth, step_reader=step,
+                                          config_reader=config,
+                                          autoswarm_reader=autoswarm,
+                                          cas_reader=cas, history=history)
+                due = time.monotonic() + interval
+                built = True
+                since_full += 1
             if interactive:
                 size = _terminal_size()
                 if size != (tw, th):
@@ -1304,7 +1526,7 @@ def stream(intelligence_path, authority_path, step_log_path=None,
                     scr = Screen(tw, th)
                     repaint = 2
             scr.clear()
-            compose(scr, snapshot, tick)
+            compose(scr, snapshot, tick, view=view)
 
             if not interactive:
                 _write("\n".join(scr.text_lines(
@@ -1312,19 +1534,25 @@ def stream(intelligence_path, authority_path, step_log_path=None,
                 if ground:
                     _ground(snapshot)
                 break
-            if repaint or (tick and tick % full_every == 0):
+            if repaint or (built and since_full >= full_every):
                 _write(CLEAR_SCREEN + scr.full_render())
                 repaint = max(repaint - 1, 0)
+                since_full = 0
             else:
                 scr.flush(scr.render_diff(scr.diff()))
             scr.swap()
             tick += 1
-            time.sleep(interval)
+            keys = _read_keys(max(0.0, due - time.monotonic()))
+            rebuild = not keys
+            if any(apply_key(view, k) == "quit" for k in keys):
+                break
     except KeyboardInterrupt:
         pass
     finally:
         if interactive:
-            _write(WRAP_ON + SHOW_CURSOR + ALT_SCREEN_OFF)
+            _write(ALT_SCROLL_OFF + WRAP_ON + SHOW_CURSOR + ALT_SCREEN_OFF)
+        if restore is not None:
+            restore()
         intel.close()
         auth.close()
 

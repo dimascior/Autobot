@@ -149,6 +149,10 @@ class OrchestratorFixture(AgentFixture):
                 event_kind="outside_specialist_released", subject_id="sp_out",
                 facts=json.dumps({"capability": "research"}),
                 recorded_utc="2026-11-21T17:59:58Z")
+        _insert(c, "workforce_events", event_key="wf_seat",
+                event_kind="seat_retained", subject_id="ts_res",
+                facts=json.dumps({"capability": "research"}),
+                recorded_utc="2026-11-21T17:59:57Z")
         c.commit()
         c.close()
 
@@ -316,6 +320,7 @@ class OrchestratorWorkTests(unittest.TestCase):
     def test_a_workforce_event_names_its_specialist(self):
         rows = band(self.lines, "ACTIVITY")
         self.assertIn_any("⛊ outside specialist released outsider", rows)
+        self.assertIn_any("⛊ seat retained res-holder's research seat", rows)
 
     def test_work_staffed_by_a_node_counts_as_the_objectives_work(self):
         rows = box(self.lines, "ORCHESTRATOR")

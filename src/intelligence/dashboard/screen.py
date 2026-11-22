@@ -23,6 +23,10 @@ ALT_SCREEN_OFF = "\033[?1049l"
 # With autowrap off, writing the bottom-right cell cannot scroll the frame.
 WRAP_OFF = "\033[?7l"
 WRAP_ON = "\033[?7h"
+# Alternate scroll mode: in the alternate screen a terminal that supports
+# it sends the mouse wheel as up/down arrow keys, which scroll ACTIVITY.
+ALT_SCROLL_ON = "\033[?1007h"
+ALT_SCROLL_OFF = "\033[?1007l"
 
 
 def _style(fg, bg, bold):

@@ -10,6 +10,7 @@ verifications, effects, witnesses, permission answers, findings, frozen
 records in a content-addressed store, and Taskforce and planning events.
 """
 
+import dataclasses
 import hashlib
 import io
 import json
@@ -26,6 +27,7 @@ from intelligence.dashboard.readers import (
     AuthorityReader, AutoSwarmReader, CASReader, ConfigReader,
     IntelligenceReader)
 from intelligence.dashboard.screen import Screen
+from intelligence.dashboard.views import ActivityEvent
 
 from test_dashboard_compact import NOW, CompactFixture, _insert
 
@@ -185,7 +187,7 @@ class AgentFixture(CompactFixture):
         c.commit()
         c.close()
 
-    def snapshot(self, captured=NOW):
+    def snapshot(self, captured=NOW, history=None):
         intel = IntelligenceReader(str(self.intel_path))
         auth = AuthorityReader(str(self.auth_path))
         try:
@@ -193,7 +195,7 @@ class AgentFixture(CompactFixture):
                                   config_reader=ConfigReader(self.root),
                                   autoswarm_reader=self.autoswarm(),
                                   cas_reader=CASReader(self.cas_root),
-                                  now=captured)
+                                  now=captured, history=history)
         finally:
             intel.close()
             auth.close()
@@ -571,20 +573,27 @@ class StreamTests(unittest.TestCase):
     off, rows placed absolutely, a full repaint on resize, and everything
     restored on exit."""
 
-    def run_stream(self, out, sizes, ticks, **kwargs):
+    def run_stream(self, out, sizes, ticks, keys=(), **kwargs):
+        """Run the live loop for ``ticks`` waits; the n-th wait returns the
+        n-th entry of ``keys`` (no keys when it runs out)."""
         tmp = tempfile.mkdtemp()
-        slept = []
+        waits = []
+        script = list(keys)
 
-        def sleep(_):
-            slept.append(1)
-            if len(slept) >= ticks:
+        def read_keys(_timeout):
+            # the ticks-th wait ends the loop, as Ctrl+C would
+            waits.append(1)
+            if len(waits) >= ticks:
                 raise KeyboardInterrupt
+            return list(script[len(waits) - 1]) if len(waits) <= len(
+                script) else []
 
         try:
             fx = AgentFixture(tmp)
             sizes = iter(sizes)
             kwargs.setdefault("interval", 0.01)
-            with mock.patch.object(agent_visual.time, "sleep", sleep), \
+            with mock.patch.object(agent_visual, "_read_keys", read_keys), \
+                    mock.patch.object(agent_visual, "_cbreak", lambda: None), \
                     mock.patch.object(agent_visual.sys, "stdout", out), \
                     mock.patch.dict(os.environ,
                                     {"AUTOSWARM_HOME": str(fx.home),
@@ -595,16 +604,31 @@ class StreamTests(unittest.TestCase):
                                     **kwargs)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+        self.waits = len(waits)
         return out.getvalue()
 
     def test_live_loop_takes_and_restores_the_terminal(self):
         text = self.run_stream(_TTY(), [(146, 53)] * 3, ticks=1)
-        self.assertTrue(text.startswith("\033[?1049h\033[2J\033[?25l\033[?7l"),
-                        repr(text[:40]))
-        self.assertTrue(text.endswith("\033[?7h\033[?25h\033[?1049l"),
-                        repr(text[-40:]))
+        # alternate screen, clear, cursor hidden, autowrap off, and the
+        # mouse wheel sent as arrow keys; all undone on exit
+        self.assertTrue(text.startswith(
+            "\033[?1049h\033[2J\033[?25l\033[?7l\033[?1007h"),
+            repr(text[:48]))
+        self.assertTrue(text.endswith(
+            "\033[?1007l\033[?7h\033[?25h\033[?1049l"), repr(text[-48:]))
         self.assertIn("AUTOBOT ORGANIZATION", text)
         self.assertNotIn("\n", text)
+
+    def test_keys_expand_activity_and_q_quits(self):
+        # a expands ACTIVITY over the boxes and a again brings them back;
+        # q ends the loop at the fourth wait, before Ctrl+C would come
+        text = self.run_stream(_TTY(), [(146, 53)] * 8, ticks=6,
+                               keys=[["a"], [], ["a"], ["q"]])
+        self.assertIn("q quit", text)   # the key help in the title
+        self.assertIn("a back", text)   # the expanded title was drawn
+        self.assertEqual(self.waits, 4)
+        self.assertTrue(text.endswith(
+            "\033[?1007l\033[?7h\033[?25h\033[?1049l"), repr(text[-48:]))
 
     def test_resize_repaints_the_whole_frame_at_the_new_size(self):
         text = self.run_stream(_TTY(), [(146, 53), (146, 53), (120, 40)],
@@ -632,6 +656,126 @@ class StreamTests(unittest.TestCase):
         self.assertIn("AUTOBOT ORGANIZATION", text)
         self.assertIn("━━ DAG ", text)
         self.assertNotIn("\033[", text)
+
+
+class ActivityScrollTests(unittest.TestCase):
+    """ACTIVITY keeps a deep history; the live view scrolls it by keys,
+    holds its place while new events arrive, and can take the screen."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.fx = AgentFixture(cls._tmp.name)
+        # 80 events a second apart, newest first: task-000 at 17:59:59
+        cls.events = [ActivityEvent(
+            timestamp="2026-11-21T17:%02d:%02d.000Z" % (59 - i // 60,
+                                                        59 - i % 60),
+            layer="authority", kind="transition", subject_id="s%d" % i,
+            summary="task-%03d READY -> EXECUTING" % i) for i in range(80)]
+        cls.snap = dataclasses.replace(cls.fx.snapshot(),
+                                       recent_events=cls.events)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def draw(self, view, snap=None, width=146, height=53):
+        scr = Screen(width, height)
+        agent_visual.compose(scr, snap or self.snap, view=view)
+        lines = scr.text_lines()
+        title = next(line for line in lines if "━━ ACTIVITY " in line)
+        return lines, title, band(lines, "ACTIVITY")
+
+    def test_following_shows_the_newest_and_the_keys(self):
+        _, title, rows = self.draw(agent_visual.ActivityView())
+        self.assertIn("task-000", rows[0])
+        self.assertIn("newest 17:59:59", title)
+        self.assertIn("80 events", title)
+        self.assertIn("PgDn", title)
+        self.assertIn("a expand", title)
+        self.assertRegex(rows[-1], r"↓ \d+ older events · PgDn")
+
+    def test_page_down_goes_back_and_holds_while_new_events_arrive(self):
+        view = agent_visual.ActivityView()
+        self.draw(view)                    # learns how many rows a page is
+        agent_visual.apply_key(view, "pgdn")
+        _, title, rows = self.draw(view)
+        top = view.top
+        self.assertGreater(top, 0)
+        self.assertIn("task-%03d" % top, rows[0])
+        self.assertIn("events %d–" % (top + 1), title)
+        self.assertIn("of 80", title)
+        self.assertIn("Home newest", title)
+        # five newer events arrive: the band keeps the same event on top
+        newer = [ActivityEvent(timestamp="2026-11-21T18:00:0%d.000Z" % n,
+                               layer="engineer", kind="cycle",
+                               subject_id="c%d" % n,
+                               summary="cycle %d ran · 0 proposals" % n)
+                 for n in (4, 3, 2, 1, 0)]
+        later = dataclasses.replace(self.snap,
+                                    recent_events=newer + self.events)
+        _, title, rows = self.draw(view, later)
+        self.assertIn("task-%03d" % top, rows[0])
+        self.assertEqual(view.top, top + 5)
+        self.assertIn("of 85", title)
+        agent_visual.apply_key(view, "home")
+        _, _, rows = self.draw(view, later)
+        self.assertIn("cycle 4 ran", rows[0])
+
+    def test_end_shows_the_oldest_and_up_moves_one_newer(self):
+        view = agent_visual.ActivityView()
+        agent_visual.apply_key(view, "end")
+        _, _, rows = self.draw(view)
+        self.assertIn("task-079", rows[0])
+        self.assertFalse(any("older event" in r for r in rows), rows)
+        agent_visual.apply_key(view, "up")
+        _, _, rows = self.draw(view)
+        self.assertIn("task-078", rows[0])
+
+    def test_a_gives_activity_the_whole_screen(self):
+        view = agent_visual.ActivityView()
+        agent_visual.apply_key(view, "a")
+        lines, title, rows = self.draw(view)
+        text = "\n".join(lines)
+        for box_title in ("COORDINATOR═", "TASKFORCE═", "━━ EXECUTING ",
+                          "━━ DAG "):
+            self.assertNotIn(box_title, text)
+        self.assertIn("a back", title)
+        self.assertGreaterEqual(len(rows), 49)   # 53 rows less the header
+        agent_visual.apply_key(view, "a")
+        lines, _, _ = self.draw(view)
+        self.assertIn("COORDINATOR═", "\n".join(lines))
+
+    def test_without_the_live_view_there_are_no_key_hints(self):
+        _, title, _ = self.draw(None)
+        self.assertIn("newest 17:59:59", title)
+        self.assertNotIn("PgDn", title)
+
+    def test_a_terminals_key_sequences_are_named(self):
+        self.assertEqual(
+            agent_visual._parse_vt("\x1b[A\x1b[6~ja\x1b[1;5Cq\x1bOH"),
+            ["up", "pgdn", "j", "a", "q", "home"])
+
+    def test_the_history_holds_more_than_a_screen(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            fx = AgentFixture(tmp)
+            c = fx._open(fx.auth_path)
+            for n in range(150):
+                payload = {"machine": "sequence", "subject_id": "sq_x%03d" % n,
+                           "from_state": "READY", "to_state": "EXECUTING",
+                           "rule": "t-s06", "recorded_utc":
+                           "2026-11-21T16:%02d:%02d.000Z" % (n // 60, n % 60)}
+                _insert(c, "transition_journal",
+                        entry_hash="sha256:h%03d" % n,
+                        payload=json.dumps(payload),
+                        appended_utc=payload["recorded_utc"])
+            c.commit()
+            c.close()
+            self.assertGreaterEqual(len(fx.snapshot().recent_events), 150)
+            self.assertEqual(len(fx.snapshot(history=50).recent_events), 50)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class ScreenTests(unittest.TestCase):

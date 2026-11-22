@@ -6,8 +6,17 @@ Usage:
     python -m intelligence.dashboard --once          # single snapshot
     python -m intelligence.dashboard --ground        # + ground-truth state dump
     python -m intelligence.dashboard --interval 5    # poll every 5 seconds
+    python -m intelligence.dashboard --history 500   # activity events kept
     python -m intelligence.dashboard --json          # snapshot as JSON
     python -m intelligence.dashboard --step-log driver_steps.jsonl
+
+Keys in the live agent view (ACTIVITY keeps the newest --history events):
+    Down/j  Up/k      scroll ACTIVITY one event older / newer
+    PgDn/Space PgUp   a page older / newer
+    Home/g  End/G     the newest (follow again) / the oldest
+    a                 ACTIVITY fills the screen, or back
+    q                 quit (Ctrl+C works too)
+The mouse wheel scrolls too in a terminal with alternate scroll mode.
 """
 
 import argparse
@@ -50,6 +59,9 @@ def main():
                              " the agent-centric view")
     parser.add_argument("--ground", action="store_true",
                         help="append ground-truth state dump each tick")
+    parser.add_argument("--history", type=int, default=None,
+                        help="activity events to keep and scroll through"
+                             " (default: 200)")
     args = parser.parse_args()
 
     root = args.root or _find_root()
@@ -87,7 +99,7 @@ def main():
             snapshot = build_snapshot(intel, auth, step_reader=step,
                                       config_reader=config,
                                       autoswarm_reader=autoswarm,
-                                      cas_reader=cas)
+                                      cas_reader=cas, history=args.history)
             print(json.dumps(dataclasses.asdict(snapshot),
                              indent=2, default=str))
         finally:
@@ -107,7 +119,8 @@ def main():
                step_log_path=args.step_log,
                interval=args.interval,
                once=args.once,
-               ground=args.ground)
+               ground=args.ground,
+               history=args.history)
     return 0
 
 
