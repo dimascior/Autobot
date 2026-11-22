@@ -142,6 +142,32 @@ workspace = ""                 # auto: parent of gate_root, whose own hook runs 
 # (no ANTHROPIC_API_KEY). Off unless set; codex routes can't use it.
 remote_control = false
 
+# The specialist catalog: each named worker offers one or more
+# "capability:role" pairs and runs on the default route (luna-6-max)
+# unless it names another. The handle is the organizational identity;
+# the execution route is resolved at dispatch time and recorded with
+# the assignment, never with the specialist.
+[specialists.luna-investigator]
+offers = ["research:investigator"]
+
+[specialists.luna-engineer]
+offers = ["software_implementation:builder", "documentation:builder", "domain_engineering:builder"]
+
+[specialists.luna-reviewer]
+offers = ["verification:reviewer"]
+
+[specialists.luna-security]
+offers = ["security_review:reviewer"]
+
+[specialists.luna-architect]
+offers = ["architecture:reviewer"]
+
+[specialists.luna-ops]
+offers = ["git_repository_operations:builder"]
+
+[taskforce]
+established_threshold = 3
+
 [triggers]
 timer_floor_minutes = 15
 
