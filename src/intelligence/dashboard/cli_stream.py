@@ -42,10 +42,11 @@ EFFECTIVE_ORDER = {"working": 0, "stuck": 1, "waiting": 2, "unknown": 3,
 
 WORK_SYMBOL = {
     "HALTED": "#", "working": ">", "blocked": "~", "queued": "-",
-    "no work": ".", "work finished": "*",
+    "planned": ".", "no work": ".", "work finished": "*",
 }
 
-SEAT_STATUS = {"ESTABLISHED": "EST", "RETAINED": "RET"}
+SEAT_STATUS = {"ESTABLISHED": "EST", "RETAINED": "RET",
+               "RELEASED": "RELEASED"}
 
 _COMPLETE = ("COMPLETE", "COMPLETED")
 
@@ -219,20 +220,54 @@ def _objectives(lines, snapshot, w, now, complete_shown=3):
     lines.append("")
 
 
+def _activity_bits(s, now):
+    """What a live session has done: its own record (a Codex rollout),
+    else its stdout's last line, else that nothing is recorded yet."""
+    if s.activity_events:
+        bits = ["%d tool call%s" % (s.activity_tools,
+                                    "" if s.activity_tools == 1 else "s")]
+        if s.activity_done:
+            bits.append("task complete")
+        elif s.activity_doing:
+            bits.append(_trunc(s.activity_doing, 40))
+        if s.activity_utc:
+            bits.append("last %s ago" % _dur(_seconds(s.activity_utc, now)))
+        return bits
+    if s.last_line:
+        return [_trunc(s.last_line.strip(), 60),
+                "%s ago" % _dur(_seconds(s.output_utc, now))]
+    return ["no activity recorded yet"]
+
+
 def _sessions(lines, snapshot, w, now):
+    """The attempts with a live session (DISPATCHED or RUNNING); those past
+    their session or not yet started are counted in the title."""
     sessions = list(snapshot.sessions)
-    lines.append(_bar("SESSIONS  %d in flight" % len(sessions), w))
+    ended = sum(1 for s in sessions if s.session_state == "finished")
+    head = "SESSIONS  %d running" % (len(sessions) - ended)
+    if ended:
+        head += " · %d ended, not collected" % ended
+    after = snapshot.after_session or {}
+    if after:
+        head += " · %d past the session (%s)" % (
+            sum(after.values()),
+            ", ".join("%s %d" % (k, n) for k, n in sorted(after.items())))
+    if snapshot.before_session:
+        head += " · %d not started" % snapshot.before_session
+    lines.append(_bar(head, w))
     if not sessions:
-        lines.append("  none in flight")
+        lines.append("  none running")
     for s in sessions:
         how = {"RETAINED_SEAT": "seat",
                "OUTSIDE_SPECIALIST": "outside"}.get(
                    s.selection_path, s.selection_path or "?")
         work = s.workstream_key or s.sequence_id[:16]
-        lines.extend(_pack("  %s " % (">" if s.call_id else "."), [
+        finished = s.session_state == "finished"
+        # the route first: a handle is a name, not a model
+        lines.extend(_pack("  %s " % ("." if finished else ">"), [
             work, s.objective_id or "?",
-            "%s (%s) -> %s" % (s.specialist_handle or "?", how, route_desc(
-                s.route_name, snapshot.routing, s.provider, s.model))], w))
+            route_desc(s.route_name, snapshot.routing, s.provider, s.model),
+            "%s (%s)" % (s.specialist_handle or "?", how)], w))
         detail = []
         if s.call_id:
             detail.append(_trunc(s.call_id, 15))
@@ -241,12 +276,20 @@ def _sessions(lines, snapshot, w, now):
         detail.append("%s since %s" % (
             s.attempt_state, _when(s.attempt_since_utc, now)))
         started = s.started_utc or s.attempt_since_utc
-        detail.append("session %s" % _dur(_seconds(started, now)))
-        if s.pid:
-            detail.append("pid %s" % s.pid)
+        if finished:
+            detail.append("session ended %s after %s" % (
+                _when(s.finished_utc, now),
+                _dur(_seconds(started, s.finished_utc))))
+            detail.append("result not collected yet")
+        else:
+            detail.append("session %s" % _dur(_seconds(started, now)))
+            if s.pid:
+                detail.append("pid %s" % s.pid)
         if s.finalization_class:
             detail.append(s.finalization_class)
         lines.extend(_pack("      ", detail, w))
+        if not finished:
+            lines.extend(_pack("      ", _activity_bits(s, now), w))
     lines.append("")
 
 
@@ -276,6 +319,17 @@ def _runs(lines, snapshot, w, now):
                      for k in sorted(effective, key=lambda k:
                                      EFFECTIVE_ORDER.get(k, 9)))
     lines.append(_bar("RUNS  %s → %s" % (rec, eff) if runs else "RUNS", w))
+    o = snapshot.orchestrator
+    if o is not None and o.cycles:
+        # the Orchestrator policy runs on the Engineer's configured model
+        lines.extend(_pack("  planned by ", [
+            o.policy_id, "on %s" % (o.model or "?"),
+            "%d reasoning cycles, %d decisions" % (o.cycles, o.decisions),
+            "last %s" % _when(o.last_utc, now)], w))
+        if o.not_applied:
+            lines.extend(_pack("  not applied: ", [
+                "%s x%d" % (k, n) for k, n in sorted(o.not_applied.items())],
+                w))
     if not runs:
         lines.append("  (no orchestration runs)")
     runs.sort(key=lambda r: r.created_utc or "", reverse=True)
@@ -404,8 +458,11 @@ def _taskforce(lines, snapshot, w, now):
         escalation = snapshot.routing.escalation_route
         if escalation and escalation != "?":
             parts.append("escalation %s" % escalation)
-        lines.extend(_pack("  %s" % ("every seat runs on " if len(on) == 1
-                                     else "seats run on "), parts, w))
+        held = any(s.status in ("ESTABLISHED", "RETAINED") for s in tf.seats)
+        lines.extend(_pack("  %s" % (
+            "specialists run on " if not held else
+            "every seat runs on " if len(on) == 1 else "seats run on "),
+            parts, w))
     seats = sorted(tf.seats, key=lambda s: s.since_utc or "")
     seats.sort(key=lambda s: 0 if s.status == "ESTABLISHED" else 1)
     for s in seats:

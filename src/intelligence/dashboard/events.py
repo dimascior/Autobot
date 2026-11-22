@@ -2,9 +2,29 @@
 event streams (planning events, workforce events, Engineer cycles,
 Coordinator admissions, permission answers) and step reports."""
 
+import dataclasses
 import json
 
 from .views import ActivityEvent
+
+
+def collapse_repeats(events):
+    """Events in time order with each run of identical neighbours (a
+    session's witness admissions, typically: half the journal) folded
+    into its newest one, its summary ending in "×N"."""
+    out = []
+    for ev in events:
+        if out and ev.summary == out[-1].summary \
+                and ev.layer == out[-1].layer:
+            prev = out[-1]
+            details = dict(prev.details)
+            details["repeat"] = details.get("repeat", 1) + 1
+            out[-1] = dataclasses.replace(prev, details=details)
+            continue
+        out.append(ev)
+    return [dataclasses.replace(e, summary="%s ×%d" % (
+        e.summary, e.details["repeat"]))
+        if e.details.get("repeat", 1) > 1 else e for e in out]
 
 
 def _facts(raw):
@@ -39,10 +59,13 @@ def planning_note(row):
     return kind.replace("_", " ") if kind else None
 
 
-def events_from_workforce(rows, assignment_names=None):
+def events_from_workforce(rows, assignment_names=None,
+                          specialist_names=None):
     """Taskforce events. ``assignment_names`` maps an assignment id to
-    (specialist handle, workstream key) when known."""
+    (specialist handle, workstream key) when known; ``specialist_names``
+    maps a specialist id to its handle, for events about a specialist."""
     names = assignment_names or {}
+    handles = specialist_names or {}
     events = []
     for r in rows:
         kind = r.get("event_kind") or "?"
@@ -57,8 +80,9 @@ def events_from_workforce(rows, assignment_names=None):
             summary = "demonstration %s %s" % (
                 facts.get("outcome", "?"), cap_role)
         else:
+            subject = r.get("subject_id") or ""
             summary = "%s %s" % (kind.replace("_", " "),
-                                 (r.get("subject_id") or "")[:16])
+                                 handles.get(subject) or subject[:16])
         events.append(ActivityEvent(
             timestamp=r.get("recorded_utc") or "", layer="taskforce",
             kind=kind, subject_id=r.get("subject_id") or "",

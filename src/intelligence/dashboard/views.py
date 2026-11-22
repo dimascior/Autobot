@@ -16,8 +16,9 @@ class ObjectiveView:
     status: str
     created_utc: str
     completed_utc: Optional[str] = None
-    # derived from the objective's project workstreams and their authority
-    # sequences: HALTED | working | blocked | queued | no work | None
+    # derived from the objective's work items (project workstreams and the
+    # Orchestrator's tasks) and their authority sequences: HALTED | working
+    # | blocked | queued | planned | work finished | no work | None
     work_state: Optional[str] = None
     work_note: Optional[str] = None
     work_since_utc: Optional[str] = None
@@ -85,6 +86,24 @@ class RunView:
     effective_state: Optional[str] = None
     effective_note: Optional[str] = None
     effective_since_utc: Optional[str] = None
+    # the Orchestrator policy that planned this run's objective (the
+    # Coordinator decision's route) and its reasoning cycles over it
+    planned_by: Optional[str] = None
+    reasoning_cycles: int = 0
+
+
+@dataclass(frozen=True)
+class OrchestratorView:
+    """The Orchestrator policy's reasoning (orchestration_reasoning): it
+    runs on the Engineer's configured model (runtime.py)."""
+    policy_id: str
+    model: Optional[str] = None
+    cycles: int = 0
+    decisions: int = 0
+    last_utc: Optional[str] = None
+    # decisions the applicator did not apply (status SKIPPED, REJECTED,
+    # FAILED or INVALID in application_results), by decision class
+    not_applied: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -148,6 +167,8 @@ class SeatView:
     # [model label, qualifying, not qualifying, last recorded]
     route_name: Optional[str] = None
     earlier_records: List[Any] = field(default_factory=list)
+    # the names in current_work, one per item (a task name may hold ", ")
+    current_list: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -228,6 +249,17 @@ class SessionView:
     output_utc: Optional[str] = None
     # the configured route the provider and model resolve to
     route_name: Optional[str] = None
+    # running, or finished: the session wrote result.json (its end) while
+    # the attempt still waits to be collected
+    session_state: str = "running"
+    finished_utc: Optional[str] = None
+    # what the session's own record says (a Codex rollout): events, tool
+    # calls, the newest event, what it says it is doing, task complete
+    activity_events: int = 0
+    activity_tools: int = 0
+    activity_utc: Optional[str] = None
+    activity_doing: Optional[str] = None
+    activity_done: bool = False
 
 
 @dataclass(frozen=True)
@@ -295,19 +327,22 @@ class EngineerView:
 
 @dataclass(frozen=True)
 class EdgeRefView:
-    """One frozen predecessor edge of a work item."""
+    """One predecessor edge of a work item: a frozen record's edge, or an
+    Orchestrator dependency between two of its tasks."""
     edge_id: str
     edge_kind: str
     predecessor_sequence_id: Optional[str] = None
     predecessor_key: Optional[str] = None
     predecessor_state: Optional[str] = None
     released_utc: Optional[str] = None
+    predecessor_item_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class WorkItemView:
-    """One project workstream joined to its authority sequence, its
-    holder, and the frozen record's predecessor edges."""
+    """One unit of work joined to its authority sequence, its holder, and
+    its predecessor edges: a project workstream, or a task (node) of an
+    Orchestrator plan, which may have no sequence yet (state PLANNED)."""
     workstream_key: str
     sequence_id: Optional[str] = None
     proposal_class: Optional[str] = None
@@ -324,10 +359,17 @@ class WorkItemView:
     halt_reason: Optional[str] = None
     halt_completeness: Optional[str] = None
     next_staffing: Optional[str] = None
+    # derived: the halt in words (what a t-s12 reason code means)
+    halt_cause: Optional[str] = None
+    # workstream | node; item_id links predecessor edges inside a tree
+    kind: str = "workstream"
+    item_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class ProjectView:
+    """A project and its work items; or, kind "plan", the tasks of an
+    Orchestrator run that are bound to no project."""
     project_id: str
     objective_id: str
     title: str
@@ -335,6 +377,7 @@ class ProjectView:
     opened_utc: Optional[str] = None
     closed_utc: Optional[str] = None
     items: List[WorkItemView] = field(default_factory=list)
+    kind: str = "project"
 
 
 @dataclass(frozen=True)
@@ -400,3 +443,11 @@ class ActivitySnapshot:
     projects: List[ProjectView] = field(default_factory=list)
     trust: TrustView = field(default_factory=TrustView)
     attention: List[AttentionItem] = field(default_factory=list)
+
+    # the Orchestrator's plans bound to no project, its reasoning, and the
+    # attempts in flight that have no live session: past it (by state)
+    # and not yet dispatched
+    plans: List[ProjectView] = field(default_factory=list)
+    orchestrator: Optional[OrchestratorView] = None
+    after_session: Dict[str, int] = field(default_factory=dict)
+    before_session: int = 0

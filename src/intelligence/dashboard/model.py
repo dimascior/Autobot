@@ -4,8 +4,8 @@ Pure function: readers in, frozen snapshot out. No I/O of its own.
 
 Derived fields (an objective's work state, a run's effective state, a
 seat's current work) are computed here from recorded rows only: project
-workstreams, the sequences their proposals opened, and the attempts the
-authority plane still holds in flight.
+workstreams, the tasks (nodes) of Orchestrator plans, the sequences they
+opened, and the attempts the authority plane still holds in flight.
 """
 
 import dataclasses
@@ -19,10 +19,12 @@ from .views import (
     TaskforceView, RoutingView, ActiveSessionView, SessionView,
     LivenessView, CycleView, ProposalView, StaffingView, EngineerView,
     EdgeRefView, WorkItemView, ProjectView, TrustView, AttentionItem,
+    OrchestratorView,
 )
 from .events import (
     events_from_transitions, events_from_workforce, events_from_cycles,
     events_from_admissions, events_from_approvals, planning_note,
+    collapse_repeats,
 )
 
 try:
@@ -35,6 +37,26 @@ except ImportError:  # render without the authority package
 _QUEUED_STATES = frozenset(("DECLARED", "READY"))
 _BLOCKED_STATES = frozenset(("BLOCKED", "BLOCKED_UNSUPPORTED_FINALIZER"))
 _COMPLETE_OBJECTIVE = frozenset(("COMPLETE", "COMPLETED"))
+
+# An attempt has a live session while DISPATCHED or RUNNING; before that
+# it has none yet, and after it (CANDIDATE_FROZEN, EVIDENCE_COMPLETE, ...)
+# the session is over while the authority plane settles it.
+_LIVE_ATTEMPTS = frozenset(("DISPATCHED", "RUNNING"))
+_PRE_ATTEMPTS = frozenset(("DECLARED", "RESERVED"))
+
+# A task of an Orchestrator plan with no sequence yet reads its own status.
+_NODE_STATE = {"PENDING": "PLANNED", "READY": "PLANNED",
+               "EXECUTING": "DISPATCHING"}
+# Work that is over, whether a sequence or a task without one says so.
+_DONE_STATES = SEQUENCE_TERMINAL | frozenset(("FAILED", "CANCELLED"))
+
+# What a t-s12 halt's reason code means (sequencer.py, taskforce.py: the
+# Taskforce records "unknown" when a verification is inconclusive).
+_T_S12_REASON = {
+    "unknown": "verification inconclusive",
+    "budget_exhausted": "repair budget used up",
+    "env_mismatch": "verification environment mismatch",
+}
 
 
 def _parse_features(raw):
@@ -72,6 +94,16 @@ def _parse_utc(ts):
     except ValueError:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _halt_cause(rule, reason, completeness):
+    """Why a sequence halted, in words: the receipt state a t-s45 halt
+    acted on, or what a t-s12 reason code means."""
+    if completeness:
+        return "receipt %s" % completeness
+    if rule == "t-s12" and reason in _T_S12_REASON:
+        return _T_S12_REASON[reason]
+    return reason
 
 
 # The Coordinator's own keyword sets, so a feature's source is derived by
@@ -119,49 +151,58 @@ def _feature_sources(text, features):
     return out
 
 
-def _objective_work(objective_id, projects_by_objective, workstreams_by_project,
-                    sequence_states, in_flight_by_sequence):
-    """(state, note, since_utc) for an objective's work, from its project
-    workstreams' sequences: HALTED beats working beats blocked beats
-    queued."""
-    items = []
-    for project in projects_by_objective.get(objective_id, []):
-        for ws in workstreams_by_project.get(project["project_id"], []):
-            sid = ws.get("sequence_id")
-            if sid and sid in sequence_states:
-                items.append((ws.get("workstream_key") or sid, sid,
-                              sequence_states[sid]))
+def _names(items):
+    """The work items' names when one or two fit, else their number."""
+    keys = []
+    for i in items:
+        if i.workstream_key not in keys:
+            keys.append(i.workstream_key)
+    if len(keys) == 1 or (len(keys) == 2 and len(", ".join(keys)) <= 40):
+        return ", ".join(keys)
+    return "%d tasks" % len(keys)
+
+
+def _objective_work(items, in_flight_by_sequence):
+    """(state, note, since_utc) for an objective's work, from its work
+    items (project workstreams and Orchestrator tasks): HALTED beats
+    working beats blocked beats queued beats planned."""
+    items = [i for i in items if i.state]
     if not items:
         return "no work", None, None
 
-    halted = [i for i in items if _is_halted(i[2].get("state"))]
+    halted = [i for i in items if _is_halted(i.state)]
     if halted:
-        key, _, info = min(halted, key=lambda i: i[2].get("updated_utc") or "")
-        return "HALTED", key, info.get("updated_utc")
+        first = min(halted, key=lambda i: i.since_utc or "")
+        return "HALTED", first.workstream_key, first.since_utc
 
-    running = [i for i in items if i[1] in in_flight_by_sequence]
-    busy = [i for i in items
-            if i[2].get("state") not in SEQUENCE_TERMINAL
-            and i[2].get("state") not in _QUEUED_STATES
-            and i[2].get("state") not in _BLOCKED_STATES]
-    if running or busy:
-        keys = []
-        for i in running + busy:
-            if i[0] not in keys:
-                keys.append(i[0])
-        return "working", ", ".join(keys), None
+    working = [i for i in items
+               if (i.sequence_id and i.sequence_id in in_flight_by_sequence)
+               or i.state == "DISPATCHING"
+               or (i.state not in _DONE_STATES
+                   and i.state not in _QUEUED_STATES
+                   and i.state not in _BLOCKED_STATES
+                   and i.state != "PLANNED")]
+    if working:
+        return "working", _names(working), None
 
-    blocked = [i for i in items if i[2].get("state") in _BLOCKED_STATES]
+    blocked = [i for i in items if i.state in _BLOCKED_STATES]
     if blocked:
-        return "blocked", ", ".join(i[0] for i in blocked), min(
-            i[2].get("updated_utc") or "" for i in blocked) or None
+        return "blocked", _names(blocked), min(
+            i.since_utc or "" for i in blocked) or None
 
-    queued = [i for i in items if i[2].get("state") in _QUEUED_STATES]
+    queued = [i for i in items if i.state in _QUEUED_STATES]
     if queued:
-        return "queued", ", ".join(i[0] for i in queued), None
+        return "queued", _names(queued), None
+
+    planned = [i for i in items if i.state == "PLANNED"]
+    if planned:
+        done = sum(1 for i in items if i.state == "COMPLETED")
+        return "planned", "%d task%s planned, %s" % (
+            len(planned), "" if len(planned) == 1 else "s",
+            "%d done" % done if done else "none started"), None
 
     return "work finished", None, max(
-        i[2].get("updated_utc") or "" for i in items) or None
+        i.since_utc or "" for i in items) or None
 
 
 def _route_name(provider, model, routes):
@@ -235,7 +276,39 @@ def _run_effective(objective, work):
         return "working", "%s in progress" % note, since
     if state in ("blocked", "queued"):
         return "waiting", "%s: %s" % (state, note), since
+    if state == "planned":
+        return "waiting", note, since
+    if state == "work finished":
+        return "waiting", "work finished, objective open", since
     return "waiting", state, since
+
+
+def _decision_count(raw):
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        return 0
+    return len(value) if isinstance(value, list) else 0
+
+
+def _objectives_of(raw):
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+_NOT_APPLIED = frozenset(("SKIPPED", "REJECTED", "FAILED", "INVALID"))
+
+
+def _not_applied(raw, into):
+    """Count an Orchestrator cycle's decisions the applicator did not apply,
+    by class (application_results rows with a not-applied status)."""
+    for res in _objectives_of(raw):
+        if isinstance(res, dict) and res.get("status") in _NOT_APPLIED:
+            klass = res.get("class") or "?"
+            into[klass] = into.get(klass, 0) + 1
 
 
 def build_snapshot(intelligence, authority, step_reader=None,
@@ -259,9 +332,6 @@ def build_snapshot(intelligence, authority, step_reader=None,
     in_flight = _call(authority, "in_flight_attempts", [])
     in_flight_by_sequence = {a["sequence_id"]: a for a in in_flight}
     projects = _call(intelligence, "projects", [])
-    projects_by_objective = {}
-    for p in projects:
-        projects_by_objective.setdefault(p["objective_id"], []).append(p)
     workstreams = _call(intelligence, "workstreams", [])
     workstreams_by_project = {}
     workstream_key_by_sequence = {}
@@ -270,23 +340,245 @@ def build_snapshot(intelligence, authority, step_reader=None,
         if ws.get("sequence_id"):
             workstream_key_by_sequence[ws["sequence_id"]] = ws.get(
                 "workstream_key")
-    halted_projects = set()
-    for pid, items in workstreams_by_project.items():
-        if any(_is_halted(sequence_states.get(ws.get("sequence_id"), {})
-                          .get("state")) for ws in items):
-            halted_projects.add(pid)
+    objective_rows = {o["objective_id"]: o for o in intelligence.objectives()}
+
+    # --- the Orchestrator's plans: runs, their tasks (nodes) and the
+    # sequences those tasks opened (authority binding, or the assignment
+    # that staffed the task directly) ---
+    raw_runs = intelligence.orchestration_runs()
+    nodes_by_run = {r["orchestration_id"]: intelligence.orchestration_nodes(
+        r["orchestration_id"]) for r in raw_runs}
+    edges_by_run = {r["orchestration_id"]: intelligence.orchestration_edges(
+        r["orchestration_id"]) for r in raw_runs}
+    bindings_by_node = {}
+    for ab in intelligence.authority_bindings():
+        bindings_by_node[ab["node_id"]] = ab
+    outputs_by_node = {}
+    for out in intelligence.node_outputs():
+        outputs_by_node.setdefault(out["node_id"], []).append(out)
+    assignments_idx = intelligence.assignments_by_sequence()
+    asg_by_node = _call(intelligence, "assignments_by_node", {})
+    project_of_node = _call(intelligence, "project_bindings", {})
+    node_sequence = {}
+    node_key_by_sequence = {}
+    for rid, nodes in nodes_by_run.items():
+        for n in nodes:
+            sid = (bindings_by_node.get(n["node_id"], {}).get("sequence_id")
+                   or asg_by_node.get(n["node_id"], {}).get("sequence_id"))
+            if sid:
+                node_sequence[n["node_id"]] = sid
+                node_key_by_sequence.setdefault(sid, n.get("node_key"))
+
+    def name_of(sid):
+        """The name of the work a sequence belongs to: its workstream key,
+        else the key of the Orchestrator task that opened it."""
+        if not sid:
+            return None
+        return workstream_key_by_sequence.get(sid) or \
+            node_key_by_sequence.get(sid)
+
+    # --- the Engineer's open staffing, before the work items name it ---
+    staffing = [StaffingView(
+        decision_id=s["decision_id"], sequence_id=s["sequence_id"],
+        mode=s.get("mode") or "?", objective_id=s.get("objective_id"),
+        project_id=s.get("project_id"),
+        attempt_ordinal=s.get("attempt_ordinal"),
+        specialist_handle=s.get("specialist_handle"),
+        decided_utc=s.get("decided_utc"),
+        workstream_key=name_of(s["sequence_id"]))
+        for s in _call(intelligence, "open_staffing", [])]
+    staffing_by_sequence = {s.sequence_id: s for s in staffing}
+
+    def next_staffing_of(sid):
+        nxt = staffing_by_sequence.get(sid) if sid else None
+        if nxt is None:
+            return None
+        if nxt.specialist_handle:
+            return "%s (%s)" % (nxt.specialist_handle,
+                                nxt.mode.replace("_", " "))
+        return "%s attempt %s" % (nxt.mode.replace("_", " "),
+                                  nxt.attempt_ordinal or "?")
+
+    def halt_of(sid, state, live):
+        if not (live and sid and _is_halted(state.get("state"))):
+            return {}
+        return _call(authority, "halt_facts", None, sid,
+                     state.get("updated_utc")) or {}
+
+    # --- the work graph: each project's workstreams joined by their frozen
+    # predecessor edges, and each Orchestrator plan's tasks by its own
+    # dependency edges; with holder, age and, when halted, why ---
+    identity = {}
+    record_address = {}
+    for s in _call(authority, "sequence_index", []):
+        sid = s["sequence_id"]
+        for kind, key in (("RECORD", "record_hash"),
+                          ("CONTRACT", "contract_digest"),
+                          ("REQUIREMENT", "requirement_digest")):
+            if s.get(key):
+                identity.setdefault((kind, s[key]), sid)
+        record_address[sid] = s.get("content_address")
+    released = {}
+    for e in _call(authority, "released_edges", []):
+        released[(e["edge_kind"], e["edge_value"])] = e["released_utc"]
+        released[(e["predecessor_sequence_id"], e["edge_kind"])] = (
+            e["released_utc"])
+
+    def objective_open(oid):
+        return (objective_rows.get(oid) or {}).get("status") \
+            not in _COMPLETE_OBJECTIVE
+
+    items_by_project = {}
+    workstream_sequences = set()
+    for p in projects:
+        live = p.get("status") == "ACTIVE" or objective_open(p["objective_id"])
+        items = []
+        for ws in workstreams_by_project.get(p["project_id"], []):
+            sid = ws.get("sequence_id")
+            if sid:
+                workstream_sequences.add(sid)
+            st = sequence_states.get(sid, {}) if sid else {}
+            edges = []
+            record = (cas_reader.read_json(record_address.get(sid))
+                      if live and cas_reader is not None and sid else None)
+            for e in (record or {}).get("predecessors") or []:
+                if not isinstance(e, dict):
+                    continue
+                kind = e.get("edge_kind") or "RECORD"
+                target = e.get("target")
+                pred = identity.get((kind, target)) or identity.get(
+                    ("RECORD", target))
+                edges.append(EdgeRefView(
+                    edge_id=e.get("edge_id") or "?", edge_kind=kind,
+                    predecessor_sequence_id=pred,
+                    predecessor_key=name_of(pred),
+                    predecessor_state=sequence_states.get(pred, {}).get(
+                        "state"),
+                    released_utc=released.get((kind, target))
+                    or released.get((pred, kind)),
+                    predecessor_item_id=pred))
+            halt = halt_of(sid, st, live)
+            a = assignments_idx.get(sid, {}) if sid else {}
+            flight = in_flight_by_sequence.get(sid) if sid else None
+            items.append(WorkItemView(
+                workstream_key=ws.get("workstream_key") or sid or "?",
+                sequence_id=sid, proposal_class=ws.get("proposal_class"),
+                state=st.get("state"), since_utc=st.get("updated_utc"),
+                holder=a.get("specialist_handle"),
+                selection_path=a.get("selection_path"),
+                assignment_status=a.get("status"),
+                assignment_outcome=a.get("outcome"),
+                attempt_state=flight["state"] if flight else None,
+                call_id=(flight or {}).get("call_id") or a.get("call_id"),
+                predecessors=edges,
+                halt_rule=halt.get("rule"),
+                halt_reason=halt.get("reason"),
+                halt_completeness=halt.get("completeness"),
+                next_staffing=next_staffing_of(sid),
+                halt_cause=_halt_cause(halt.get("rule"), halt.get("reason"),
+                                       halt.get("completeness"))
+                if halt else None,
+                kind="workstream", item_id=sid))
+        items_by_project[p["project_id"]] = items
+
+    plan_views = []
+    project_ids = {p["project_id"] for p in projects}
+    for run in raw_runs:
+        rid = run["orchestration_id"]
+        live = objective_open(run["objective_id"])
+        orchestrated = run.get("mode") == "ORCHESTRATOR_ELEVATED"
+        nodes = nodes_by_run.get(rid, [])
+        key_of = {n["node_id"]: n.get("node_key") or n["node_id"]
+                  for n in nodes}
+        status_of = {n["node_id"]: n.get("status") for n in nodes}
+
+        def own_state(nid):
+            sid = node_sequence.get(nid)
+            if sid:
+                return sequence_states.get(sid, {}).get("state")
+            return _NODE_STATE.get(status_of.get(nid), status_of.get(nid))
+
+        loose, bound = [], {}
+        for n in nodes:
+            nid = n["node_id"]
+            sid = node_sequence.get(nid)
+            project = project_of_node.get(nid)
+            if sid and sid in workstream_sequences:
+                continue  # a workstream already carries this work
+            if not sid:
+                if not orchestrated:
+                    continue  # an Engineer or Direct run's control node
+                if project and items_by_project.get(project):
+                    continue  # its project's workstreams carry the work
+            st = sequence_states.get(sid, {}) if sid else {}
+            asg = asg_by_node.get(nid, {})
+            flight = in_flight_by_sequence.get(sid) if sid else None
+            halt = halt_of(sid, st, live)
+            edges = [EdgeRefView(
+                edge_id=e["edge_id"], edge_kind=e.get("dependency_kind") or "?",
+                predecessor_sequence_id=node_sequence.get(
+                    e["source_node_id"]),
+                predecessor_key=key_of.get(e["source_node_id"]),
+                predecessor_state=own_state(e["source_node_id"]),
+                released_utc=e.get("released_utc"),
+                predecessor_item_id=e["source_node_id"])
+                for e in edges_by_run.get(rid, [])
+                if e.get("target_node_id") == nid]
+            item = WorkItemView(
+                workstream_key=key_of[nid], sequence_id=sid,
+                state=own_state(nid),
+                since_utc=st.get("updated_utc") if sid else (
+                    n.get("completed_utc") or n.get("created_utc")),
+                holder=asg.get("specialist_handle"),
+                selection_path=asg.get("selection_path"),
+                assignment_status=asg.get("status"),
+                assignment_outcome=asg.get("outcome"),
+                attempt_state=flight["state"] if flight else None,
+                call_id=(flight or {}).get("call_id") or asg.get("call_id"),
+                predecessors=edges,
+                halt_rule=halt.get("rule"),
+                halt_reason=halt.get("reason"),
+                halt_completeness=halt.get("completeness"),
+                next_staffing=next_staffing_of(sid),
+                halt_cause=_halt_cause(halt.get("rule"), halt.get("reason"),
+                                       halt.get("completeness"))
+                if halt else None,
+                kind="node", item_id=nid)
+            if project and project in project_ids:
+                bound.setdefault(project, []).append(item)
+            else:
+                loose.append(item)
+        for project, items in bound.items():
+            items_by_project[project].extend(items)
+        if loose:
+            plan_views.append(ProjectView(
+                project_id=rid, objective_id=run["objective_id"],
+                title="Orchestrator plan",
+                status="ACTIVE" if run.get("status") == "ACTIVE" and live
+                else "CLOSED",
+                opened_utc=run.get("created_utc"),
+                closed_utc=run.get("completed_utc"), items=loose,
+                kind="plan"))
+
+    project_views = [ProjectView(
+        project_id=p["project_id"], objective_id=p["objective_id"],
+        title=p.get("title") or "", status=p.get("status") or "?",
+        opened_utc=p.get("opened_utc"), closed_utc=p.get("closed_utc"),
+        items=items_by_project.get(p["project_id"], []))
+        for p in projects]
+    items_by_objective = {}
+    for pv in project_views + plan_views:
+        items_by_objective.setdefault(pv.objective_id, []).extend(pv.items)
+    halted_projects = {pv.project_id for pv in project_views
+                       if any(_is_halted(it.state) for it in pv.items)}
 
     # --- objectives ---
     objectives = []
-    objective_rows = {}
     work_by_objective = {}
-    for o in intelligence.objectives():
-        oid = o["objective_id"]
-        objective_rows[oid] = o
+    for oid, o in objective_rows.items():
         work = (None, None, None)
         if o.get("status") not in _COMPLETE_OBJECTIVE:
-            work = _objective_work(oid, projects_by_objective,
-                                   workstreams_by_project, sequence_states,
+            work = _objective_work(items_by_objective.get(oid, []),
                                    in_flight_by_sequence)
         work_by_objective[oid] = work
         objectives.append(ObjectiveView(
@@ -313,34 +605,45 @@ def build_snapshot(intelligence, authority, step_reader=None,
             created_utc=cd.get("created_utc"),
             policy_id=cd.get("policy_id"),
             feature_sources=_feature_sources(text, features)))
+    route_by_objective = {cd.objective_id: cd.route for cd in coord_decisions
+                          if cd.route}
 
-    # --- authority bindings index ---
-    bindings_by_node = {}
-    for ab in intelligence.authority_bindings():
-        bindings_by_node[ab["node_id"]] = ab
-
-    # --- node outputs index ---
-    outputs_by_node = {}
-    for out in intelligence.node_outputs():
-        outputs_by_node.setdefault(out["node_id"], []).append(out)
-
-    # --- assignment index (sequence → provider/model) ---
-    assignments_idx = intelligence.assignments_by_sequence()
+    # --- the Orchestrator policy's reasoning: it runs on the Engineer's
+    # configured model (runtime.production_orchestrator_policy) ---
+    reasoning = _call(intelligence, "orchestration_reasoning", [])
+    cycles_by_objective = {}
+    for r in reasoning:
+        for oid in _objectives_of(r.get("objectives")):
+            cycles_by_objective[oid] = cycles_by_objective.get(oid, 0) + 1
+    orchestrator = None
+    if reasoning:
+        policies = {}
+        not_applied = {}
+        for r in reasoning:
+            pid = r.get("policy_id") or "?"
+            policies[pid] = policies.get(pid, 0) + 1
+            _not_applied(r.get("application_results"), not_applied)
+        orchestrator = OrchestratorView(
+            not_applied=not_applied,
+            policy_id=max(sorted(policies), key=lambda k: policies[k]),
+            model=config_reader.planner_model() if config_reader else None,
+            cycles=len(reasoning),
+            decisions=sum(_decision_count(r.get("decisions"))
+                          for r in reasoning),
+            last_utc=max(r.get("recorded_utc") or "" for r in reasoning)
+            or None)
 
     # --- runs with nodes and edges ---
     runs = []
-    for run in intelligence.orchestration_runs():
+    for run in raw_runs:
         rid = run["orchestration_id"]
-        raw_nodes = intelligence.orchestration_nodes(rid)
-        raw_edges = intelligence.orchestration_edges(rid)
-
         nodes = []
-        for n in raw_nodes:
+        for n in nodes_by_run.get(rid, []):
             nid = n["node_id"]
             ab = bindings_by_node.get(nid, {})
             outs = outputs_by_node.get(nid, [])
             latest_out = outs[-1] if outs else {}
-            seq_id = ab.get("sequence_id")
+            seq_id = ab.get("sequence_id") or node_sequence.get(nid)
             asgn = assignments_idx.get(seq_id, {}) if seq_id else {}
             nodes.append(NodeView(
                 node_id=nid,
@@ -367,7 +670,7 @@ def build_snapshot(intelligence, authority, step_reader=None,
                 dependency_kind=e.get("dependency_kind", "?"),
                 status=e.get("status", "?"),
                 acceptance_sha256=e.get("acceptance_receipt_sha256"))
-            for e in raw_edges]
+            for e in edges_by_run.get(rid, [])]
 
         objective = objective_rows.get(run["objective_id"])
         work = work_by_objective.get(run["objective_id"],
@@ -384,7 +687,10 @@ def build_snapshot(intelligence, authority, step_reader=None,
             objective_status=objective.get("status") if objective else None,
             effective_state=effective[0],
             effective_note=effective[1],
-            effective_since_utc=effective[2]))
+            effective_since_utc=effective[2],
+            planned_by=route_by_objective.get(run["objective_id"])
+            if run.get("mode") == "ORCHESTRATOR_ELEVATED" else None,
+            reasoning_cycles=cycles_by_objective.get(run["objective_id"], 0)))
 
     # --- authority census ---
     auth_census = AuthorityCensus(
@@ -397,7 +703,8 @@ def build_snapshot(intelligence, authority, step_reader=None,
     work_by_seat = {}
     for w in _call(intelligence, "seat_work", []):
         work_by_seat.setdefault(w["seat_id"], []).append(
-            w.get("workstream_key") or w.get("sequence_id"))
+            w.get("workstream_key") or w.get("node_key")
+            or name_of(w.get("sequence_id")) or w.get("sequence_id"))
     teams_by_specialist = {}
     for t in _call(intelligence, "active_project_teams", []):
         teams_by_specialist.setdefault(t["specialist_id"], set()).add(
@@ -440,7 +747,11 @@ def build_snapshot(intelligence, authority, step_reader=None,
             seat_not_qualifying=s.get("seat_nq") or 0,
             other_qualifying=s.get("other_q") or 0,
             other_not_qualifying=s.get("other_nq") or 0,
-            since_utc=s.get("since_utc") or s.get("retained_since_utc"),
+            # a held seat dates from the decision behind its status; any
+            # other (RELEASED) from when the seat row last changed
+            since_utc=(s.get("since_utc") or s.get("retained_since_utc"))
+            if s.get("status") in ("ESTABLISHED", "RETAINED")
+            else s.get("updated_utc") or s.get("since_utc"),
             provider=current_pm[0],
             model=current_pm[1],
             current_work=", ".join(current) if current else None,
@@ -449,7 +760,8 @@ def build_snapshot(intelligence, authority, step_reader=None,
             route_name=route_name,
             earlier_records=_earlier_records(
                 demos_by_model.get(s["specialist_id"], []), current_pm,
-                routes_dict)))
+                routes_dict),
+            current_list=list(current or [])))
 
     specialists = _call(intelligence, "specialists", [])
     taskforce = TaskforceView(
@@ -478,20 +790,20 @@ def build_snapshot(intelligence, authority, step_reader=None,
             provider=a.get("provider"),
             model=a.get("model"),
             outcome=a.get("outcome"),
-            workstream_key=a.get("workstream_key")
-            or workstream_key_by_sequence.get(a["sequence_id"]),
+            workstream_key=a.get("workstream_key") or a.get("node_key")
+            or name_of(a["sequence_id"]),
             selected_utc=a.get("selected_utc"),
             settled_utc=a.get("settled_utc"))
         for a in raw_assignments]
 
     # --- activity: one stream over every layer, journal rows named by the
-    # work they belong to and annotated by their planning events ---
-    transitions = authority.recent_transitions(limit=20)
+    # work they belong to and annotated by their planning events; a run of
+    # identical rows (a session's witness admissions) is one row ---
+    transitions = authority.recent_transitions(limit=60)
     attempt_sequences = _call(authority, "attempt_sequences", {})
     events = events_from_transitions(
         transitions,
-        name_of=lambda t: workstream_key_by_sequence.get(
-            _transition_sequence(t, attempt_sequences)))
+        name_of=lambda t: name_of(_transition_sequence(t, attempt_sequences)))
     planning = _call(intelligence, "planning_events_for", {},
                      [t.get("seq") for t in transitions])
     annotated = []
@@ -505,12 +817,14 @@ def build_snapshot(intelligence, authority, step_reader=None,
     for a in _call(intelligence, "recent_assignments", [], 40):
         assignment_names[a["assignment_id"]] = (
             a.get("specialist_handle"),
-            a.get("workstream_key")
-            or workstream_key_by_sequence.get(a.get("sequence_id")))
+            a.get("workstream_key") or a.get("node_key")
+            or name_of(a.get("sequence_id")))
     cycle_rows = _call(intelligence, "cycles_recent", [], 3)
     events.extend(events_from_workforce(
         _call(intelligence, "workforce_events_recent", [], 10),
-        assignment_names))
+        assignment_names,
+        {sp["specialist_id"]: sp["handle"] for sp in specialists
+         if sp.get("specialist_id") and sp.get("handle")}))
     events.extend(events_from_cycles(cycle_rows))
     events.extend(events_from_admissions(coord_decisions[-5:]))
     events.extend(events_from_approvals(
@@ -522,7 +836,7 @@ def build_snapshot(intelligence, authority, step_reader=None,
             events.extend(events_from_step(entry))
 
     events.sort(key=lambda e: e.timestamp or "", reverse=True)
-    events = events[:30]
+    events = collapse_repeats(events)[:30]
 
     # --- active sequences and attempts ---
     active_sequences = [
@@ -540,10 +854,21 @@ def build_snapshot(intelligence, authority, step_reader=None,
             state=a["state"])
         for a in authority.running_attempts()]
 
-    # --- sessions: attempts the authority plane holds in flight ---
+    # --- sessions: the attempts in flight that have a live session, joined
+    # to the assignment that staffed them and to the AutoSwarm call; the
+    # rest are counted by state (past their session, or not yet started) ---
     by_attempt = _call(intelligence, "assignments_by_attempt", {})
     sessions = []
+    after_session = {}
+    before_session = 0
     for a in in_flight:
+        state = a["state"]
+        if state in _PRE_ATTEMPTS:
+            before_session += 1
+            continue
+        if state not in _LIVE_ATTEMPTS:
+            after_session[state] = after_session.get(state, 0) + 1
+            continue
         asg = by_attempt.get(a["attempt_id"], {})
         files = {}
         if autoswarm_reader is not None and a.get("call_id"):
@@ -551,10 +876,12 @@ def build_snapshot(intelligence, authority, step_reader=None,
         provider = (files.get("provider") or asg.get("provider")
                     or a.get("provider"))
         model = files.get("model") or asg.get("model")
+        activity = files.get("activity") or {}
+        finished = files.get("finished_utc")
         sessions.append(SessionView(
             attempt_id=a["attempt_id"],
             sequence_id=a["sequence_id"],
-            attempt_state=a["state"],
+            attempt_state=state,
             attempt_since_utc=a.get("updated_utc"),
             call_id=a.get("call_id"),
             provider=provider,
@@ -564,8 +891,8 @@ def build_snapshot(intelligence, authority, step_reader=None,
             capability=asg.get("capability"),
             specialist_handle=asg.get("specialist_handle"),
             selection_path=asg.get("selection_path"),
-            workstream_key=asg.get("workstream_key")
-            or workstream_key_by_sequence.get(a["sequence_id"]),
+            workstream_key=asg.get("workstream_key") or asg.get("node_key")
+            or name_of(a["sequence_id"]),
             objective_id=asg.get("objective_id"),
             pid=files.get("pid"),
             started_utc=files.get("started_utc"),
@@ -573,7 +900,14 @@ def build_snapshot(intelligence, authority, step_reader=None,
             finalization_class=files.get("finalization_class"),
             output_lines=files.get("output_lines") or 0,
             last_line=files.get("last_line"),
-            output_utc=files.get("output_utc")))
+            output_utc=files.get("output_utc"),
+            session_state="finished" if finished else "running",
+            finished_utc=finished,
+            activity_events=activity.get("events") or 0,
+            activity_tools=activity.get("tool_calls") or 0,
+            activity_utc=activity.get("last_utc"),
+            activity_doing=activity.get("doing"),
+            activity_done=bool(activity.get("finished"))))
 
     # --- active AutoSwarm sessions (call directories) ---
     active_sessions = []
@@ -606,15 +940,6 @@ def build_snapshot(intelligence, authority, step_reader=None,
         journal_utc=head.get("appended_utc"))
 
     # --- the Engineer (Project Manager) ---
-    staffing = [StaffingView(
-        decision_id=s["decision_id"], sequence_id=s["sequence_id"],
-        mode=s.get("mode") or "?", objective_id=s.get("objective_id"),
-        project_id=s.get("project_id"),
-        attempt_ordinal=s.get("attempt_ordinal"),
-        specialist_handle=s.get("specialist_handle"),
-        decided_utc=s.get("decided_utc"),
-        workstream_key=workstream_key_by_sequence.get(s["sequence_id"]))
-        for s in _call(intelligence, "open_staffing", [])]
     decisions = _call(intelligence, "engineering_decisions", [])
     stored = 0
     for d in decisions:
@@ -635,95 +960,11 @@ def build_snapshot(intelligence, authority, step_reader=None,
             rationale=p.get("rationale") or "",
             sequence_id=p.get("sequence_id"),
             created_utc=p.get("created_utc"),
-            workstream_key=workstream_key_by_sequence.get(
-                p.get("sequence_id")))
+            workstream_key=name_of(p.get("sequence_id")))
             for p in _call(intelligence, "open_proposals", [])],
         staffing_open=staffing,
         decisions_total=len(decisions),
         decisions_stored=stored)
-
-    # --- the work graph: each project's workstreams with their sequence,
-    # holder, frozen predecessor edges and, when halted, why ---
-    identity = {}
-    record_address = {}
-    for s in _call(authority, "sequence_index", []):
-        sid = s["sequence_id"]
-        for kind, key in (("RECORD", "record_hash"),
-                          ("CONTRACT", "contract_digest"),
-                          ("REQUIREMENT", "requirement_digest")):
-            if s.get(key):
-                identity.setdefault((kind, s[key]), sid)
-        record_address[sid] = s.get("content_address")
-    released = {}
-    for e in _call(authority, "released_edges", []):
-        released[(e["edge_kind"], e["edge_value"])] = e["released_utc"]
-        released[(e["predecessor_sequence_id"], e["edge_kind"])] = (
-            e["released_utc"])
-    staffing_by_sequence = {s.sequence_id: s for s in staffing}
-    objective_status = {o.objective_id: o.status for o in objectives}
-
-    project_views = []
-    for p in projects:
-        live = (p.get("status") == "ACTIVE"
-                or objective_status.get(p["objective_id"])
-                not in _COMPLETE_OBJECTIVE)
-        items = []
-        for ws in workstreams_by_project.get(p["project_id"], []):
-            sid = ws.get("sequence_id")
-            st = sequence_states.get(sid, {}) if sid else {}
-            edges = []
-            record = (cas_reader.read_json(record_address.get(sid))
-                      if live and cas_reader is not None and sid else None)
-            for e in (record or {}).get("predecessors") or []:
-                if not isinstance(e, dict):
-                    continue
-                kind = e.get("edge_kind") or "RECORD"
-                target = e.get("target")
-                pred = identity.get((kind, target)) or identity.get(
-                    ("RECORD", target))
-                edges.append(EdgeRefView(
-                    edge_id=e.get("edge_id") or "?", edge_kind=kind,
-                    predecessor_sequence_id=pred,
-                    predecessor_key=workstream_key_by_sequence.get(pred),
-                    predecessor_state=sequence_states.get(pred, {}).get(
-                        "state"),
-                    released_utc=released.get((kind, target))
-                    or released.get((pred, kind))))
-            halt = None
-            if live and sid and _is_halted(st.get("state")):
-                halt = _call(authority, "halt_facts", None, sid,
-                             st.get("updated_utc"))
-            a = assignments_idx.get(sid, {}) if sid else {}
-            flight = in_flight_by_sequence.get(sid) if sid else None
-            nxt = staffing_by_sequence.get(sid)
-            if nxt is None:
-                next_staffing = None
-            elif nxt.specialist_handle:
-                next_staffing = "%s (%s)" % (
-                    nxt.specialist_handle, nxt.mode.replace("_", " "))
-            else:
-                next_staffing = "%s attempt %s" % (
-                    nxt.mode.replace("_", " "), nxt.attempt_ordinal or "?")
-            items.append(WorkItemView(
-                workstream_key=ws.get("workstream_key") or sid or "?",
-                sequence_id=sid, proposal_class=ws.get("proposal_class"),
-                state=st.get("state"), since_utc=st.get("updated_utc"),
-                holder=a.get("specialist_handle"),
-                selection_path=a.get("selection_path"),
-                assignment_status=a.get("status"),
-                assignment_outcome=a.get("outcome"),
-                attempt_state=flight["state"] if flight else None,
-                call_id=(flight or {}).get("call_id") or a.get("call_id"),
-                predecessors=edges,
-                halt_rule=(halt or {}).get("rule"),
-                halt_reason=(halt or {}).get("reason"),
-                halt_completeness=(halt or {}).get("completeness"),
-                next_staffing=next_staffing))
-        project_views.append(ProjectView(
-            project_id=p["project_id"], objective_id=p["objective_id"],
-            title=p.get("title") or "", status=p.get("status") or "?",
-            opened_utc=p.get("opened_utc"), closed_utc=p.get("closed_utc"),
-            items=items))
 
     # --- trust ---
     trust = TrustView(
@@ -739,14 +980,14 @@ def build_snapshot(intelligence, authority, step_reader=None,
     # --- attention: derived flags, each naming its rule ---
     attention = []
     halted_seen = set()
-    for pv in project_views:
+    for pv in project_views + plan_views:
         for it in pv.items:
             if _is_halted(it.state):
                 halted_seen.add(it.sequence_id)
                 attention.append(AttentionItem(
                     rule="A1", severity="critical", subject=it.workstream_key,
                     detail=" · ".join(x for x in (
-                        it.halt_rule, it.halt_reason) if x) or "halted",
+                        it.halt_rule, it.halt_cause) if x) or "halted",
                     since_utc=it.since_utc, whose_move="operator"))
             elif it.state in _BLOCKED_STATES:
                 open_edges = [e for e in it.predecessors
@@ -761,7 +1002,7 @@ def build_snapshot(intelligence, authority, step_reader=None,
                             for e in open_edges),
                         since_utc=it.since_utc,
                         whose_move="follows the halt"))
-    for s in active_sequences:  # halted work outside any project
+    for s in active_sequences:  # halted work outside any project or plan
         if _is_halted(s.state) and s.sequence_id not in halted_seen:
             halted_seen.add(s.sequence_id)
             facts = _call(authority, "halt_facts", None, s.sequence_id,
@@ -769,10 +1010,11 @@ def build_snapshot(intelligence, authority, step_reader=None,
                               "updated_utc")) or {}
             attention.append(AttentionItem(
                 rule="A1", severity="critical",
-                subject=workstream_key_by_sequence.get(s.sequence_id)
-                or s.sequence_id,
+                subject=name_of(s.sequence_id) or s.sequence_id,
                 detail=" · ".join(x for x in (
-                    facts.get("rule"), facts.get("reason")) if x) or "halted",
+                    facts.get("rule"), _halt_cause(
+                        facts.get("rule"), facts.get("reason"),
+                        facts.get("completeness"))) if x) or "halted",
                 since_utc=sequence_states.get(s.sequence_id, {}).get(
                     "updated_utc"), whose_move="operator"))
     for f in _call(authority, "integrity_failures", []):
@@ -782,7 +1024,7 @@ def build_snapshot(intelligence, authority, step_reader=None,
             continue
         attention.append(AttentionItem(
             rule="A2", severity="critical",
-            subject=workstream_key_by_sequence.get(sid) or sid,
+            subject=name_of(sid) or sid,
             detail="receipt INTEGRITY_FAILED",
             since_utc=f.get("admitted_utc"), whose_move="operator"))
     unknown = trust.effects_by_state.get("UNKNOWN_OUTCOME", 0)
@@ -868,4 +1110,8 @@ def build_snapshot(intelligence, authority, step_reader=None,
         engineer=engineer,
         projects=project_views,
         trust=trust,
-        attention=attention)
+        attention=attention,
+        plans=plan_views,
+        orchestrator=orchestrator,
+        after_session=after_session,
+        before_session=before_session)

@@ -5,28 +5,36 @@ stream over every layer.
 Every row comes from a recorded column or from a derived rule that names
 itself (the review's field map and attention rules A1-A13):
 
-- COORDINATOR: active objectives with their admission, the last
-  admission and, derived, the words each feature came from.
-- ORCHESTRATOR: each run's recorded status next to what its objective
-  and work are (working, stuck, waiting, done).
+- COORDINATOR: the last admission and, derived, the words each feature
+  came from, then the active objectives with their age.
+- ORCHESTRATOR: who plans (the Orchestrator policy, on the Engineer's
+  model, and its reasoning cycles), and each run's recorded status next
+  to what its objective and work are (working, stuck, waiting, done).
 - ENGINEER: the newest cycle and its age, active projects and their
   progress, proposals waiting, staffing not yet applied, and whether the
   reasoning text is stored.
 - TASKFORCE: every seat with its holder, standing, record through the
-  seat and without it, and who works on what now.
+  seat and without it, and who works on what now, in a seat or not.
 - AUTHORITY: states by full name, attempts, receipts, verifications,
   effects, witnesses, permissions, the sequencer lease and journal head.
-- EXECUTING: one row per attempt the authority plane holds in flight.
+- EXECUTING: one row per attempt with a live session (DISPATCHED or
+  RUNNING): the route it runs on, who holds it, and what its own record
+  says it is doing; a session that wrote its result has a stopped clock.
+  Attempts past their session or not yet started are counted.
 - DAG: each live project's workstreams joined by their frozen
-  predecessor edges, with holder, age, and why halted or blocked.
-- ACTIVITY: journal transitions named by workstream, planning, workforce,
-  cycle, admission and permission events, times to the millisecond.
+  predecessor edges, and each Orchestrator plan's tasks by its own
+  edges, with holder, age, and why halted or blocked.
+- ACTIVITY: journal transitions named by workstream or task, planning,
+  workforce, cycle, admission and permission events, times to the
+  millisecond; a run of identical rows is one row with a count.
 
 A line is built from whole parts. A part that does not fit moves to an
 indented continuation line; only a part wider than the space left ends
-in "…", and a list that does not fit ends in "+N more". The terminal runs
-in the alternate screen with autowrap off; its size is re-read every
-tick, and a resize repaints the whole frame.
+in "…", and a list that does not fit ends in "+N more". From 200 columns
+the four boxes stand in one row. The terminal runs in the alternate
+screen with autowrap off; its size is re-read every tick, a resize
+repaints the whole frame (and the next one), and so does every tenth
+second.
 """
 
 import os
@@ -76,8 +84,10 @@ MODE_SHORT = {"DIRECT": "DIR", "ENGINEER_ELEVATED": "ENG",
               "ORCHESTRATOR_ELEVATED": "ORC"}
 MODE_COLOR = {"DIRECT": C["dir"], "ENGINEER_ELEVATED": C["eng"],
               "ORCHESTRATOR_ELEVATED": C["orch"]}
-SEAT_STATUS = {"ESTABLISHED": "EST", "RETAINED": "RET"}
+SEAT_STATUS = {"ESTABLISHED": "EST", "RETAINED": "RET",
+               "RELEASED": "RELEASED"}
 HOW = {"RETAINED_SEAT": "seat", "OUTSIDE_SPECIALIST": "outside"}
+_HELD = ("ESTABLISHED", "RETAINED")
 
 EFFECTIVE = {  # a run's derived state: symbol, color, sort order
     "working": ("▶", C["accent"], 0), "stuck": ("✗", C["halted"], 1),
@@ -91,7 +101,8 @@ _QUEUED = ("DECLARED", "READY")
 
 
 def _state_mark(state):
-    """Symbol and color of a sequence state."""
+    """Symbol and color of a work item's state: its sequence's, or, for
+    an Orchestrator task with no sequence yet, PLANNED or DISPATCHING."""
     if not state:
         return "·", C["dim"]
     if state.startswith("HALTED"):
@@ -100,11 +111,21 @@ def _state_mark(state):
         return "◫", C["blocked"]
     if state == "COMPLETED":
         return "✦", C["success"]
-    if state in SEQUENCE_TERMINAL:
+    if state == "FAILED":
+        return "!", C["error"]
+    if state in SEQUENCE_TERMINAL or state == "CANCELLED":
         return "·", C["dim"]
-    if state in _QUEUED:
+    if state in _QUEUED or state == "PLANNED":
         return "○", C["dim"]
     return "▶", C["accent"]
+
+
+def _short(text, width):
+    """``text`` cut to ``width`` characters, a cut ending in "…"."""
+    text = text or ""
+    if width <= 0 or len(text) <= width:
+        return text
+    return text[:max(width - 1, 0)] + "…"
 
 
 # ── segments, parts and lines ─────────────────────────────────────────
@@ -319,15 +340,8 @@ def _coord_lines(snapshot, now):
             [[S("%s %d" % (MODE_SHORT.get(m, m[:3]), n),
                 MODE_COLOR.get(m, C["dim"]), True)]
              for m, n in sorted(modes.items())], first=" ", sep="  ")))
-    decision = {cd.objective_id: cd for cd in snapshot.coordinator_decisions}
-    for o in active:
-        cd = decision.get(o.objective_id)
-        mode = cd.elevation_mode if cd else "?"
-        lines.append(L(
-            P(S("● ", C["active"]), S(o.objective_id, C["bright"]),
-              S("  %s" % MODE_SHORT.get(mode, mode[:3]),
-                MODE_COLOR.get(mode, C["dim"]), True),
-              S("  %s" % _dur(_seconds(o.created_utc, now)), C["dim"]))))
+    # the newest admission and where its features came from come before
+    # the list of active objectives, so a short box cuts the list's tail
     stamped = [cd for cd in snapshot.coordinator_decisions if cd.created_utc]
     if stamped:
         last = max(stamped, key=lambda cd: cd.created_utc)
@@ -342,6 +356,15 @@ def _coord_lines(snapshot, now):
             derived = not source.startswith('"')
             lines.append(L(P(S("  %s ← " % name, C["dim"])),
                            P(S(source, C["warn"] if derived else C["text"]))))
+    decision = {cd.objective_id: cd for cd in snapshot.coordinator_decisions}
+    for o in active:
+        cd = decision.get(o.objective_id)
+        mode = cd.elevation_mode if cd else "?"
+        lines.append(L(
+            P(S("● ", C["active"]), S(o.objective_id, C["bright"]),
+              S("  %s" % MODE_SHORT.get(mode, mode[:3]),
+                MODE_COLOR.get(mode, C["dim"]), True),
+              S("  %s" % _dur(_seconds(o.created_utc, now)), C["dim"]))))
     return lines
 
 
@@ -360,7 +383,7 @@ def _effective_groups(runs):
             for k in sorted(counts, key=lambda k: mark[k][2])]
 
 
-def _orch_lines(snapshot, now):
+def _orch_lines(snapshot, now, narrow=False):
     runs = list(snapshot.runs)
     if not runs:
         return [L(P(S("no orchestration runs", C["dim"])))]
@@ -375,13 +398,42 @@ def _orch_lines(snapshot, now):
     lines = [L(P(S("%d runs" % len(runs), C["bright"], True),
                  S(status, C["dim"])),
                *_sep_parts(_effective_groups(runs), first=" → "))]
+    o = snapshot.orchestrator
+    if o is not None and o.cycles:
+        # who plans the ORC runs: the Orchestrator policy, on the
+        # Engineer's model, and how often it has reasoned
+        lines.append(L(
+            P(S("plans on ", C["dim"]), S(o.model or "?", C["luna"])),
+            P(S(" · %s" % o.policy_id, C["dim"])),
+            P(S(" · %d cycle%s" % (o.cycles, "" if o.cycles == 1 else "s"),
+                C["dim"])),
+            P(S(" · last %s (%s)" % (_when(o.last_utc, now),
+                                     _ago(o.last_utc, now)), C["dim"]))
+            if o.last_utc else None))
+        if o.not_applied and narrow:
+            # decisions the applicator skipped or rejected: their number
+            # here, by class in a wide box and the compact view
+            lines.append(L(P(S("not applied: %d of %d decisions" % (
+                sum(o.not_applied.values()), o.decisions), C["warn"]))))
+        elif o.not_applied:
+            lines.append(L(P(S("not applied: ", C["warn"])), *_sep_parts(
+                [[S("%s ×%d" % (k, n), C["warn"])]
+                 for k, n in sorted(o.not_applied.items())])))
     runs.sort(key=lambda r: r.created_utc or "", reverse=True)
     runs.sort(key=lambda r: _effective_of(r)[2])
-    ow = min(30, max(len(r.objective_id) for r in runs))
-    stale = False
-    for r in runs:
+    done = [r for r in runs if r.effective_state == "done"]
+    shown = [r for r in runs if r.effective_state != "done"]
+    if len(done) <= 2:
+        shown, done = shown + done, []
+    ow = min(24 if narrow else 30,
+             max(len(r.objective_id) for r in (shown or runs)))
+    stale = any(r.status == "ACTIVE" and r.effective_state in ("done",
+                                                               "stuck")
+                for r in runs)
+    for r in shown:
         sym, color, _ = _effective_of(r)
         since = r.effective_since_utc
+        state = r.effective_state or "?"
         if r.effective_state == "working":
             note = r.effective_note or "in progress"
         elif r.effective_state == "stuck":
@@ -391,24 +443,36 @@ def _orch_lines(snapshot, now):
         else:
             note = r.effective_note or ""
         # one run per objective: the objective names the run here, the
-        # run id stays in the compact view and --json
-        lines.append(L(
-            P(S(sym + " ", color),
-              S("%s " % MODE_SHORT.get(r.mode, r.mode[:3]),
-                MODE_COLOR.get(r.mode, C["dim"]), True),
-              S(r.objective_id[:ow].ljust(ow))),
-            P(S("  %s" % (r.effective_state or "?"), color)),
-            P(S(" · " + note, C["dim"])) if note else None,
-            P(S(" · 0 nodes", C["dim"])) if not r.nodes else None))
-        if r.status == "ACTIVE" and r.effective_state in ("done", "stuck"):
-            stale = True
+        # run id stays in the compact view and --json. In a narrow box a
+        # halt needs no state word: the mark and HALTED say it.
+        head = [P(S(sym + " ", color),
+                  S("%s " % MODE_SHORT.get(r.mode, r.mode[:3]),
+                    MODE_COLOR.get(r.mode, C["dim"]), True),
+                  S(_short(r.objective_id, ow).ljust(ow)))]
+        if narrow and r.effective_state == "stuck":
+            head.append(P(S("  " + note, color)))
+        else:
+            head.append(P(S("  %s" % state, color)))
+            if note:
+                head.append(P(S(" · " + note, C["dim"])))
+        if not r.nodes:
+            head.append(P(S(" · 0 nodes", C["dim"])))
+        lines.append(L(*head))
+    if done:
+        newest = max(done, key=lambda r: r.effective_since_utc or "")
+        lines.append(L(P(S("✦ ", C["success"]),
+                         S("%d done" % len(done), C["success"])),
+                       P(S(" · newest %s %s" % (
+                           newest.objective_id,
+                           _when(newest.effective_since_utc, now)),
+                           C["dim"]))))
     if stale:
         lines.append(L(P(S("recorded ACTIVE until an Orchestrator "
                            "COMPLETE_RUN (O2)", C["dim"]))))
     return lines
 
 
-def _eng_lines(snapshot, now):
+def _eng_lines(snapshot, now, narrow=False):
     e = snapshot.engineer
     lines = []
     if e.cycles:
@@ -434,12 +498,16 @@ def _eng_lines(snapshot, now):
     for p in sorted(projects, key=lambda p: p.opened_utc or "",
                     reverse=True):
         done = sum(1 for it in p.items if it.state == "COMPLETED")
-        lines.append(L(
-            P(S("  %s " % p.project_id[:7], C["dim"]),
-              S(p.title or "(untitled)")),
-            P(S("  %d/%d done" % (done, len(p.items)),
-                C["success"] if p.items and done == len(p.items)
-                else C["dim"]))))
+        progress = P(S("  %d/%d done" % (done, len(p.items)),
+                       C["success"] if p.items and done == len(p.items)
+                       else C["dim"]))
+        if narrow:  # the count stays; the free-text title is what is cut
+            lines.append(L(P(S("  %s" % p.project_id[:7], C["dim"])),
+                           progress, P(S("  " + (p.title or "(untitled)")))))
+        else:
+            lines.append(L(
+                P(S("  %s " % p.project_id[:7], C["dim"]),
+                  S(p.title or "(untitled)")), progress))
     if e.waiting:
         # a wait names its sequence; one that does not is shown by the
         # halted work of its objective, else by the objective
@@ -463,12 +531,12 @@ def _eng_lines(snapshot, now):
         for klass, subjects in sorted(by_class.items()):
             lines.append(L(P(S("⚑ waiting ", C["warn"]),
                              S("%s ×%d" % (klass, counts[klass]), C["warn"])),
-                           *_sep_parts([[S(s, C["dim"])] for s in subjects],
-                                       first=" · ")))
+                           *_sep_parts([[S(_short(s, 40), C["dim"])]
+                                        for s in subjects], first=" · ")))
     if e.staffing_open:
         lines.append(L(P(S("staffing open %d" % len(e.staffing_open))),
                        *_sep_parts([[S("%s → %s" % (
-                           s.workstream_key or s.sequence_id[:12],
+                           _short(s.workstream_key or s.sequence_id[:12], 40),
                            s.specialist_handle or s.mode.replace("_", " ")),
                            C["dim"])] for s in e.staffing_open],
                            first=" · ")))
@@ -490,7 +558,28 @@ def _qn(q, n):
     return " ".join(parts)
 
 
-def _tf_lines(snapshot, now):
+def _working_now(snapshot):
+    """(handle, work, how) for every live session, seat or not; a seat's
+    in-flight assignment without a session counts too."""
+    out, seen = [], set()
+    for s in snapshot.sessions:
+        if s.session_state != "running" or not s.specialist_handle:
+            continue
+        how = "" if s.selection_path == "RETAINED_SEAT" else HOW.get(
+            s.selection_path, "")
+        work = s.workstream_key or s.sequence_id[:16]
+        out.append((s.specialist_handle, work, how))
+        seen.add((s.specialist_handle, work))
+    for seat in snapshot.taskforce.seats:
+        for work in seat.current_list or (
+                [seat.current_work] if seat.current_work else []):
+            if (seat.specialist_handle, work) not in seen:
+                out.append((seat.specialist_handle, work, ""))
+                seen.add((seat.specialist_handle, work))
+    return out
+
+
+def _tf_lines(snapshot, now, narrow=False):
     tf = snapshot.taskforce
     counts = []
     if tf.established_count:
@@ -506,19 +595,24 @@ def _tf_lines(snapshot, now):
         sample = next(s for s in tf.seats if (
             s.route_name or "%s/%s" % (s.provider or "?", s.model or "?"))
             == main)
-        lead = "every seat runs on " if len(on) == 1 else "seats run on "
-        line = L(P(S(lead, C["dim"]), S(route_desc(
+        held = any(s.status in _HELD for s in tf.seats)
+        lead = ("specialists run on " if not held else
+                "every seat runs on " if len(on) == 1 else "seats run on ")
+        line = L(P(S(lead, C["dim"])), P(S(route_desc(
             sample.route_name, snapshot.routing, sample.provider,
             sample.model), C["luna"])))
         escalation = snapshot.routing.escalation_route
         if escalation and escalation != "?":
             line.append(P(S(" · escalation %s" % escalation, C["dim"])))
         lines.append(line)
-    working = [s for s in tf.seats if s.current_work]
+    working = _working_now(snapshot)
+    busy_handles = {handle for handle, _, _ in working}
     if working:
         lines.append(L(P(S("working now ", C["dim"])), *_sep_parts(
-            [[S(s.specialist_handle, C["bright"]),
-              S(" → %s" % s.current_work, C["accent"])] for s in working])))
+            [[S(handle, C["bright"]),
+              S(" → %s" % _short(work, 36), C["accent"]),
+              S(" (%s)" % how if how else "", C["dim"])]
+             for handle, work, how in working])))
     else:
         lines.append(L(P(S("working now ", C["dim"]),
                          S("nobody", C["dim"]))))
@@ -533,7 +627,7 @@ def _tf_lines(snapshot, now):
         rw = max(len(_qn(s.seat_qualifying, s.seat_not_qualifying) or "-")
                  for s in seats)
     for s in seats:
-        busy = bool(s.current_work)
+        busy = bool(s.current_work) or s.specialist_handle in busy_handles
         record = _qn(s.seat_qualifying, s.seat_not_qualifying) or "-"
         extra = _qn(s.other_qualifying, s.other_not_qualifying)
         lines.append(L(
@@ -657,32 +751,76 @@ def _auth_lines(snapshot, now):
 
 # ── bands ─────────────────────────────────────────────────────────────
 
+def _activity_part(s, now):
+    """What a live session has done, from its own record (a Codex
+    rollout), else from its stdout, else that nothing is recorded yet."""
+    if s.activity_events:
+        bits = ["%d tool call%s" % (s.activity_tools,
+                                    "" if s.activity_tools == 1 else "s")]
+        if s.activity_done:
+            bits.append("task complete")
+        elif s.activity_doing:
+            bits.append(_short(s.activity_doing, 40))
+        if s.activity_utc:
+            bits.append("last %s" % _ago(s.activity_utc, now))
+        return P(S(" · " + " · ".join(bits)))
+    if s.last_line:
+        return P(S(" · " + _short(s.last_line.strip(), 50), C["dim"]),
+                 S(" (%s)" % _ago(s.output_utc, now), C["dim"]))
+    return P(S(" · no activity recorded yet", C["dim"]))
+
+
+def _exec_tail(snapshot):
+    """The EXECUTING title's counts: sessions running, sessions ended but
+    not collected, and attempts in flight with no live session."""
+    ended = sum(1 for s in snapshot.sessions
+                if s.session_state == "finished")
+    bits = ["%d running" % (len(snapshot.sessions) - ended)]
+    if ended:
+        bits.append("%d ended, not collected" % ended)
+    after = snapshot.after_session or {}
+    if after:
+        bits.append("%d past the session (%s)" % (
+            sum(after.values()), ", ".join(
+                "%s %d" % (k, n) for k, n in sorted(after.items()))))
+    if snapshot.before_session:
+        bits.append("%d not started" % snapshot.before_session)
+    return " · ".join(bits)
+
+
 def _exec_lines(snapshot, now):
+    """One row per attempt with a live session: the work, the route its
+    session runs on and who holds it, its state, and what it is doing.
+    A session that wrote its result has a stopped clock."""
     lines = []
     for s in snapshot.sessions:
         how = HOW.get(s.selection_path, s.selection_path or "?")
         started = s.started_utc or s.attempt_since_utc
-        lines.append(L(
-            P(S("▶ ", C["accent"]),
-              S(s.workstream_key or s.sequence_id[:16], C["bright"], True),
-              S("  %s (%s)" % (s.specialist_handle or "?", how)),
-              S(" → %s" % (s.route_name or "%s/%s" % (
-                  s.provider or "?", s.model or "?")), C["luna"])),
+        ended = s.session_state == "finished"
+        route = s.route_name or "%s/%s" % (s.provider or "?", s.model or "?")
+        line = L(
+            P(S("■ " if ended else "▶ ", C["dim"] if ended else C["accent"]),
+              S(_short(s.workstream_key or s.sequence_id[:16], 44),
+                C["bright"], True)),
+            P(S("  " + route, C["luna"]),
+              S(" · %s (%s)" % (s.specialist_handle or "?", how))),
             P(S("  %s since %s" % (s.attempt_state, _when(
-                s.attempt_since_utc, now)), C["accent"])),
-            P(S(" · session %s" % _dur(_seconds(started, now)))),
-            P(S(" · pid %s" % s.pid, C["dim"])) if s.pid else None,
-            P(S(" · " + s.finalization_class, C["dim"]))
-            if s.finalization_class else None,
-            P(S(" · " + s.objective_id, C["dim"])) if s.objective_id
-            else None))
-        if s.last_line:
-            lines.append(L(P(S("    " + s.last_line.strip(), C["dim"])),
-                           P(S("  (%s)" % _ago(s.output_utc, now),
-                               C["dim"]))))
-        elif s.call_id:
-            lines.append(L(P(S("    %s · no output yet" % s.call_id[:20],
-                               C["dim"]))))
+                s.attempt_since_utc, now)), C["accent"])))
+        if ended:
+            line.append(P(S(" · session ended %s after %s" % (
+                _when(s.finished_utc, now),
+                _dur(_seconds(started, s.finished_utc))), C["dim"])))
+            line.append(P(S(" · result not collected yet", C["warn"])))
+        else:
+            line.append(P(S(" · session %s" % _dur(_seconds(started, now)))))
+            line.append(_activity_part(s, now))
+            if s.pid:
+                line.append(P(S(" · pid %s" % s.pid, C["dim"])))
+        if s.finalization_class:
+            line.append(P(S(" · " + s.finalization_class, C["dim"])))
+        if s.objective_id:
+            line.append(P(S(" · " + s.objective_id, C["dim"])))
+        lines.append(line)
     if not lines:
         settled = [a for a in snapshot.recent_assignments
                    if a.status == "SETTLED" and a.settled_utc]
@@ -707,17 +845,19 @@ def _item_line(it, lead, kw, now, wide=True):
         since = (" %s · %s" % (_when(it.since_utc, now), age) if wide
                  else " " + age)
     parts = [P(S("   " + lead, C["frame"]), S(sym + " ", color),
-               S(it.workstream_key[:kw].ljust(kw) + " ", C["bright"]),
+               S(_short(it.workstream_key, kw).ljust(kw) + " ", C["bright"]),
                S(it.state or "no sequence", color, True), S(since, C["dim"]))]
     if it.holder:
         how = HOW.get(it.selection_path, "")
         parts.append(P(S("   %s%s" % (it.holder, " · " + how if how else ""))))
     state = it.state or ""
-    if state.startswith("HALTED"):
-        # the halting rule and the receipt state it acted on; the recorded
-        # reason text stays in --json
-        cause = ("receipt %s" % it.halt_completeness
-                 if it.halt_completeness else it.halt_reason)
+    if state == "PLANNED":
+        parts.append(P(S(" · not started", C["dim"])))
+    elif state.startswith("HALTED"):
+        # the halting rule and the halt in words (the receipt state, or
+        # what a reason code means); the recorded text stays in --json
+        cause = it.halt_cause or ("receipt %s" % it.halt_completeness
+                                  if it.halt_completeness else it.halt_reason)
         why = " ".join(x for x in (it.halt_rule, cause) if x)
         if why:
             parts.append(P(S(" · " + why, C["halted"])))
@@ -741,17 +881,23 @@ def _item_line(it, lead, kw, now, wide=True):
     return parts
 
 
+def _item_key(it):
+    return it.item_id or it.sequence_id
+
+
 def _project_tree(project, now, wide=True):
     if not project.items:
         return []
-    kw = min(28, max(len(it.workstream_key) for it in project.items))
-    by_sequence = {it.sequence_id: it for it in project.items
-                   if it.sequence_id}
+    kw = min(36, max(len(it.workstream_key) for it in project.items))
+    by_item = {_item_key(it): it for it in project.items if _item_key(it)}
     children, roots = {}, []
     for it in project.items:
-        parents = [e.predecessor_sequence_id for e in it.predecessors
-                   if e.predecessor_sequence_id in by_sequence
-                   and e.predecessor_sequence_id != it.sequence_id]
+        parents = [e.predecessor_item_id or e.predecessor_sequence_id
+                   for e in it.predecessors
+                   if (e.predecessor_item_id or e.predecessor_sequence_id)
+                   in by_item
+                   and (e.predecessor_item_id or e.predecessor_sequence_id)
+                   != _item_key(it)]
         if parents:
             children.setdefault(parents[0], []).append(it)
         else:
@@ -764,7 +910,7 @@ def _project_tree(project, now, wide=True):
         seen.add(id(it))
         branch = "" if depth == 0 else ("└▶ " if is_last else "├▶ ")
         lines.append(_item_line(it, lead + branch, kw, now, wide))
-        kids = children.get(it.sequence_id, [])
+        kids = children.get(_item_key(it), [])
         for i, kid in enumerate(kids):
             emit(kid, lead + ("" if depth == 0 else (
                 "   " if is_last else "│  ")), i == len(kids) - 1, depth + 1)
@@ -780,11 +926,11 @@ def _project_tree(project, now, wide=True):
 def _dag_lines(snapshot, now, wide=True):
     objectives = {o.objective_id: o for o in snapshot.objectives}
     live, closed = [], []
-    for p in snapshot.projects:
+    for p in list(snapshot.projects) + list(snapshot.plans):
         o = objectives.get(p.objective_id)
         if p.status == "ACTIVE" or (o and o.status not in _COMPLETE):
             live.append(p)
-        else:
+        elif p.kind == "project":
             closed.append(p)
 
     def created(p):
@@ -792,19 +938,48 @@ def _dag_lines(snapshot, now, wide=True):
         return (o.created_utc if o else "") or ""
 
     live.sort(key=created, reverse=True)
+    # a project with no work items next to a plan of the same objective is
+    # one heading: the plan's tasks were never bound to it
+    planned = {p.objective_id for p in live if p.kind == "plan" and p.items}
+    unbound = {}
+    for p in live:
+        if p.kind == "project" and not p.items and p.objective_id in planned:
+            unbound.setdefault(p.objective_id, []).append(p.project_id[:7])
+    live = [p for p in live if not (p.kind == "project" and not p.items
+                                    and p.objective_id in planned)]
     lines = []
     # a project heading is one row: the title is free text and comes last,
     # so it is what a narrow row cuts
     for p in live:
         done = sum(1 for it in p.items if it.state == "COMPLETED")
+        if p.kind == "plan" and unbound.get(p.objective_id):
+            where = "Orchestrator plan, not bound to %s" % ", ".join(
+                unbound[p.objective_id])
+        elif p.kind == "plan":
+            where = "Orchestrator plan, no project"
+        else:
+            where = p.project_id[:7]
         lines.append(L(P(
             S("◆ ", C["coord"]), S(p.objective_id, C["bright"], True),
             S("  %d/%d done · %s opened %s" % (
-                done, len(p.items), p.project_id[:7],
-                _when(p.opened_utc, now)), C["dim"]),
-            S("  " + p.title))))
+                done, len(p.items), where, _when(p.opened_utc, now)),
+                C["dim"]),
+            S("  " + p.title if p.kind == "project" else ""))))
+        planned = [it for it in p.items if it.state == "PLANNED"]
+        if p.items and len(planned) == len(p.items):
+            # nothing started: one row names the tasks
+            lines.append(L(P(S("   ○ %d task%s planned, none started" % (
+                len(planned), "" if len(planned) == 1 else "s"), C["dim"])),
+                *_sep_parts([[S(_short(it.workstream_key, 36), C["dim"])]
+                             for it in planned], first=": ", sep=", ")))
+            continue
         lines.extend(_project_tree(p, now, wide) or [
             L(P(S("   no workstreams yet", C["dim"])))])
+        tasks = [it for it in p.items if it.kind == "node"]
+        if len(tasks) > 1 and not any(it.predecessors for it in tasks):
+            # the plan says nothing about order: its tasks all run at once
+            lines.append(L(P(S("   no dependencies recorded between these"
+                               " %d tasks" % len(tasks), C["warn"]))))
     closed.sort(key=lambda p: p.closed_utc or p.opened_utc or "",
                 reverse=True)
     for p in closed[:2]:
@@ -867,14 +1042,14 @@ def _summary_lines(snapshot, now):
                    C["warn"] if e.waiting else C["dim"])))
     eng.append(P(S(" · %d staffing open" % len(e.staffing_open), C["dim"])))
     tf = snapshot.taskforce
-    working = [s for s in tf.seats if s.current_work]
+    working = _working_now(snapshot)
     main, _ = seat_routes(tf.seats)
     tfl = L(P(S("⛊ tf     ", C["tf"], True),
               S("%d members" % tf.member_count)),
             P(S(" · on %s" % main, C["luna"])) if main else None,
             P(S(" · working: %s" % (", ".join(
-                "%s → %s" % (s.specialist_handle, s.current_work)
-                for s in working) or "nobody"),
+                "%s → %s" % (handle, _short(work, 30))
+                for handle, work, _ in working) or "nobody"),
                 C["accent"] if working else C["dim"])),
             P(S(" · outside: %s" % ", ".join(tf.outside_pool), C["dim"]))
             if tf.outside_pool else None)
@@ -900,15 +1075,21 @@ def _band_title(scr, y, w, title, color, tail=None):
 
 def _split_bands(rows, exec_n, dag_n, act_n):
     """Rows for the three band bodies (each band also takes a title row):
-    EXECUTING first, then the work graph, activity takes what is left."""
+    EXECUTING first (every live session while it can), then the work
+    graph; activity takes what is left, but never less than 2/5."""
     body = rows - 3
     if body <= 0:
         return 0, 0, 0
-    e = min(max(exec_n, 1), max(1, body // 4))
+    e = min(max(exec_n, 1), max(1, body * 2 // 5))
     rest = body - e
     act_floor = min(max(act_n, 1), max(4, rest * 2 // 5), rest)
     d = min(max(dag_n, 1), max(rest - act_floor, 0))
     return e, d, rest - d
+
+
+# At this width the four principals' boxes fit side by side in one row,
+# which leaves their second row of height to the live bands.
+FOUR_ACROSS = 200
 
 
 # ── compose frame ─────────────────────────────────────────────────────
@@ -946,17 +1127,33 @@ def compose(scr, snapshot, tick=0, routing=None):
     dag_rows = _layout(_dag_lines(snapshot, now, wide=w >= 100), band_w,
                        indent=8)
     act_rows = _layout(_activity_lines(snapshot, now), band_w, indent=16)
-    # what the bands keep before the boxes get their full height: more
-    # on a taller terminal
+    # what the bands keep before the boxes get their full height: every
+    # live session (up to 8), and more of the rest on a taller terminal
     k = max(3, (h - 30) // 4)
-    band_floor = (1 + min(max(len(exec_rows), 1), 2)) + \
+    band_floor = (1 + min(max(len(exec_rows), 1), 8)) + \
         (1 + min(max(len(dag_rows), 1), k)) + \
         (1 + min(max(len(act_rows), 1), k))
 
     boxes = None
-    if w >= 100:
+    aw = w - 8
+    if w >= FOUR_ACROSS:
+        pw = (w - 10) // 4
+        iw = pw - 4
+        row = [_layout(_coord_lines(snapshot, now), iw),
+               _layout(_orch_lines(snapshot, now, narrow=True), iw),
+               _layout(_eng_lines(snapshot, now, narrow=True), iw),
+               _layout(_tf_lines(snapshot, now, narrow=True), iw)]
+        auth = _layout(_auth_lines(snapshot, now), aw)
+        for cap, acap in ((16, 6), (14, 5), (12, 5), (10, 4), (8, 4),
+                          (6, 3), (4, 3)):
+            heights = [2 + min(max(len(b) for b in row), cap),
+                       2 + min(len(auth), acap)]
+            if y + sum(heights) + band_floor <= h:
+                boxes = ("row", pw, row, auth, heights)
+                break
+    if boxes is None and w >= 100:
         pw = (w - 6) // 2
-        iw, aw = pw - 4, w - 8
+        iw = pw - 4
         pairs = ((_layout(_coord_lines(snapshot, now), iw),
                   _layout(_orch_lines(snapshot, now), iw)),
                  (_layout(_eng_lines(snapshot, now), iw),
@@ -968,11 +1165,19 @@ def compose(scr, snapshot, tick=0, routing=None):
                        for i, (a, b) in enumerate(pairs)]
             heights.append(2 + min(len(auth), caps[2]))
             if y + sum(heights) + band_floor <= h:
-                boxes = (pw, pairs, auth, heights)
+                boxes = ("pairs", pw, pairs, auth, heights)
                 break
 
-    if boxes:
-        pw, pairs, auth, heights = boxes
+    if boxes and boxes[0] == "row":
+        _, pw, row, auth, heights = boxes
+        for i, (key, rows) in enumerate(zip(("coord", "orch", "eng", "tf"),
+                                            row)):
+            _draw_box(scr, 2 + i * (pw + 2), y, pw, heights[0], key, rows)
+        y += heights[0]
+        _draw_box(scr, 2, y, w - 4, heights[1], "auth", auth)
+        y += heights[1]
+    elif boxes:
+        _, pw, pairs, auth, heights = boxes
         x1, x2 = 2, 2 + pw + 2
         spare = h - (y + sum(heights) + band_floor)
         keys = (("coord", "orch"), ("eng", "tf"))
@@ -998,16 +1203,20 @@ def compose(scr, snapshot, tick=0, routing=None):
                                           len(dag_rows), len(act_rows))
     if y < h:
         _band_title(scr, y, w, "EXECUTING", C["trail1"],
-                    "%d in flight" % len(snapshot.sessions))
+                    _exec_tail(snapshot))
         y += 1
         for segs in _more(exec_rows, e_rows):
             _paint(scr, 3, y, segs, band_w)
             y += 1
     if y < h:
         live = sum(1 for p in snapshot.projects if p.status == "ACTIVE")
+        plans = sum(1 for p in snapshot.plans if p.status == "ACTIVE")
         _band_title(scr, y, w, "DAG", C["accent"],
-                    "work graph · %d active project%s" % (
-                        live, "" if live == 1 else "s"))
+                    "work graph · %d active project%s%s" % (
+                        live, "" if live == 1 else "s",
+                        " · %d plan%s without a project" % (
+                            plans, "" if plans == 1 else "s")
+                        if plans else ""))
         y += 1
         for segs in _more(dag_rows, d_rows):
             _paint(scr, 3, y, segs, band_w)
@@ -1028,6 +1237,9 @@ def compose(scr, snapshot, tick=0, routing=None):
 
 
 # ── stream loop ───────────────────────────────────────────────────────
+
+FULL_REPAINT_SECONDS = 10.0
+
 
 def _terminal_size():
     size = shutil.get_terminal_size((146, 53))
@@ -1068,7 +1280,14 @@ def stream(intelligence_path, authority_path, step_log_path=None,
     tw, th = _terminal_size()
     scr = Screen(tw, th)
     tick = 0
-    repaint = True
+    # frames still to draw whole: the first one; after a resize, that frame
+    # and the next (a terminal can redraw its old content late); and one
+    # every FULL_REPAINT_SECONDS, so a cell the terminal kept from an
+    # earlier frame cannot stay (the diff rewrites only what it thinks
+    # changed)
+    repaint = 1
+    full_every = max(1, int(round(FULL_REPAINT_SECONDS / interval))) \
+        if interval > 0 else 1
 
     try:
         if interactive:
@@ -1083,7 +1302,7 @@ def stream(intelligence_path, authority_path, step_log_path=None,
                 if size != (tw, th):
                     tw, th = size
                     scr = Screen(tw, th)
-                    repaint = True
+                    repaint = 2
             scr.clear()
             compose(scr, snapshot, tick)
 
@@ -1093,9 +1312,9 @@ def stream(intelligence_path, authority_path, step_log_path=None,
                 if ground:
                     _ground(snapshot)
                 break
-            if repaint:
+            if repaint or (tick and tick % full_every == 0):
                 _write(CLEAR_SCREEN + scr.full_render())
-                repaint = False
+                repaint = max(repaint - 1, 0)
             else:
                 scr.flush(scr.render_diff(scr.diff()))
             scr.swap()

@@ -5,7 +5,10 @@ The model layer converts these to frozen view dataclasses.
 """
 
 import json
+import os
 import sqlite3
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -120,18 +123,26 @@ class IntelligenceReader:
             return []
 
     def recent_assignments(self, limit=10):
+        """The newest assignments, named by their workstream or, for work
+        the Orchestrator staffed directly, by its node key."""
+        base = ("SELECT a.*, s.handle AS specialist_handle,"
+                " s.provider AS spec_provider,"
+                " w.workstream_key AS workstream_key%s"
+                " FROM project_assignments a"
+                " JOIN specialists s"
+                "   ON s.specialist_id = a.specialist_id"
+                " LEFT JOIN project_workstreams w"
+                "   ON w.workstream_id = a.workstream_id%s"
+                " ORDER BY a.selected_utc DESC LIMIT ?")
         try:
-            return _rows(self.conn,
-                         "SELECT a.*, s.handle AS specialist_handle,"
-                         " s.provider AS spec_provider,"
-                         " w.workstream_key AS workstream_key"
-                         " FROM project_assignments a"
-                         " JOIN specialists s"
-                         "   ON s.specialist_id = a.specialist_id"
-                         " LEFT JOIN project_workstreams w"
-                         "   ON w.workstream_id = a.workstream_id"
-                         " ORDER BY a.selected_utc DESC LIMIT ?",
-                         (limit,))
+            return _rows(self.conn, base % (
+                ", n.node_key AS node_key",
+                " LEFT JOIN orchestration_nodes n"
+                "   ON n.node_id = a.orchestration_node_id"), (limit,))
+        except sqlite3.OperationalError:
+            pass
+        try:  # a store from before the Orchestrator's nodes
+            return _rows(self.conn, base % ("", ""), (limit,))
         except sqlite3.OperationalError:
             return []
 
@@ -188,18 +199,72 @@ class IntelligenceReader:
                 return []
 
     def seat_work(self):
-        """Assignments a seat holder is still working on, by seat."""
+        """Assignments a seat holder is still working on, by seat, named by
+        their workstream or Orchestrator node."""
+        base = ("SELECT a.seat_id, a.sequence_id, a.status,"
+                " a.selected_utc, w.workstream_key%s"
+                " FROM project_assignments a"
+                " LEFT JOIN project_workstreams w"
+                "   ON w.workstream_id = a.workstream_id%s"
+                " WHERE a.seat_id IS NOT NULL AND a.status IN (%s)"
+                " ORDER BY a.selected_utc")
+        marks = _placeholders(_ASSIGNMENT_IN_FLIGHT)
+        try:
+            return _rows(self.conn, base % (
+                ", n.node_key AS node_key",
+                " LEFT JOIN orchestration_nodes n"
+                "   ON n.node_id = a.orchestration_node_id", marks),
+                _ASSIGNMENT_IN_FLIGHT)
+        except sqlite3.OperationalError:
+            pass
+        try:
+            return _rows(self.conn, base % ("", "", marks),
+                         _ASSIGNMENT_IN_FLIGHT)
+        except sqlite3.OperationalError:
+            return []
+
+    def assignments_by_node(self):
+        """The newest assignment per Orchestrator node: the work its nodes
+        staffed directly, with no project workstream between."""
+        try:
+            rows = _rows(self.conn,
+                         "SELECT a.orchestration_node_id AS node_id,"
+                         " a.sequence_id, a.attempt_id, a.call_id, a.status,"
+                         " a.outcome, a.selection_path, a.provider, a.model,"
+                         " a.selected_utc, a.settled_utc,"
+                         " s.handle AS specialist_handle"
+                         " FROM project_assignments a"
+                         " JOIN specialists s"
+                         "   ON s.specialist_id = a.specialist_id"
+                         " WHERE a.orchestration_node_id IS NOT NULL"
+                         " ORDER BY a.selected_utc DESC")
+        except sqlite3.OperationalError:
+            return {}
+        out = {}
+        for r in rows:
+            out.setdefault(r["node_id"], r)
+        return out
+
+    def project_bindings(self):
+        """node_id -> project_id for Orchestrator nodes bound to a
+        project (BIND_NODE_TO_PROJECT)."""
+        try:
+            rows = _rows(self.conn,
+                         "SELECT node_id, project_id"
+                         " FROM orchestration_project_bindings")
+        except sqlite3.OperationalError:
+            return {}
+        return {r["node_id"]: r["project_id"] for r in rows}
+
+    def orchestration_reasoning(self):
+        """The Orchestrator policy's reasoning cycles: which policy, the
+        objectives it looked at, its decisions, when."""
         try:
             return _rows(self.conn,
-                         "SELECT a.seat_id, a.sequence_id, a.status,"
-                         " a.selected_utc, w.workstream_key"
-                         " FROM project_assignments a"
-                         " LEFT JOIN project_workstreams w"
-                         "   ON w.workstream_id = a.workstream_id"
-                         " WHERE a.seat_id IS NOT NULL AND a.status IN (%s)"
-                         " ORDER BY a.selected_utc"
-                         % _placeholders(_ASSIGNMENT_IN_FLIGHT),
-                         _ASSIGNMENT_IN_FLIGHT)
+                         "SELECT orchestration_cycle_id, policy_id,"
+                         " decisions, application_results, objectives,"
+                         " recorded_utc FROM orchestration_reasoning"
+                         " ORDER BY orchestration_cycle_id")
         except sqlite3.OperationalError:
             return []
 
@@ -418,22 +483,29 @@ class IntelligenceReader:
 
     def assignments_by_attempt(self):
         """Assignment facts keyed by attempt id: who was staffed, how, on
-        which workstream."""
+        which workstream or Orchestrator node."""
+        base = ("SELECT a.attempt_id, a.sequence_id, a.call_id,"
+                " a.objective_id, a.capability, a.role,"
+                " a.provider, a.model, a.selection_path, a.status,"
+                " s.handle AS specialist_handle,"
+                " w.workstream_key%s"
+                " FROM project_assignments a"
+                " JOIN specialists s"
+                "   ON s.specialist_id = a.specialist_id"
+                " LEFT JOIN project_workstreams w"
+                "   ON w.workstream_id = a.workstream_id%s"
+                " WHERE a.attempt_id IS NOT NULL")
+        rows = None
         try:
-            rows = _rows(self.conn,
-                         "SELECT a.attempt_id, a.sequence_id, a.call_id,"
-                         " a.objective_id, a.capability, a.role,"
-                         " a.provider, a.model, a.selection_path,"
-                         " s.handle AS specialist_handle,"
-                         " w.workstream_key"
-                         " FROM project_assignments a"
-                         " JOIN specialists s"
-                         "   ON s.specialist_id = a.specialist_id"
-                         " LEFT JOIN project_workstreams w"
-                         "   ON w.workstream_id = a.workstream_id"
-                         " WHERE a.attempt_id IS NOT NULL")
+            rows = _rows(self.conn, base % (
+                ", a.orchestration_node_id, n.node_key",
+                " LEFT JOIN orchestration_nodes n"
+                "   ON n.node_id = a.orchestration_node_id"))
         except sqlite3.OperationalError:
-            return {}
+            try:
+                rows = _rows(self.conn, base % ("", ""))
+            except sqlite3.OperationalError:
+                return {}
         return {r["attempt_id"]: r for r in rows}
 
     def taskforce_member_count(self):
@@ -453,7 +525,8 @@ class IntelligenceReader:
                          "SELECT a.sequence_id, a.provider, a.model,"
                          " a.status, a.outcome, a.selection_path,"
                          " a.selected_utc, a.settled_utc, a.call_id,"
-                         " a.attempt_id, s.handle AS specialist_handle"
+                         " a.attempt_id, a.objective_id,"
+                         " s.handle AS specialist_handle"
                          " FROM project_assignments a"
                          " JOIN specialists s"
                          "   ON s.specialist_id = a.specialist_id"
@@ -761,17 +834,141 @@ class CASReader:
         return value
 
 
+def _utc_of(timestamp):
+    return datetime.fromtimestamp(timestamp, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_instant(text):
+    if not text or not isinstance(text, str):
+        return None
+    text = text.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        value = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+# Codex rollout events that are a tool call by the agent.
+_CODEX_TOOL_CALLS = frozenset(("custom_tool_call", "function_call",
+                               "local_shell_call"))
+
+
 class AutoSwarmReader:
     """Read-only over AutoSwarm call directories.
 
     Reads $AUTOSWARM_HOME/calls/<call_id>/ for active session state:
-    handle.json (launched), result.json (finished), stdout.log."""
+    handle.json (launched), result.json (finished), stdout.log. A Codex
+    session writes nothing to stdout.log until it ends; what it is doing
+    is in its own rollout record, $CODEX_HOME/sessions/<local Y/M/D>/
+    rollout-<local time>-<native session id>.jsonl, which Codex appends
+    to (and whose modified time does not move while Codex holds it open,
+    so ages come from the events' own timestamps)."""
 
-    def __init__(self, autoswarm_home):
+    def __init__(self, autoswarm_home, codex_home=None):
         self.home = Path(autoswarm_home) if autoswarm_home else None
         self._calls_dir = None
         if self.home and (self.home / "calls").is_dir():
             self._calls_dir = self.home / "calls"
+        if codex_home is None:
+            codex_home = os.environ.get("CODEX_HOME") or (
+                Path.home() / ".codex")
+        self.codex_sessions = Path(codex_home) / "sessions"
+        self._rollouts = {}   # native session id -> (path or None, looked)
+        self._parsed = {}     # rollout path -> what has been read of it
+
+    def _rollout_path(self, native, started_utc):
+        """The rollout file of a Codex session. Its folder is the session's
+        local date, so the local and UTC dates of its start (and a day
+        either side) are searched. A miss is retried after 10 s."""
+        found, looked = self._rollouts.get(native, (None, None))
+        if found is not None or (looked is not None
+                                 and time.time() - looked < 10):
+            return found
+        start = _parse_instant(started_utc)
+        if start is None:
+            start = datetime.now(timezone.utc)
+        days = set()
+        for delta in (0, -1, 1):
+            moment = start + timedelta(days=delta)
+            days.add(moment.date())
+            days.add(moment.astimezone().date())
+        for day in sorted(days):
+            folder = self.codex_sessions / ("%04d" % day.year) / (
+                "%02d" % day.month) / ("%02d" % day.day)
+            try:
+                hits = sorted(folder.glob("rollout-*%s.jsonl" % native))
+            except OSError:
+                hits = []
+            if hits:
+                found = hits[-1]
+                break
+        self._rollouts[native] = (found, time.time())
+        return found
+
+    def codex_activity(self, native, started_utc=None):
+        """What a Codex session's own record says: events, tool calls, the
+        newest event's time, its newest reasoning summary (what it says it
+        is doing), and whether its task completed. Read incrementally."""
+        if not native:
+            return None
+        path = self._rollout_path(native, started_utc)
+        if path is None:
+            return None
+        key = str(path)
+        st = self._parsed.get(key)
+        try:
+            size = path.stat().st_size
+            if st is None or size < st["offset"]:  # new, or rewritten
+                st = {"offset": 0, "rest": b"", "events": 0,
+                      "tool_calls": 0, "last_utc": None, "doing": None,
+                      "finished": False}
+                self._parsed[key] = st
+            if size > st["offset"]:
+                with open(key, "rb") as fh:
+                    fh.seek(st["offset"])
+                    data = fh.read(size - st["offset"])
+                st["offset"] += len(data)
+                lines = (st["rest"] + data).split(b"\n")
+                st["rest"] = lines.pop()
+                for raw in lines:
+                    self._codex_event(st, raw)
+        except OSError:
+            if st is None:
+                return None
+        return {k: st[k] for k in ("events", "tool_calls", "last_utc",
+                                   "doing", "finished")}
+
+    @staticmethod
+    def _codex_event(st, raw):
+        try:
+            event = json.loads(raw.decode("utf-8", errors="replace"))
+        except ValueError:
+            return
+        if not isinstance(event, dict):
+            return
+        st["events"] += 1
+        stamp = event.get("timestamp")
+        if isinstance(stamp, str) and (st["last_utc"] is None
+                                       or stamp > st["last_utc"]):
+            st["last_utc"] = stamp
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        kind = payload.get("type")
+        if event.get("type") == "response_item":
+            if kind in _CODEX_TOOL_CALLS:
+                st["tool_calls"] += 1
+            elif kind == "reasoning":
+                for item in payload.get("summary") or []:
+                    text = item.get("text") if isinstance(item, dict) else None
+                    if text and text.strip():
+                        first = text.strip().split("\n")[0]
+                        st["doing"] = first.strip().strip("*").strip() or None
+        elif event.get("type") == "event_msg" and kind == "task_complete":
+            st["finished"] = True
 
     @staticmethod
     def _read_json(path):
@@ -801,7 +998,8 @@ class AutoSwarmReader:
     def call_files(self, call_id):
         """What AutoSwarm recorded for one call: the runner's handle.json
         (pid, started_at, phase, native session), the ExecutionManifest's
-        route and constraints, and whether result.json exists."""
+        route and constraints, when result.json was written (the session
+        ended), and, for a Codex session, what its own record says."""
         if not self._calls_dir or not call_id:
             return {}
         d = self._calls_dir / call_id
@@ -816,13 +1014,24 @@ class AutoSwarmReader:
         if stdout.is_file():
             output_lines, tail = self._stdout_tail(stdout)
             try:
-                from datetime import datetime, timezone
-                output_utc = datetime.fromtimestamp(
-                    stdout.stat().st_mtime, timezone.utc).strftime(
-                        "%Y-%m-%dT%H:%M:%SZ") if output_lines else None
+                output_utc = (_utc_of(stdout.stat().st_mtime)
+                              if output_lines else None)
             except OSError:
                 output_utc = None
+        finished_utc = None
+        result = d / "result.json"
+        if result.is_file():
+            try:
+                finished_utc = _utc_of(result.stat().st_mtime)
+            except OSError:
+                finished_utc = None
+        activity = None
+        if assignment.get("provider") == "codex":
+            activity = self.codex_activity(handle.get("native_session_id"),
+                                           handle.get("started_at"))
         return {
+            "finished_utc": finished_utc,
+            "activity": activity,
             "output_lines": output_lines,
             "last_line": tail[-1] if tail else None,
             "output_utc": output_utc,
@@ -995,8 +1204,13 @@ class ConfigReader:
         return c.get("routing", {}).get("escalation", "?")
 
     def planner_model(self):
+        """The model the Engineer reasons on, and with it the production
+        Orchestrator policy: the runtime's order ([engineer] model, then
+        [chief_engineer] model, then [models] planner)."""
         c = self._load()
-        return c.get("models", {}).get("planner", "?")
+        return (c.get("engineer", {}).get("model")
+                or c.get("chief_engineer", {}).get("model")
+                or c.get("models", {}).get("planner", "?"))
 
     def routes(self):
         c = self._load()

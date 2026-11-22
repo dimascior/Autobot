@@ -69,6 +69,8 @@ class CompactFixture(object):
         self.intel_path = self.root / "intelligence.db"
         self.auth_path = self.root / "autobot.db"
         self.home = self.root / "autoswarm-home"
+        # Codex rollouts are read from here, never from the real ~/.codex
+        self.codex_home = self.root / "codex-home"
         PlanStore(self.intel_path).close()
         Database(self.auth_path).close()
         (self.root / "config.toml").write_text(CONFIG, encoding="utf-8")
@@ -323,13 +325,16 @@ class CompactFixture(object):
             encoding="utf-8")
         (call / "stdout.log").write_text("", encoding="utf-8")
 
+    def autoswarm(self):
+        return AutoSwarmReader(self.home, codex_home=self.codex_home)
+
     def snapshot(self):
         intel = IntelligenceReader(str(self.intel_path))
         auth = AuthorityReader(str(self.auth_path))
         try:
             snap = build_snapshot(intel, auth,
                                   config_reader=ConfigReader(self.root),
-                                  autoswarm_reader=AutoSwarmReader(self.home),
+                                  autoswarm_reader=self.autoswarm(),
                                   now=NOW)
         finally:
             intel.close()
@@ -402,10 +407,16 @@ class CompactViewTests(unittest.TestCase):
     # --- SESSIONS -------------------------------------------------------
 
     def test_sessions_come_from_attempts_in_flight(self):
-        self.assertIn("══ SESSIONS  1 in flight", self.text)
+        self.assertIn("══ SESSIONS  1 running", self.text)
         head = self.line_with("SESSIONS", "w1 · obj-live")
-        self.assertIn("res-holder (seat) -> luna-6-max (codex/gpt-6-luna,"
-                      " effort max)", head)
+        # the route first: the handle is a name, not a model
+        self.assertIn("luna-6-max (codex/gpt-6-luna, effort max)"
+                      " · res-holder (seat)", head)
+
+    def test_a_session_with_no_record_says_so(self):
+        # the fixture's Codex session wrote no stdout and has no rollout
+        self.line_with("SESSIONS", "no activity recorded yet")
+        self.assertNotIn("no output yet", self.text)
 
     def test_header_names_the_models_in_use(self):
         self.assertIn("models: Engineer claude-opus-4-6[1m] · specialists"
@@ -542,8 +553,8 @@ class CompactViewTests(unittest.TestCase):
 
     def test_eighty_columns_keep_session_facts_whole(self):
         narrow = "\n".join(cli_stream.render(self.snap, width=80))
-        for fact in ("res-holder (seat) -> luna-6-max (codex/gpt-6-luna,"
-                     " effort max)", "pid 18800", "session 1m32s",
+        for fact in ("luna-6-max (codex/gpt-6-luna, effort max)",
+                     "res-holder (seat)", "pid 18800", "session 1m32s",
                      "READ_ONLY"):
             self.assertIn(fact, narrow)
 
@@ -596,7 +607,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(attempt_sequences["at_live"], "sq_live")
 
     def test_autoswarm_reader_uses_handle_and_manifest_keys(self):
-        reader = AutoSwarmReader(self.fx.home)
+        reader = self.fx.autoswarm()
         files = reader.call_files("call_live")
         self.assertEqual(files["pid"], 18800)
         self.assertEqual(files["started_utc"],
@@ -604,6 +615,8 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual((files["provider"], files["model"]),
                          ("codex", "gpt-6-luna"))
         self.assertFalse(files["finished"])
+        self.assertIsNone(files["finished_utc"])
+        self.assertIsNone(files["activity"])  # no rollout for this session
         session = reader.active_sessions()[0]
         self.assertEqual(session["provider"], "codex")
         self.assertEqual(session["started_utc"],
