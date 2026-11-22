@@ -344,28 +344,21 @@ def _coord_lines(snapshot, now):
     for cd in snapshot.coordinator_decisions:
         modes[cd.elevation_mode] = modes.get(cd.elevation_mode, 0) + 1
     lines = [L(P(S("%d active" % len(active), C["bright"], True),
-                 S(" · %d complete objectives" % done, C["dim"])))]
-    if modes:
-        lines.append(L(P(S("modes", C["dim"])), *_sep_parts(
+                 S(" · %d complete" % done, C["dim"])),
+               *_sep_parts(
             [[S("%s %d" % (MODE_SHORT.get(m, m[:3]), n),
                 MODE_COLOR.get(m, C["dim"]), True)]
-             for m, n in sorted(modes.items())], first=" ", sep="  ")))
-    # the newest admission and where its features came from come before
-    # the list of active objectives, so a short box cuts the list's tail
+             for m, n in sorted(modes.items())], first="  ", sep="  "))]
     stamped = [cd for cd in snapshot.coordinator_decisions if cd.created_utc]
     if stamped:
         last = max(stamped, key=lambda cd: cd.created_utc)
         lines.append(L(
-            P(S("last admitted ", C["dim"]), S(_when(last.created_utc, now)),
-              S(" (%s)" % _dur(_seconds(last.created_utc, now)), C["dim"])),
-            P(S(" " + last.objective_id, C["bright"]),
-              S(" → %s" % MODE_SHORT.get(last.elevation_mode,
-                                         last.elevation_mode),
-                MODE_COLOR.get(last.elevation_mode, C["dim"]), True))))
-        for name, source in sorted(last.feature_sources.items()):
-            derived = not source.startswith('"')
-            lines.append(L(P(S("  %s ← " % name, C["dim"])),
-                           P(S(source, C["warn"] if derived else C["text"]))))
+            P(S("last ", C["dim"]),
+              S(last.objective_id, C["bright"]),
+              S(" %s" % MODE_SHORT.get(last.elevation_mode,
+                                       last.elevation_mode),
+                MODE_COLOR.get(last.elevation_mode, C["dim"]), True),
+              S(" %s" % _ago(last.created_utc, now), C["dim"]))))
     decision = {cd.objective_id: cd for cd in snapshot.coordinator_decisions}
     for o in active:
         cd = decision.get(o.objective_id)
@@ -433,8 +426,6 @@ def _orch_lines(snapshot, now, narrow=False):
     runs.sort(key=lambda r: _effective_of(r)[2])
     done = [r for r in runs if r.effective_state == "done"]
     shown = [r for r in runs if r.effective_state != "done"]
-    if len(done) <= 2:
-        shown, done = shown + done, []
     ow = min(24 if narrow else 30,
              max(len(r.objective_id) for r in (shown or runs)))
     stale = any(r.status == "ACTIVE" and r.effective_state in ("done",
@@ -501,23 +492,27 @@ def _eng_lines(snapshot, now, narrow=False):
     if planner and planner != "?":
         lines.append(L(P(S("reasons on ", C["dim"]), S(planner, C["luna"]))))
     projects = [p for p in snapshot.projects if p.status == "ACTIVE"]
+    with_work = [p for p in projects if p.items]
     closed = len(snapshot.projects) - len(projects)
     lines.append(L(P(S("projects ", C["dim"]),
                      S("%d active" % len(projects), C["bright"]),
                      S(" · %d closed" % closed, C["dim"]))))
-    for p in sorted(projects, key=lambda p: p.opened_utc or "",
+    for p in sorted(with_work, key=lambda p: p.opened_utc or "",
                     reverse=True):
         done = sum(1 for it in p.items if it.state == "COMPLETED")
         progress = P(S("  %d/%d done" % (done, len(p.items)),
                        C["success"] if p.items and done == len(p.items)
                        else C["dim"]))
-        if narrow:  # the count stays; the free-text title is what is cut
+        if narrow:
             lines.append(L(P(S("  %s" % p.project_id[:7], C["dim"])),
                            progress, P(S("  " + (p.title or "(untitled)")))))
         else:
             lines.append(L(
                 P(S("  %s " % p.project_id[:7], C["dim"]),
                   S(p.title or "(untitled)")), progress))
+    empty = len(projects) - len(with_work)
+    if empty:
+        lines.append(L(P(S("  + %d with no workstreams" % empty, C["dim"]))))
     if e.waiting:
         # a wait names its sequence; one that does not is shown by the
         # halted work of its objective, else by the objective
@@ -596,10 +591,11 @@ def _tf_lines(snapshot, now, narrow=False):
         counts.append("%d EST" % tf.established_count)
     if tf.retained_count:
         counts.append("%d RET" % tf.retained_count)
+    outside_n = len(tf.outside_pool)
     lines = [L(P(S("%d members" % tf.member_count, C["bright"], True),
                  S(" · " + " · ".join(counts) if counts else "", C["dim"])),
-               P(S(" · outside: %s" % ", ".join(tf.outside_pool), C["dim"]))
-               if tf.outside_pool else None)]
+               P(S(" · %d outside" % outside_n, C["dim"]))
+               if outside_n else None)]
     main, on = seat_routes(tf.seats)
     if main:
         sample = next(s for s in tf.seats if (
@@ -626,54 +622,35 @@ def _tf_lines(snapshot, now, narrow=False):
     else:
         lines.append(L(P(S("working now ", C["dim"]),
                          S("nobody", C["dim"]))))
-    seats = sorted(tf.seats, key=lambda s: s.since_utc or "")
-    seats.sort(key=lambda s: 0 if s.status == "ESTABLISHED" else 1)
     def label(s):
         return "%s/%s" % (s.capability, ROLE_SHORT.get(s.role, s.role))
 
-    if seats:
-        cw = min(22, max(len(label(s)) for s in seats))
-        hw = min(18, max(len(s.specialist_handle) for s in seats))
-        rw = max(len(_qn(s.seat_qualifying, s.seat_not_qualifying) or "-")
-                 for s in seats)
-    for s in seats:
+    held = [s for s in tf.seats if s.status in _HELD]
+    released = [s for s in tf.seats if s.status not in _HELD]
+    held.sort(key=lambda s: (0 if s.status == "ESTABLISHED" else 1,
+                             s.capability))
+    if held:
+        cw = min(22, max(len(label(s)) for s in held))
+        hw = min(18, max(len(s.specialist_handle) for s in held))
+    for s in held:
         busy = bool(s.current_work) or s.specialist_handle in busy_handles
         record = _qn(s.seat_qualifying, s.seat_not_qualifying) or "-"
-        extra = _qn(s.other_qualifying, s.other_not_qualifying)
+        route = s.route_name or ("%s/%s" % (s.provider or "?",
+                                             s.model or "?"))
         lines.append(L(
             P(S(("▶" if busy else ROLE_ICON.get(s.role, "·")) + " ",
                 C["accent"] if busy else C["tf"]),
               S(label(s)[:cw].ljust(cw))),
             P(S(" " + s.specialist_handle[:hw].ljust(hw), C["bright"])),
-            P(S(" %s %s" % (SEAT_STATUS.get(s.status, s.status[:3]),
-                            _day(s.since_utc, now)), C["dim"])),
-            P(S(" " + record.ljust(rw), C["success"])),
-            P(S(" (+%s)" % extra, C["dim"])) if extra else None,
-            P(S("  # %d halted" % s.stuck_projects, C["halted"]))
-            if s.stuck_projects else None,
-            P(S("  ▲ on %s" % (s.route_name or "%s/%s" % (
-                s.provider or "?", s.model or "?")), C["warn"]))
-            if len(on) > 1 and (s.route_name or "%s/%s" % (
-                s.provider or "?", s.model or "?")) != main else None))
-    if seats:
-        # one row here; --compact lists each holder's records by model
-        q = n = 0
-        holders, last = set(), None
-        for s in seats:
-            for _label, eq, en, elast in s.earlier_records or []:
-                q, n = q + eq, n + en
-                holders.add(s.specialist_handle)
-                if elast and (last is None or elast > last):
-                    last = elast
-        if holders:
-            lines.append(L(P(S("made on other models%s: " % (
-                " until %s" % _day(last, None) if last else ""), C["dim"]),
-                S("%s by %d holder%s" % (_qn(q, n), len(holders),
-                                         "" if len(holders) == 1 else "s"),
-                  C["warn"]))))
-        lines.append(L(P(S("names are handles, not models", C["dim"])),
-                       P(S(" · Q/N via the seat", C["dim"])),
-                       P(S(" · (+n) without it", C["dim"]))))
+            P(S(" %s" % SEAT_STATUS.get(s.status, s.status[:3]),
+                C["dim"])),
+            P(S(" " + record, C["success"])),
+            P(S(" on %s" % route, C["luna"]))))
+    if released:
+        total_q = sum(s.seat_qualifying or 0 for s in released)
+        lines.append(L(P(S("%d released seat%s" % (
+            len(released), "" if len(released) == 1 else "s"), C["dim"]),
+            S(" · %dQ history" % total_q, C["dim"]) if total_q else None)))
     return lines
 
 
