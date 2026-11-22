@@ -194,6 +194,7 @@ class OpusOrchestratorPolicy(OrchestratorPolicy):
     """
 
     policy_id = OPUS_ORCHESTRATOR_POLICY_ID
+    lenient_validation = True
 
     def __init__(self, reasoner=None, model=None):
         self._reasoner = reasoner

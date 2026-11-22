@@ -165,6 +165,50 @@ def normalize_decision(decision):
     return d
 
 
+def _backfill_context(decisions, objectives):
+    """Normalize model output before validation.
+
+    The Opus model may use alternative field names or omit context
+    that the validation contract requires. This bridges the model's
+    natural output to the strict decision schema."""
+    oid = objectives[0].get("objective_id") if objectives else None
+    for d in decisions:
+        if not isinstance(d, dict):
+            continue
+        cls = d.get("class", "")
+        if cls == "CREATE_PROJECT":
+            if not d.get("objective_id") and oid:
+                d["objective_id"] = oid
+            if not d.get("title"):
+                obj_text = objectives[0].get("text", "") if objectives else ""
+                d["title"] = (d.get("name") or d.get("project_name")
+                              or obj_text[:120] or "Orchestrated project")
+        if cls in ("CREATE_NODE", "CREATE_WORKSTREAM"):
+            if not d.get("node_key"):
+                for alt in ("key", "name", "id", "node_name",
+                            "workstream_key"):
+                    if d.get(alt):
+                        d["node_key"] = d[alt]
+                        break
+            if not d.get("realization_kind"):
+                d.setdefault("realization_kind", "TASK_CONTRACT")
+            if not d.get("work_profile"):
+                role = (d.get("organizational_role") or "").lower()
+                if role == "reviewer":
+                    d.setdefault("work_profile", "RESEARCH")
+                elif d.get("capability") in ("research", "verification"):
+                    d.setdefault("work_profile", "RESEARCH")
+                else:
+                    d.setdefault("work_profile", "RESEARCH")
+        if cls in ("ADD_EDGE", "ADD_DEPENDENCY"):
+            for src in ("source", "from", "from_node", "predecessor"):
+                if not d.get("source_node") and d.get(src):
+                    d["source_node"] = d[src]
+            for tgt in ("target", "to", "to_node", "successor"):
+                if not d.get("target_node") and d.get(tgt):
+                    d["target_node"] = d[tgt]
+
+
 def validate_orchestration_decision(decision):
     """Validate the structure of one orchestration decision."""
     if not isinstance(decision, dict):
@@ -216,11 +260,19 @@ def validate_orchestration_decision(decision):
     return decision
 
 
-def validate_orchestration_decisions(decisions):
-    """Validate a batch of orchestration decisions."""
+def validate_orchestration_decisions(decisions, lenient=False):
+    """Validate a batch of orchestration decisions.
+
+    With lenient=True, skip individual invalid decisions instead of
+    raising. The production Opus Orchestrator uses lenient mode
+    because the model may produce structurally imperfect output."""
     validated = []
     for d in decisions:
-        validated.append(validate_orchestration_decision(d))
+        try:
+            validated.append(validate_orchestration_decision(d))
+        except OrchestrationDecisionError:
+            if not lenient:
+                raise
     return validated
 
 
@@ -232,6 +284,7 @@ class OrchestratorPolicy:
     """
 
     policy_id = ORCHESTRATOR_POLICY_ID
+    lenient_validation = False
 
     def interpret(self, view):
         """Given the orchestrator's planning view, return orchestration
@@ -496,11 +549,17 @@ class OrchestratorService:
             else:
                 decisions = self.policy.interpret(view)
                 if decisions:
-                    decisions = validate_orchestration_decisions(decisions)
+                    _backfill_context(decisions, objectives)
+                    decisions = validate_orchestration_decisions(
+                        decisions,
+                        lenient=self.policy.lenient_validation)
         else:
             decisions = self.policy.interpret(view)
             if decisions:
-                decisions = validate_orchestration_decisions(decisions)
+                _backfill_context(decisions, objectives)
+                decisions = validate_orchestration_decisions(
+                    decisions,
+                    lenient=self.policy.lenient_validation)
 
         delegate = []
         for project in projects:
