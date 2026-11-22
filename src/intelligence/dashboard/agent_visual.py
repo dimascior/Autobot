@@ -315,9 +315,19 @@ def _box(scr, x, y, w, h, agent_key):
     scr.put(x + w - 1, y + h - 1, "╝", color)
 
 
-def _draw_box(scr, x, y, w, h, key, rows):
+def _draw_box(scr, x, y, w, h, key, rows, offset=0, focused=False):
     _box(scr, x, y, w, h, key)
-    for i, segs in enumerate(_more(rows, h - 2)):
+    if focused:
+        for ry in range(y + 1, y + h - 1):
+            scr.put(x, ry, "║", C["accent"])
+            scr.put(x + w - 1, ry, "║", C["accent"])
+    visible = h - 2
+    if offset > 0 and len(rows) > visible:
+        offset = min(offset, max(0, len(rows) - visible))
+        window = rows[offset:]
+    else:
+        window = rows
+    for i, segs in enumerate(_more(window, visible)):
         _paint(scr, x + 2, y + 1 + i, segs, w - 4)
 
 
@@ -1018,6 +1028,11 @@ def _activity_lines(snapshot, now):
 
 # ── the ACTIVITY band: a window over the history, scrolled by keys ──────
 
+SECTION_NAMES = ("coord", "orch", "eng", "tf", "dag")
+SECTION_KEYS = {"1": "coord", "2": "orch", "3": "eng", "4": "tf",
+                "5": "dag"}
+
+
 class ActivityView:
     """What the viewer has done to the ACTIVITY band of the live view: how
     far back it is scrolled (the event at its top, counted from the
@@ -1030,22 +1045,45 @@ class ActivityView:
         self.anchor = None    # (timestamp, layer, summary) of that event
         self.expanded = False
         self.page = 10        # events the band showed in the last frame
+        self.focus = None     # focused section name or None
+        self.section_offsets = {s: 0 for s in SECTION_NAMES}
 
     def scroll(self, events):
-        self.top = max(0, self.top + events)
-        self.anchor = None    # the next frame anchors the new top
+        if self.focus and self.focus in self.section_offsets:
+            self.section_offsets[self.focus] = max(
+                0, self.section_offsets[self.focus] + events)
+        else:
+            self.top = max(0, self.top + events)
+            self.anchor = None
 
     def newest(self):
-        self.top, self.anchor = 0, None
+        if self.focus:
+            self.section_offsets[self.focus] = 0
+        else:
+            self.top, self.anchor = 0, None
+
+    def section_offset(self, name):
+        return self.section_offsets.get(name, 0)
 
 
-KEY_HELP = "↓↑ PgDn PgUp scroll · Home newest · a expand · q quit"
+KEY_HELP = ("1-5 focus section · ↑↓ scroll "
+            "· a expand · Esc back · q quit")
 
 
 def apply_key(view, key):
     """Change ``view`` for one key. Returns "quit" for q."""
     if key in ("q", "Q"):
         return "quit"
+    if key in SECTION_KEYS:
+        name = SECTION_KEYS[key]
+        if view.focus == name:
+            view.focus = None
+        else:
+            view.focus = name
+        return None
+    if key in ("escape",):
+        view.focus = None
+        return None
     if key in ("down", "j"):
         view.scroll(1)
     elif key in ("up", "k"):
@@ -1057,7 +1095,10 @@ def apply_key(view, key):
     elif key in ("home", "g"):
         view.newest()
     elif key in ("end", "G"):
-        view.top, view.anchor = 10 ** 9, None
+        if view.focus:
+            view.section_offsets[view.focus] = 10 ** 6
+        else:
+            view.top, view.anchor = 10 ** 9, None
     elif key in ("a", "A"):
         view.expanded = not view.expanded
     return None
@@ -1296,11 +1337,18 @@ def compose(scr, snapshot, tick=0, routing=None, view=None):
                 boxes = ("pairs", pw, pairs, auth, heights)
                 break
 
+    def _soff(name):
+        return view.section_offset(name) if view else 0
+
+    def _sfoc(name):
+        return view is not None and getattr(view, "focus", None) == name
+
     if boxes and boxes[0] == "row":
         _, pw, row, auth, heights = boxes
         for i, (key, rows) in enumerate(zip(("coord", "orch", "eng", "tf"),
                                             row)):
-            _draw_box(scr, 2 + i * (pw + 2), y, pw, heights[0], key, rows)
+            _draw_box(scr, 2 + i * (pw + 2), y, pw, heights[0], key, rows,
+                       offset=_soff(key), focused=_sfoc(key))
         y += heights[0]
         _draw_box(scr, 2, y, w - 4, heights[1], "auth", auth)
         y += heights[1]
@@ -1310,8 +1358,12 @@ def compose(scr, snapshot, tick=0, routing=None, view=None):
         spare = h - (y + sum(heights) + band_floor)
         keys = (("coord", "orch"), ("eng", "tf"))
         for i, (a, b) in enumerate(pairs):
-            _draw_box(scr, x1, y, pw, heights[i], keys[i][0], a)
-            _draw_box(scr, x2, y, pw, heights[i], keys[i][1], b)
+            _draw_box(scr, x1, y, pw, heights[i], keys[i][0], a,
+                       offset=_soff(keys[i][0]),
+                       focused=_sfoc(keys[i][0]))
+            _draw_box(scr, x2, y, pw, heights[i], keys[i][1], b,
+                       offset=_soff(keys[i][1]),
+                       focused=_sfoc(keys[i][1]))
             y += heights[i]
             if spare > 8:  # the flow connector between the layers
                 scr.put(x1 + pw // 2, y, "│", C["flow_dim"])
@@ -1346,7 +1398,9 @@ def compose(scr, snapshot, tick=0, routing=None, view=None):
                             plans, "" if plans == 1 else "s")
                         if plans else ""))
         y += 1
-        for segs in _more(dag_rows, d_rows):
+        dag_off = _soff("dag")
+        dag_window = dag_rows[dag_off:] if dag_off > 0 else dag_rows
+        for segs in _more(dag_window, d_rows):
             _paint(scr, 3, y, segs, band_w)
             y += 1
     if y < h:
@@ -1379,14 +1433,17 @@ def _parse_vt(data):
                 i += len(seq)
                 break
         else:
-            if data[i] == "\x1b":  # an escape sequence not named above
+            if data[i] == "\x1b":
                 j = i + 1
                 if j < len(data) and data[j] in "[O":
                     j += 1
                     while j < len(data) and not data[j].isalpha() \
                             and data[j] != "~":
                         j += 1
-                i = j + 1
+                    i = j + 1
+                    continue
+                keys.append("escape")
+                i = j
                 continue
             keys.append(data[i])
             i += 1
@@ -1412,6 +1469,8 @@ def _read_keys(timeout):
                     ch = msvcrt.getwch()
                     if ch in ("\x00", "\xe0"):
                         keys.append(_WIN_KEYS.get(msvcrt.getwch()))
+                    elif ch == "\x1b":
+                        keys.append("escape")
                     else:
                         keys.append(ch)
             except OSError:
