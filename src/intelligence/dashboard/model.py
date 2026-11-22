@@ -44,6 +44,12 @@ _COMPLETE_OBJECTIVE = frozenset(("COMPLETE", "COMPLETED"))
 _LIVE_ATTEMPTS = frozenset(("DISPATCHED", "RUNNING"))
 _PRE_ATTEMPTS = frozenset(("DECLARED", "RESERVED"))
 
+# What a run's tasks are called when no project holds them: an
+# Orchestrator plan, the Coordinator's direct work, an Engineer run.
+_RUN_WORK_TITLE = {"ORCHESTRATOR_ELEVATED": "Orchestrator plan",
+                   "DIRECT": "direct work",
+                   "ENGINEER_ELEVATED": "Engineer run"}
+
 # A task of an Orchestrator plan with no sequence yet reads its own status.
 _NODE_STATE = {"PENDING": "PLANNED", "READY": "PLANNED",
                "EXECUTING": "DISPATCHING"}
@@ -553,7 +559,8 @@ def build_snapshot(intelligence, authority, step_reader=None,
         if loose:
             plan_views.append(ProjectView(
                 project_id=rid, objective_id=run["objective_id"],
-                title="Orchestrator plan",
+                # who made these tasks: the run's mode says
+                title=_RUN_WORK_TITLE.get(run.get("mode"), "run"),
                 status="ACTIVE" if run.get("status") == "ACTIVE" and live
                 else "CLOSED",
                 opened_utc=run.get("created_utc"),

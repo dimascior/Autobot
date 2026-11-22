@@ -42,21 +42,24 @@ class OrchestratorFixture(AgentFixture):
 
     def _fill_orchestration(self):
         c = self._open(self.intel_path)
-        for oid, created, text in (
+        for oid, created, text, mode, route in (
                 ("obj-orc", "2026-11-21T17:50:00Z",
-                 "Design the migration of the authority store"),
+                 "Design the migration of the authority store", ORC, POLICY),
                 ("obj-plan", "2026-11-21T17:52:00Z",
-                 "Plan a second migration")):
+                 "Plan a second migration", ORC, POLICY),
+                # the Coordinator's direct path also works through a node
+                ("obj-direct", "2026-11-21T17:53:00Z",
+                 "Sync the luna catalog", "DIRECT", None)):
             _insert(c, "objectives", objective_id=oid, text=text,
                     authored_by="you", status="ACTIVE", created_utc=created)
             _insert(c, "coordinator_decisions", decision_id="cd_" + oid,
                     objective_id=oid, policy_id="production-coordinator/v1",
-                    input_digest="d", elevation_mode=ORC,
+                    input_digest="d", elevation_mode=mode,
                     features=json.dumps({"engineering_design": True}),
-                    route=POLICY, created_utc=created)
+                    route=route, created_utc=created)
             _insert(c, "orchestration_runs", orchestration_id="run_" + oid,
                     objective_id=oid, coordinator_decision_id="cd_" + oid,
-                    mode=ORC, status="ACTIVE", created_utc=created,
+                    mode=mode, status="ACTIVE", created_utc=created,
                     created_by="coordinator")
 
         def node(nid, run, key, status, completed=None):
@@ -74,13 +77,14 @@ class OrchestratorFixture(AgentFixture):
         node("nd_e", "run_obj-orc", "Review the design", "EXECUTING")
         node("nd_p1", "run_obj-plan", "node-research", "PENDING")
         node("nd_p2", "run_obj-plan", "node-design", "PENDING")
+        node("nd_dir", "run_obj-direct", "direct-work", "EXECUTING")
 
         def assignment(aid, sid, seat, path, nid, seq, attempt, call, status,
-                       outcome=None, settled=None):
+                       outcome=None, settled=None, objective="obj-orc"):
             _insert(c, "project_assignments", assignment_id=aid,
                     specialist_id=sid, seat_id=seat, sequence_id=seq,
                     attempt_ordinal=1, attempt_id=attempt, call_id=call,
-                    objective_id="obj-orc", capability="research",
+                    objective_id=objective, capability="research",
                     role="investigator", provider="codex", model="gpt-6-luna",
                     selection_path=path, decided_by="TASKFORCE",
                     selected_reason="{}",
@@ -98,6 +102,8 @@ class OrchestratorFixture(AgentFixture):
                    "2026-11-21T17:58:00Z")
         assignment("asg_e", "sp_doc", None, "OUTSIDE_SPECIALIST", "nd_e",
                    "sq_e", "at_e", "call_e", "COLLECTED")
+        assignment("asg_dir", "sp_res", "ts_res", "RETAINED_SEAT", "nd_dir",
+                   "sq_dir", None, None, "SELECTED", objective="obj-direct")
         for n, (oids, classes, at) in enumerate((
                 (["obj-orc"], ["CREATE_NODE"] * 5, "2026-11-21T17:50:20Z"),
                 (["obj-plan"], ["CREATE_NODE"] * 2, "2026-11-21T17:52:20Z"),
@@ -152,7 +158,8 @@ class OrchestratorFixture(AgentFixture):
                 ("sq_a", "EXECUTING", "2026-11-21T17:51:10Z"),
                 ("sq_b", "EXECUTING", "2026-11-21T17:51:11Z"),
                 ("sq_c", "COMPLETED", "2026-11-21T17:58:00Z"),
-                ("sq_e", "HALTED", "2026-11-21T17:57:00Z")):
+                ("sq_e", "HALTED", "2026-11-21T17:57:00Z"),
+                ("sq_dir", "READY", "2026-11-21T17:53:10Z")):
             _insert(c, "sequences", sequence_id=sid,
                     record_hash="sha256:r_" + sid, requirement_digest="rd",
                     contract_digest="sha256:c_" + sid, state=state, version=1,
@@ -273,8 +280,16 @@ class OrchestratorWorkTests(unittest.TestCase):
         self.assertIn_any("plans on claude-opus-4-6[1m] · opus-orchestrator/v1"
                           " · 4 cycles", rows)
         self.assertIn_any("last 17:59:30 (30s ago)", rows)
-        self.assertIn_any("6 runs ACTIVE → 1 working · 2 stuck · 1 waiting"
+        self.assertIn_any("7 runs ACTIVE → 1 working · 2 stuck · 2 waiting"
                           " · 2 done", rows)
+
+    def test_a_runs_tasks_are_named_by_who_made_them(self):
+        # the Coordinator's direct work is not an Orchestrator plan
+        rows = band(self.lines, "DAG")
+        self.assertIn_any("◆ obj-direct  0/1 done · direct work, no project",
+                          rows)
+        self.assertIn_any("○ direct-work", rows)
+        self.assertIn("3 runs without a project", self.text)
 
     def test_decisions_the_applicator_skipped_are_counted(self):
         rows = box(self.lines, "ORCHESTRATOR")
@@ -331,7 +346,6 @@ class OrchestratorWorkTests(unittest.TestCase):
         self.assertIn("not started", report)
         self.assertIn_any("no dependencies recorded between these 5 tasks",
                           rows)
-        self.assertIn("2 plans without a project", self.text)
 
     def test_a_t_s12_halt_is_named_in_words(self):
         rows = band(self.lines, "DAG")
