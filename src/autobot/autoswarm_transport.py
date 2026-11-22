@@ -470,9 +470,9 @@ class AutoSwarmTransport(Transport):
 
     def _consolidate_session(self, call_id, worktree_path):
         """Copy the specialist's Claude Code session JSONL from the
-        worktree project directory to the parent project directory so
-        all specialist sessions appear under one project in devtools."""
-        import shutil
+        worktree project directory to the parent project directory,
+        rewriting cwd fields so the devtools groups all sessions
+        under one project instead of splitting by worktree path."""
         result = _read_json(self._call_dir(call_id) / "result.json")
         if not result:
             return
@@ -487,11 +487,19 @@ class AutoSwarmTransport(Transport):
         parent_dir = projects / _encode(self._workspace)
         if not wt_dir.is_dir() or not parent_dir.is_dir():
             return
+        parent_cwd = str(self._workspace)
+        wt_cwd = str(worktree_path)
         for f in wt_dir.glob("*.jsonl"):
             dest = parent_dir / f.name
             if not dest.exists():
                 try:
-                    shutil.copy2(str(f), str(dest))
+                    with open(str(f), "r", encoding="utf-8") as fh:
+                        lines = fh.readlines()
+                    with open(str(dest), "w", encoding="utf-8") as fh:
+                        for line in lines:
+                            fh.write(line.replace(
+                                json.dumps(wt_cwd)[1:-1],
+                                json.dumps(parent_cwd)[1:-1]))
                 except OSError:
                     pass
 
