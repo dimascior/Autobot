@@ -658,7 +658,9 @@ class EngineerService:
                 existing["status"] in ("ADMITTED", "DUPLICATE",
                                        "QUEUED_FOR_YOU", "REJECTED"):
             return {"proposal_id": proposal_id, "class": proposal["class"],
-                    "status": existing["status"], "converged": True}
+                    "status": existing["status"], "converged": True,
+                    "sequence_id": existing.get("sequence_id"),
+                    "task_contract_id": existing.get("task_contract_id")}
         if existing is None or budget_refused:
             # A NEW contract spends the objective's budget; an interrupted
             # submission being reconciled already holds its row and is
