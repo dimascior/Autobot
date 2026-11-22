@@ -830,7 +830,7 @@ def cmd_objectives(args):
                 return 1
             obligations = query.completion_obligations(
                 plan, ro, args.close)
-            if not obligations["eligible"]:
+            if not obligations["eligible"] and not args.force:
                 reasons = []
                 if obligations["unfinished_work"]:
                     reasons.append(
@@ -843,9 +843,12 @@ def cmd_objectives(args):
                             obligations["unexamined_reviews"]))
                 if not obligations["has_work"]:
                     reasons.append("no admitted work")
-                print("refused: %s" % "; ".join(reasons),
-                      file=sys.stderr)
+                print("refused: %s (use --force to override)"
+                      % "; ".join(reasons), file=sys.stderr)
                 return 1
+            if not obligations["eligible"] and args.force:
+                print("warning: closing with unmet obligations"
+                      " (operator override)", file=sys.stderr)
             if row["status"] == "ACTIVE":
                 plan.complete_objective(args.close, now)
                 print("closed: %s" % args.close)
@@ -1097,6 +1100,9 @@ def main():
     obj_p.add_argument("--close", default=None, metavar="OBJECTIVE_ID",
                        help="close an objective whose work is all"
                             " COMPLETED")
+    obj_p.add_argument("--force", action="store_true",
+                       help="operator override: close even when"
+                            " organizational obligations remain")
 
     tf_p = sub.add_parser("taskforce",
                           help="the engineering-organization report")

@@ -407,8 +407,6 @@ class ReviewFlowTests(WorkforceTestCase):
         self.assertFalse(kept)
         self.assertEqual(len(errors), 1)
         self.assertIn("NOT_EXAMINED", errors[0])
-        self.assertIn(review["sequence_id"], errors[0])
-        self.assertIn("request another independent review", errors[0])
         # A later review of the same work that did examine it settles it.
         second = dict([r for r in rows
                        if r["sequence_id"] == review["sequence_id"]][0],

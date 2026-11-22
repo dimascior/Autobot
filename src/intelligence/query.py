@@ -335,10 +335,25 @@ def completion_obligations_from_work(work):
 def completion_obligations(plan, ro, objective_id):
     """Organizational closure predicate for an objective.
 
-    Fetches the objective's work and delegates to
-    ``completion_obligations_from_work``. Used by Orchestrator
+    Fetches the objective's work AND checks for pending orchestration
+    nodes that haven't become proposals yet. Used by Orchestrator
     COMPLETE_RUN and ``objectives --close``."""
-    return completion_obligations_from_work(tasks(plan, ro, objective_id))
+    result = completion_obligations_from_work(
+        tasks(plan, ro, objective_id))
+    pending_nodes = []
+    if hasattr(plan, "active_orchestration_runs"):
+        for run in plan.active_orchestration_runs(objective_id):
+            for node in plan.orchestration_nodes(
+                    run["orchestration_id"]):
+                if node["status"] in ("PENDING", "PLANNED"):
+                    pending_nodes.append({
+                        "node_id": node["node_id"],
+                        "node_key": node.get("node_key"),
+                        "status": node["status"]})
+    if pending_nodes:
+        result["pending_nodes"] = pending_nodes
+        result["eligible"] = False
+    return result
 
 
 def dependencies(plan, ro, objective_id):

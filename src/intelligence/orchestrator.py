@@ -176,9 +176,9 @@ def _backfill_context(decisions, objectives):
         if not isinstance(d, dict):
             continue
         cls = d.get("class", "")
+        if not d.get("objective_id") and oid:
+            d["objective_id"] = oid
         if cls == "CREATE_PROJECT":
-            if not d.get("objective_id") and oid:
-                d["objective_id"] = oid
             if not d.get("title"):
                 obj_text = objectives[0].get("text", "") if objectives else ""
                 d["title"] = (d.get("name") or d.get("project_name")
@@ -844,7 +844,12 @@ class OrchestrationApplicator:
             or decision.get("project_id")
         objective_id = decision.get("objective_id")
 
-        if objective_id and self.plan and self._ro:
+        if objective_id and self.plan:
+            if self._ro is None:
+                return {"decision_id": decision_id,
+                        "class": "COMPLETE_RUN",
+                        "status": "REFUSED",
+                        "reason": "no authority connection for closure check"}
             from . import query as _q
             obligations = _q.completion_obligations(
                 self.plan, self._ro, objective_id)
