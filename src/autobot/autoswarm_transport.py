@@ -454,18 +454,46 @@ class AutoSwarmTransport(Transport):
         task = _read_json(self._call_dir(call_id) / "task.json")
         if not isinstance(task, dict) or not task.get("workspace"):
             return False
-        path = Path(task["workspace"])
-        if not path.name.startswith(self.WORKTREE_PREFIX):
+        wt = Path(task["workspace"])
+        if not wt.name.startswith(self.WORKTREE_PREFIX):
             return False
-        if os.path.normcase(str(path.parent)) != os.path.normcase(
+        if os.path.normcase(str(wt.parent)) != os.path.normcase(
                 str(self._workspace)):
             return False
-        if not path.is_dir():
+        if not wt.is_dir():
             return False
+        self._consolidate_session(call_id, wt)
         proc = subprocess.run(
             ["git", "-C", str(self._workspace), "worktree", "remove",
-             "--force", str(path)], capture_output=True, text=True)
+             "--force", str(wt)], capture_output=True, text=True)
         return proc.returncode == 0
+
+    def _consolidate_session(self, call_id, worktree_path):
+        """Copy the specialist's Claude Code session JSONL from the
+        worktree project directory to the parent project directory so
+        all specialist sessions appear under one project in devtools."""
+        import shutil
+        result = _read_json(self._call_dir(call_id) / "result.json")
+        if not result:
+            return
+        home = Path(os.path.expanduser("~"))
+        projects = home / ".claude" / "projects"
+        if not projects.is_dir():
+            return
+        def _encode(p):
+            s = str(p).replace("/", "-").replace("\\", "-")
+            return s if s.startswith("-") else s[0] + "-" + s[1:]
+        wt_dir = projects / _encode(worktree_path)
+        parent_dir = projects / _encode(self._workspace)
+        if not wt_dir.is_dir() or not parent_dir.is_dir():
+            return
+        for f in wt_dir.glob("*.jsonl"):
+            dest = parent_dir / f.name
+            if not dest.exists():
+                try:
+                    shutil.copy2(str(f), str(dest))
+                except OSError:
+                    pass
 
     def pending_requests(self, call_id):
         """The session's undecided native permission requests, read from
