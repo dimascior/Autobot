@@ -1,52 +1,48 @@
 # Autobot
 
-Autobot is an autonomous engineering and orchestration system.
-
-The Engineer solves problems and may become the Project Manager needed to realize a solution. A project may use both retained Taskforce members and outside specialists. Project participation is temporary; Taskforce membership is persistent and earned through explicit evidence-backed retention. Autobot coordinates the project, **AutoSwarm** executes the sessions, and the authority plane independently determines what work becomes accepted system state.
+Autobot is an autonomous engineering and orchestration system. It takes an objective, decomposes it into concrete work, staffs that work from a persistent Taskforce of specialists, executes through isolated sessions, and independently verifies every result through a deterministic authority plane.
 
 ```text
-AUTOBOT
-    │
-    Engineer
-    │
-    ├── technical problem solving
-    │
-    └── Project Manager role when coordination is required
-            │
-            ├── project/work graph
-            ├── retained Taskforce participants
-            └── outside project-specific specialists
-
-Taskforce
-    ├── persistent retained membership
-    ├── retained seats
-    ├── capability demonstrations
-    ├── availability
-    └── organizational learning
-
-AutoSwarm
-    └── execution substrate
-
-Authority Plane
-    └── independently verifies and accepts work
+Objective
+    |
+COORDINATOR ── admission + elevation
+    |
+    +-- DIRECT ── single task, Taskforce executes
+    +-- ENGINEER_ELEVATED ── Opus Engineer designs the solution
+    +-- ORCHESTRATOR_ELEVATED ── Opus Orchestrator builds the DAG
+            |
+    OrchestrationRun
+        |
+    OrchestrationNode DAG
+        |   +-- TASK_CONTRACT ── specialist executes
+        |   +-- ENGINEER_REASONING ── Opus Engineer solves
+        |   +-- optional Project binding
+        |
+    Taskforce ── retained seats + outside specialists
+        |
+    AutoSwarm ── launches sessions on routed providers
+        |
+    Authority Plane ── verifies and accepts work
 ```
 
 It uses the agent CLIs' own subscription logins, never API keys.
 
 ## Status
 
-| Part | Status |
+| Capability | Status |
 |---|---|
-| Authority plane, READ_ONLY | Live end to end. First production proof 2026-11-16. |
-| Authority plane, SOURCE_MODIFYING | Live end to end. Production proof 2026-11-17: a specialist created the candidate commit in an isolated worktree, and it was published by local ref compare-and-swap as `05e3d1a`. Record: [docs/implementation/source_modifying_pilot.md](docs/implementation/source_modifying_pilot.md). |
-| Engineer, and the Engineer as Project Manager | Live. It reasons on Opus 4.6 1M, solves the technical problem and, as Project Manager, opens the project, staffs it and completes it. Production proof 2026-11-18 and 2026-11-19: a founding run and eight pilots on one production ledger. |
-| Projects and their temporary teams | Live: multi-workstream projects with concurrent sessions, dependencies, and accepted results passed on to dependent work. Every team was dissolved when its project completed. |
-| Taskforce | Live: four members, each earned by an explicit retention decision that binds verified work, each reused through its seat afterwards. Outside specialists took part without membership, and one was let go with none. |
-| Execution routing | Live: every specialist session on the default route (Luna 6 Max: `codex`, `gpt-6-luna`, effort `max`); the route replaced under unchanged specialist, membership and seat identities; one assignment escalated on the Project Manager's ask. |
-| Specialist-owned SOURCE_MODIFYING work under sandbox supervision | Live: nine specialist-created commits published by authority. Outside its sandbox a builder is granted `git add` of paths in its frozen scope and `git commit -m`, and nothing else. |
-| What a specialist session is | One specialist doing its own task in one session, with the files on its machine and its shell. The default route switches off the provider's connectors, plugins, MCP server and web access for the session, and every contract forbids them and sub-agents. On that route the sub-agent rule is the contract's alone; the proof says what that leaves open. |
-| Independent review | Live: another specialist, in another session, that says what it examined. A review that could not read the work is recorded as that and cannot close a project. A check a session makes of its own work is not a review. |
-| Legacy coordinator | Preserved. See [The legacy coordinator](#the-legacy-coordinator). |
+| **Coordinator** | Live. Admits objectives as DIRECT, ENGINEER_ELEVATED, or ORCHESTRATOR_ELEVATED based on complexity scoring. |
+| **Opus Objective Orchestrator** | Live. Claude Opus 4.6 [1M] constructs multi-node DAGs with dependency edges, delegates architecture to the Engineer, and identifies parallelism. |
+| **Opus Engineer** | Live. Reasons on Opus 4.6 [1M] for technical design. ENGINEER_REASONING nodes produce adopted EngineeringDecisions. |
+| **Operational Project independence** | Live. TASK_CONTRACT nodes execute through direct authority admission without creating legacy Projects or workstreams. |
+| **Taskforce** | Live. 5 seats: 3 Opus 4.6 [1M] (architecture, engineering, security review) + 2 Luna 6 Max (research, verification). Seats earned through qualifying demonstrations and explicit retention decisions. |
+| **Parallel execution** | Live. Multiple specialists execute concurrently on independent nodes. |
+| **Authority plane** | Live end to end. Registry, Sequencer, deterministic verification, CAS, complete 6-tier identity binding. |
+| **Execution routing** | Live. Default: Luna 6 Max (`codex`/`gpt-6-luna`/`max`). Escalation: Opus 4.6 [1M]. Routes are execution state, never part of any identity. |
+| **Independent review** | Live. A separate specialist in a separate session. |
+| **SOURCE_MODIFYING work** | Live. Specialist commits in isolated worktrees, published by authority after verification and permit. |
+| **Dashboard** | Live. Terminal UI with Coordinator, Orchestrator, Engineer, Taskforce, Authority sections. Keyboard scroll (1-5 focus, arrows). |
+| **Session consolidation** | Live. Specialist session transcripts auto-consolidate to the parent project for devtools viewing. |
 
 Every identity behind these rows, and everything production found that is still open, is in [docs/architecture/orchestration/PRODUCTION_PROOF.md](docs/architecture/orchestration/PRODUCTION_PROOF.md).
 
@@ -116,17 +112,18 @@ Every contract has a finalization class.
 
 ```text
 objective
-  -> the Engineer reasons: the solution, and the work it requires
-  -> as Project Manager it opens the project and proposes the workstreams
-  -> Registry admits and freezes each contract
-  -> each ready workstream is staffed: a retained member the Taskforce resolves,
-     or an outside specialist the Project Manager selected
-  -> AutoSwarm launches the specialist; its permission requests are answered by policy
+  -> Coordinator classifies: DIRECT | ENGINEER_ELEVATED | ORCHESTRATOR_ELEVATED
+  -> ORCHESTRATOR_ELEVATED: Opus 4.6 [1M] constructs the node DAG
+  -> ENGINEER_ELEVATED: Opus Engineer produces the technical design
+  -> each TASK_CONTRACT node is admitted to the authority plane
+  -> Taskforce resolves a retained seat or outside specialist
+  -> AutoSwarm launches the specialist in an isolated worktree
   -> evidence is collected; registered verifiers run; the Sequencer concludes
   -> READ_ONLY: accepted.  SOURCE_MODIFYING: your permit, then the ref moves
-  -> the result becomes a capability demonstration; findings are admitted
-  -> the Engineer reasons again: follow-up work, retention or release, completion
-  -> the project completes: its team is dissolved, Taskforce membership stays
+  -> the result becomes a CapabilityDemonstration; findings are admitted
+  -> the Engineer may issue RETAIN_SPECIALIST for qualifying work
+  -> retained specialists earn Taskforce seats; repeated qualifying -> ESTABLISHED
+  -> dependency edges release when predecessors accept
   -> the loop is stable when nothing is left to do and nothing is in flight
 ```
 
@@ -138,7 +135,10 @@ You need Python 3.8 or newer (the legacy coordinator needs 3.11), the `autoswarm
 $env:PYTHONPATH = 'src'
 python -m intelligence.cli seed
 python -m intelligence.cli bootstrap
-python -m intelligence.cli engineer --objective-id <id> --objective "<what you want engineered>"
+python -m intelligence.cli engineer `
+  --coordinator --orchestrator `
+  --objective-id <id> `
+  --objective "<what you want engineered>"
 ```
 
 | Command | Does |
@@ -153,27 +153,47 @@ python -m intelligence.cli engineer --objective-id <id> --objective "<what you w
 | `taskforce` | the persistent organization: members, seats and the evidence behind each, outside specialists, assignment history, projects and their teams |
 | `query` | the query layer, as JSON |
 
+### Dashboard
+
+```powershell
+$env:PYTHONPATH = 'src'
+python -m intelligence.dashboard --interval 1
+```
+
+Live terminal UI showing all five organizational layers. Keys: `1`-`5` focus a section (Coordinator, Orchestrator, Engineer, Taskforce, DAG), arrows scroll, `Esc` returns to overview, `a` expands ACTIVITY, `q` quits.
+
 `engineer` and `run` take `--authorize-publication`, which is your publication permit for the verified SOURCE_MODIFYING work of that run, and `--max-wall-seconds`, which bounds how long the loop waits for specialists.
 
 ### Configuration
 
-Machine paths and the specialist catalog live in `config.local.toml` (gitignored):
+Machine paths live in `config.local.toml` (gitignored). The specialist catalog is in `config.toml`:
 
 ```toml
-[authority]
-repository_id = "autobot"
-delegation_id = "<your delegation>"
-workspace = '<this checkout>'
-repo_path = '<this checkout>'
+# Opus 4.6 [1M] specialists — complex reasoning
+[specialists.opus-architect]
+route = "opus-4-6-1m"
+offers = ["architecture:reviewer"]
 
-[specialists.<handle>]
-offers = ["research:investigator", "verification:reviewer"]
+[specialists.opus-engineer]
+route = "opus-4-6-1m"
+offers = ["software_implementation:builder", "documentation:builder"]
+
+[specialists.opus-security]
+route = "opus-4-6-1m"
+offers = ["security_review:reviewer"]
+
+# Luna 6 Max specialists — high-throughput execution
+[specialists.luna-investigator]
+offers = ["research:investigator"]
+
+[specialists.luna-reviewer]
+offers = ["verification:reviewer"]
 
 [taskforce]
 established_threshold = 3
 ```
 
-Each `[specialists.<handle>]` table is one engineering worker: its stable identity (the handle) and the capability and role pairs it may do. Being in the catalog makes a specialist available to projects; it does not make it a Taskforce member. `[taskforce]` configures the persistent organization.
+Each specialist's handle is its organizational identity. The execution route is resolved at dispatch time. Being in the catalog makes a specialist available; Taskforce membership and seats are earned through qualifying work.
 
 ### Execution routing
 
@@ -211,13 +231,13 @@ python -m pytest tests/test_coordinator.py -q
 ## Layout
 
 ```text
-src/intelligence/      the Engineer, projects, the Taskforce, the query layer, the production runtime
-src/autobot/           the authority plane
-src/contract_library/  canonical bytes, digests and schema validation
-src/coordinator/       the legacy coordinator
-tests/autobot/         authority and intelligence suites
-tests/test_coordinator.py
-docs/architecture/     chapters 0 to 4 and orchestration
+src/intelligence/           Coordinator, Orchestrator, Engineer, Taskforce, production runtime
+src/intelligence/dashboard/ live terminal dashboard (5-section UI)
+src/autobot/                authority plane (Registry, Sequencer, CAS, transport)
+src/contract_library/       canonical bytes, digests and schema validation
+src/coordinator/            the legacy coordinator
+tests/autobot/              authority and intelligence suites (1223 tests)
+docs/architecture/          chapters 0 to 4 and orchestration
 ```
 
 Runtime state is never committed: `autobot.db` (the authority ledger), `intelligence.db` (planning, project and Taskforce state), `store/` (content-addressed bytes).
