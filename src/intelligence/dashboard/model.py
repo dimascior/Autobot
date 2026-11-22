@@ -317,9 +317,12 @@ def _not_applied(raw, into):
             into[klass] = into.get(klass, 0) + 1
 
 
+DEFAULT_HISTORY = 200
+
+
 def build_snapshot(intelligence, authority, step_reader=None,
                    config_reader=None, autoswarm_reader=None,
-                   cas_reader=None, now=None):
+                   cas_reader=None, now=None, history=None):
     """Build an ActivitySnapshot from reader instances.
 
     ``intelligence``: IntelligenceReader (intelligence.db)
@@ -330,8 +333,12 @@ def build_snapshot(intelligence, authority, step_reader=None,
     predecessor edges and the Engineer's stored decisions
     ``now``: the capture instant (ISO UTC); the derived rules judge ages
     and expiries against it. Defaults to the current time.
+    ``history``: how many activity events to keep, newest first (the
+    journal rows read, and the most events after folding repeats);
+    the live view scrolls through them. Defaults to DEFAULT_HISTORY.
     """
     now = now or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    history = max(30, int(history or DEFAULT_HISTORY))
 
     # --- indices shared by the derived fields ---
     sequence_states = _call(authority, "sequence_states", {})
@@ -806,7 +813,7 @@ def build_snapshot(intelligence, authority, step_reader=None,
     # --- activity: one stream over every layer, journal rows named by the
     # work they belong to and annotated by their planning events; a run of
     # identical rows (a session's witness admissions) is one row ---
-    transitions = authority.recent_transitions(limit=60)
+    transitions = authority.recent_transitions(limit=history)
     attempt_sequences = _call(authority, "attempt_sequences", {})
     events = events_from_transitions(
         transitions,
@@ -826,16 +833,26 @@ def build_snapshot(intelligence, authority, step_reader=None,
             a.get("specialist_handle"),
             a.get("workstream_key") or a.get("node_key")
             or name_of(a.get("sequence_id")))
-    cycle_rows = _call(intelligence, "cycles_recent", [], 3)
+    # the other streams, deep enough to interleave with that many journal
+    # rows; the Engineer box reads only the newest cycles
+    cycle_rows = _call(intelligence, "cycles_recent", [],
+                       max(3, history // 10))
+    # an event about a specialist or a seat names its handle (a seat by
+    # its holder's)
+    handles = {sp["specialist_id"]: sp["handle"] for sp in specialists
+               if sp.get("specialist_id") and sp.get("handle")}
+    for seat in seats:
+        handles.setdefault(seat.seat_id, "%s's %s seat" % (
+            seat.specialist_handle, seat.capability))
     events.extend(events_from_workforce(
-        _call(intelligence, "workforce_events_recent", [], 10),
-        assignment_names,
-        {sp["specialist_id"]: sp["handle"] for sp in specialists
-         if sp.get("specialist_id") and sp.get("handle")}))
+        _call(intelligence, "workforce_events_recent", [],
+              max(10, history // 4)),
+        assignment_names, handles))
     events.extend(events_from_cycles(cycle_rows))
-    events.extend(events_from_admissions(coord_decisions[-5:]))
+    events.extend(events_from_admissions(
+        coord_decisions[-max(5, history // 10):]))
     events.extend(events_from_approvals(
-        _call(intelligence, "approvals_recent", [], 5)))
+        _call(intelligence, "approvals_recent", [], max(5, history // 10))))
 
     if step_reader:
         from .events import events_from_step
@@ -843,7 +860,7 @@ def build_snapshot(intelligence, authority, step_reader=None,
             events.extend(events_from_step(entry))
 
     events.sort(key=lambda e: e.timestamp or "", reverse=True)
-    events = collapse_repeats(events)[:30]
+    events = collapse_repeats(events)[:history]
 
     # --- active sequences and attempts ---
     active_sequences = [
@@ -959,7 +976,7 @@ def build_snapshot(intelligence, authority, step_reader=None,
             cycle_id=c["cycle_id"], started_utc=c.get("started_utc") or "",
             status=c.get("status") or "?", closed_utc=c.get("closed_utc"),
             proposals=c.get("proposals") or 0, note=c.get("note"))
-            for c in cycle_rows],
+            for c in cycle_rows[:3]],
         waiting=[ProposalView(
             proposal_id=p["proposal_id"], proposal_class=p.get("class") or "?",
             status=p.get("status") or "?",
