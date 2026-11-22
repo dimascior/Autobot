@@ -828,13 +828,23 @@ def cmd_objectives(args):
                       % (lease["holder"], lease["expires_utc"]),
                       file=sys.stderr)
                 return 1
-            unfinished = [t for t in query.tasks(plan, ro, args.close)
-                          if t["sequence_id"] and t["state"] != "COMPLETED"]
-            if unfinished:
-                print("refused: %d task(s) of %s are not COMPLETED: %s"
-                      % (len(unfinished), args.close,
-                         ", ".join("%s=%s" % (t["sequence_id"], t["state"])
-                                   for t in unfinished)), file=sys.stderr)
+            obligations = query.completion_obligations(
+                plan, ro, args.close)
+            if not obligations["eligible"]:
+                reasons = []
+                if obligations["unfinished_work"]:
+                    reasons.append(
+                        "%d task(s) not COMPLETED" % len(
+                            obligations["unfinished_work"]))
+                if obligations["unexamined_reviews"]:
+                    reasons.append(
+                        "%d reviewed workstream(s) have only"
+                        " NOT_EXAMINED reviews" % len(
+                            obligations["unexamined_reviews"]))
+                if not obligations["has_work"]:
+                    reasons.append("no admitted work")
+                print("refused: %s" % "; ".join(reasons),
+                      file=sys.stderr)
                 return 1
             if row["status"] == "ACTIVE":
                 plan.complete_objective(args.close, now)

@@ -66,7 +66,7 @@ from .proposals import (
     ProposalError,
     validate_proposal,
 )
-from .query import unexamined_reviews
+from .query import completion_obligations_from_work
 from .routing import ESCALATION_CLASSES
 from .workforce import RELEASE_REASONS, STAFFING_MODES
 
@@ -1067,13 +1067,11 @@ class ReasoningEngineerPolicy(EngineerPolicy):
 
     def _completion_guard(self, proposals, view, errors):
         """F-CE-1: completion is declared only by a batch that proposes no
-        further WORK for the objective, and only when the ledger shows
-        every workstream COMPLETED. A closing workforce decision — retain
-        or release a specialist whose work the project used — may
-        accompany it: it is not work, and it is applied first. A proposal
-        that was refused at admission is not a workstream to complete
-        (``_work``); a project with no admitted work at all is never
-        complete."""
+        further WORK for the objective, and only when the shared
+        organizational closure predicate says the objective is eligible.
+
+        A closing workforce decision (retain/release) may accompany it;
+        it is not work and is applied first."""
         kept = []
         for proposal in proposals:
             if proposal["class"] != "PROJECT_COMPLETE":
@@ -1083,40 +1081,32 @@ class ReasoningEngineerPolicy(EngineerPolicy):
             others = [p for p in proposals if p is not proposal
                       and p["objective_id"] == objective_id
                       and p["class"] not in WORKFORCE_CLASSES]
-            workstreams = self._work(view, objective_id)
-            unfinished = [w for w in workstreams
-                          if w["state"] != "COMPLETED"]
             if others:
                 errors.append(
                     "PROJECT_COMPLETE dropped: the batch proposes other"
                     " work for %s" % objective_id)
-            elif not workstreams or unfinished:
+                continue
+            obligations = completion_obligations_from_work(
+                self._work(view, objective_id))
+            if not obligations["eligible"]:
+                reasons = []
+                if obligations["unfinished_work"]:
+                    reasons.append(
+                        "%d workstream(s) not COMPLETED"
+                        % len(obligations["unfinished_work"]))
+                if obligations["unexamined_reviews"]:
+                    reasons.append(
+                        "%d reviewed workstream(s) have only"
+                        " NOT_EXAMINED reviews"
+                        % len(obligations["unexamined_reviews"]))
+                if not obligations["has_work"]:
+                    reasons.append("no admitted work")
                 errors.append(
-                    "PROJECT_COMPLETE refused: %d workstream(s) of %s are"
-                    " not COMPLETED" % (len(unfinished), objective_id))
-            elif self._unexamined_reviews(view, objective_id):
-                # D-TF-32: a review that says it could not examine the
-                # work is not a review of it. The work stays unreviewed
-                # until another review of the same record examines it.
-                stopped = self._unexamined_reviews(view, objective_id)
-                errors.append(
-                    "PROJECT_COMPLETE refused: %d reviewed workstream(s)"
-                    " of %s have only reviews that say NOT_EXAMINED (%s)."
-                    " A review that could not read the work has not"
-                    " reviewed it: request another independent review of"
-                    " the same workstream, with guidance that avoids what"
-                    " stopped the first" % (
-                        len(stopped), objective_id,
-                        ", ".join(sorted(s for entry in stopped
-                                         for s in entry["reviews"] if s))))
+                    "PROJECT_COMPLETE refused for %s: %s"
+                    % (objective_id, "; ".join(reasons)))
             else:
                 kept.append(proposal)
         return kept
-
-    def _unexamined_reviews(self, view, objective_id):
-        """The reviewed work of this objective whose finished reviews all
-        failed to examine it (``query.unexamined_reviews``)."""
-        return unexamined_reviews(self._work(view, objective_id))
 
     # ------------------------------------------------------------- plan
 

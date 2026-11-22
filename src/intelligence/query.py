@@ -304,6 +304,43 @@ def tasks(plan, ro, objective_id):
         if row["status"] in ("ADMITTED", "QUEUED_FOR_YOU", "REJECTED")]
 
 
+def completion_obligations_from_work(work):
+    """Organizational closure predicate over pre-fetched work items.
+
+    Returns a dict of outstanding obligations. The ``eligible`` flag
+    is True only when every obligation is empty. This answers
+    organizational questions only — never whether a sequence verified,
+    whether an artifact is correct, or whether t-s41 should release.
+
+    Authority determines whether each result satisfied its frozen
+    contract. Organization determines whether the collection of
+    accepted results is sufficient to finish the objective."""
+    unfinished = [w for w in work
+                  if w.get("sequence_id") and w["state"] != "COMPLETED"]
+    unexamined = unexamined_reviews(work)
+    result = {
+        "unfinished_work": [
+            {"sequence_id": w.get("sequence_id"), "state": w["state"]}
+            for w in unfinished],
+        "unexamined_reviews": unexamined,
+        "has_work": bool(work),
+    }
+    result["eligible"] = (
+        result["has_work"]
+        and not result["unfinished_work"]
+        and not result["unexamined_reviews"])
+    return result
+
+
+def completion_obligations(plan, ro, objective_id):
+    """Organizational closure predicate for an objective.
+
+    Fetches the objective's work and delegates to
+    ``completion_obligations_from_work``. Used by Orchestrator
+    COMPLETE_RUN and ``objectives --close``."""
+    return completion_obligations_from_work(tasks(plan, ro, objective_id))
+
+
 def dependencies(plan, ro, objective_id):
     """The objective's dependency graph: each frozen predecessor edge,
     resolved to the task it points at, with whether authority has

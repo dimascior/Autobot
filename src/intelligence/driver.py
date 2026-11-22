@@ -286,7 +286,8 @@ class ContinuousDriver:
             if orch.get("decisions") and \
                     not orch.get("already_applied"):
                 applicator = OrchestrationApplicator(
-                    self.plan, orchestration_id=run_id)
+                    self.plan, orchestration_id=run_id,
+                    ro=self.ro)
                 applied = applicator.apply(orch["decisions"], now)
                 orch["applied"] = applied
                 if hasattr(self.plan,

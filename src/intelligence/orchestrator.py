@@ -608,9 +608,10 @@ class OrchestrationApplicator:
     The Orchestrator itself holds no persistence handle.
     """
 
-    def __init__(self, plan, orchestration_id=None):
+    def __init__(self, plan, orchestration_id=None, ro=None):
         self.plan = plan
         self.orchestration_id = orchestration_id
+        self._ro = ro
 
     def apply(self, decisions, now):
         """Apply a batch of validated orchestration decisions.
@@ -842,6 +843,23 @@ class OrchestrationApplicator:
         run_id = decision.get("orchestration_id") \
             or decision.get("project_id")
         objective_id = decision.get("objective_id")
+
+        if objective_id and self.plan and self._ro:
+            from . import query as _q
+            obligations = _q.completion_obligations(
+                self.plan, self._ro, objective_id)
+            if not obligations["eligible"]:
+                reasons = []
+                if obligations["unfinished_work"]:
+                    reasons.append("%d unfinished" % len(
+                        obligations["unfinished_work"]))
+                if obligations["unexamined_reviews"]:
+                    reasons.append("%d unexamined review(s)" % len(
+                        obligations["unexamined_reviews"]))
+                return {"decision_id": decision_id,
+                        "class": "COMPLETE_RUN",
+                        "status": "REFUSED",
+                        "reason": "; ".join(reasons) or "not eligible"}
 
         if run_id and hasattr(self.plan, "complete_orchestration_run"):
             with self.plan.transaction() as cur:
