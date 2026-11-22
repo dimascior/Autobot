@@ -315,7 +315,6 @@ class StaffingView:
 
 
 @dataclass(frozen=True)
-@dataclass(frozen=True)
 class EngineeringDecisionView:
     """An ENGINEER_REASONING binding: a request to the Engineer and
     its adopted decision."""
