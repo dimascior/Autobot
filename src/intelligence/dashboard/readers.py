@@ -181,7 +181,11 @@ class IntelligenceReader:
                          " FROM taskforce_seats ts"
                          " JOIN specialists s"
                          "   ON s.specialist_id = ts.specialist_id"
-                         " ORDER BY ts.status, ts.capability")
+                         " ORDER BY CASE ts.status"
+                         "   WHEN 'ESTABLISHED' THEN 0"
+                         "   WHEN 'RETAINED' THEN 1"
+                         "   ELSE 2 END,"
+                         " ts.capability")
         except sqlite3.OperationalError:
             # an older plan store: fall back to the capability-wide count
             try:
@@ -194,7 +198,11 @@ class IntelligenceReader:
                              " FROM taskforce_seats ts"
                              " JOIN specialists s"
                              "   ON s.specialist_id = ts.specialist_id"
-                             " ORDER BY ts.status, ts.capability")
+                             " ORDER BY CASE ts.status"
+                             "   WHEN 'ESTABLISHED' THEN 0"
+                             "   WHEN 'RETAINED' THEN 1"
+                             "   ELSE 2 END,"
+                             " ts.capability")
             except sqlite3.OperationalError:
                 return []
 
