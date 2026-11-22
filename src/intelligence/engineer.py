@@ -576,6 +576,26 @@ class EngineerService:
         # subjects are done or moot with it). Closing the project
         # dissolves its team — temporary participation ends here — while
         # Taskforce membership and seats are not project state and stay.
+        #
+        # The organizational closure predicate is checked here at the
+        # mutation boundary, not only in the reasoning policy guard.
+        # This prevents any policy (reasoning, deterministic, or custom)
+        # from completing an objective with unmet obligations.
+        if self.roster and hasattr(self.roster, "plan"):
+            ro = getattr(self, "_authority_ro", None)
+            if ro is None and hasattr(self.plan, "ro"):
+                ro = self.plan.ro
+            if ro is not None:
+                from .closure import can_complete_objective
+                eligible, reason = can_complete_objective(
+                    self.plan, ro, proposal["objective_id"])
+                if not eligible:
+                    proposal_id = proposal_identity(proposal)
+                    self.plan.set_proposal_status(
+                        proposal_id, "REJECTED", now,
+                        note="closure refused: %s" % reason)
+                    return [{"proposal_id": proposal_id, "class": cls,
+                             "status": "REJECTED", "reason": reason}]
         proposal_id = proposal_identity(proposal)
         project = self.plan.active_project(proposal["objective_id"])
         with self.plan.transaction() as cur:

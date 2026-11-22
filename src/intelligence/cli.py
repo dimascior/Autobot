@@ -828,27 +828,16 @@ def cmd_objectives(args):
                       % (lease["holder"], lease["expires_utc"]),
                       file=sys.stderr)
                 return 1
-            obligations = query.completion_obligations(
-                plan, ro, args.close)
-            if not obligations["eligible"] and not args.force:
-                reasons = []
-                if obligations["unfinished_work"]:
-                    reasons.append(
-                        "%d task(s) not COMPLETED" % len(
-                            obligations["unfinished_work"]))
-                if obligations["unexamined_reviews"]:
-                    reasons.append(
-                        "%d reviewed workstream(s) have only"
-                        " NOT_EXAMINED reviews" % len(
-                            obligations["unexamined_reviews"]))
-                if not obligations["has_work"]:
-                    reasons.append("no admitted work")
+            from .closure import can_complete_objective
+            eligible, reason = can_complete_objective(plan, ro, args.close)
+            if not eligible and not args.force:
                 print("refused: %s (use --force to override)"
-                      % "; ".join(reasons), file=sys.stderr)
+                      % reason, file=sys.stderr)
                 return 1
-            if not obligations["eligible"] and args.force:
+            if not eligible and args.force:
                 print("warning: closing with unmet obligations"
-                      " (operator override)", file=sys.stderr)
+                      " (operator override: %s)" % reason,
+                      file=sys.stderr)
             if row["status"] == "ACTIVE":
                 plan.complete_objective(args.close, now)
                 print("closed: %s" % args.close)

@@ -67,6 +67,7 @@ from .proposals import (
     validate_proposal,
 )
 from .query import completion_obligations_from_work
+from .closure import can_complete_objective
 from .routing import ESCALATION_CLASSES
 from .workforce import RELEASE_REASONS, STAFFING_MODES
 

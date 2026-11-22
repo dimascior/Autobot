@@ -822,6 +822,15 @@ class OrchestrationApplicator:
                     "class": "COMPLETE_NODE",
                     "status": "SKIPPED", "note": "missing node_id"}
 
+        if self._ro and self.plan:
+            from .closure import can_complete_node
+            eligible, reason = can_complete_node(
+                self.plan, self._ro, node_id)
+            if not eligible:
+                return {"decision_id": decision_id,
+                        "class": "COMPLETE_NODE",
+                        "status": "REFUSED", "reason": reason}
+
         if hasattr(self.plan, "update_node_status"):
             with self.plan.transaction() as cur:
                 self.plan.update_node_status(
@@ -842,29 +851,25 @@ class OrchestrationApplicator:
     def _apply_complete_run(self, decision, decision_id, now):
         run_id = decision.get("orchestration_id") \
             or decision.get("project_id")
-        objective_id = decision.get("objective_id")
 
-        if objective_id and self.plan:
+        if run_id and self.plan and self._ro:
+            from .closure import can_complete_run
+            eligible, reason, objective_id = can_complete_run(
+                self.plan, self._ro, run_id)
+            if not eligible:
+                return {"decision_id": decision_id,
+                        "class": "COMPLETE_RUN",
+                        "status": "REFUSED",
+                        "reason": reason}
+        elif run_id and self.plan:
+            objective_id = decision.get("objective_id")
             if self._ro is None:
                 return {"decision_id": decision_id,
                         "class": "COMPLETE_RUN",
                         "status": "REFUSED",
                         "reason": "no authority connection for closure check"}
-            from . import query as _q
-            obligations = _q.completion_obligations(
-                self.plan, self._ro, objective_id)
-            if not obligations["eligible"]:
-                reasons = []
-                if obligations["unfinished_work"]:
-                    reasons.append("%d unfinished" % len(
-                        obligations["unfinished_work"]))
-                if obligations["unexamined_reviews"]:
-                    reasons.append("%d unexamined review(s)" % len(
-                        obligations["unexamined_reviews"]))
-                return {"decision_id": decision_id,
-                        "class": "COMPLETE_RUN",
-                        "status": "REFUSED",
-                        "reason": "; ".join(reasons) or "not eligible"}
+        else:
+            objective_id = decision.get("objective_id")
 
         if run_id and hasattr(self.plan, "complete_orchestration_run"):
             with self.plan.transaction() as cur:
