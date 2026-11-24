@@ -972,6 +972,8 @@ def cmd_query(args):
             result = query.why_retained(plan, value)
         elif kind == "why-created":
             result = query.why_created(plan, value)
+        elif kind == "sessions":
+            result = query.session_bridge(plan, ro, value)
         else:
             result = query.taskforce_report(plan)
         print(json.dumps(result, indent=1, sort_keys=True, default=str))

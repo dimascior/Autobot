@@ -931,6 +931,67 @@ def why_created(plan, sequence_id):
     return out
 
 
+# ------------------------------------------------------ session bridge
+
+def session_bridge(plan, ro, objective_id):
+    """Join from organizational nodes to native specialist sessions.
+
+    For each node in the objective's orchestration runs, produces:
+        node_key, node_id, realization_kind, status,
+        binding_id, sequence_id, assignment_id, specialist_handle,
+        selection_path, provider, model, attempt_id, call_id,
+        orchestration_node_id on the assignment
+    """
+    result = []
+    if not hasattr(plan, "active_orchestration_runs"):
+        return result
+    for run in plan.active_orchestration_runs(objective_id):
+        rid = run["orchestration_id"]
+        for node in plan.orchestration_nodes(rid):
+            nid = node["node_id"]
+            entry = {
+                "objective_id": objective_id,
+                "orchestration_id": rid,
+                "node_id": nid,
+                "node_key": node.get("node_key"),
+                "realization_kind": node.get("realization_kind"),
+                "status": node["status"],
+            }
+            ab = plan.authority_binding_for_node(nid)
+            if ab:
+                entry["binding_id"] = ab["binding_id"]
+                entry["sequence_id"] = ab.get("sequence_id")
+            seq_id = entry.get("sequence_id")
+            if seq_id:
+                asgn = plan.conn.execute(
+                    "SELECT * FROM project_assignments"
+                    " WHERE sequence_id = ? ORDER BY selected_utc"
+                    " LIMIT 1", (seq_id,)).fetchone()
+                if asgn:
+                    asgn = dict(asgn)
+                    sp = plan.conn.execute(
+                        "SELECT handle FROM specialists"
+                        " WHERE specialist_id = ?",
+                        (asgn["specialist_id"],)).fetchone()
+                    entry["assignment_id"] = asgn["assignment_id"]
+                    entry["specialist_handle"] = sp["handle"] if sp else None
+                    entry["selection_path"] = asgn["selection_path"]
+                    entry["provider"] = asgn["provider"]
+                    entry["model"] = asgn["model"]
+                    entry["orchestration_node_id"] = asgn.get(
+                        "orchestration_node_id")
+                att = _ro_one(
+                    ro, "SELECT a.attempt_id, c.call_id FROM attempts a"
+                    " LEFT JOIN attempt_calls c ON c.attempt_id ="
+                    " a.attempt_id WHERE a.sequence_id = ?"
+                    " ORDER BY a.rowid", (seq_id,))
+                if att:
+                    entry["attempt_id"] = att["attempt_id"]
+                    entry["call_id"] = att.get("call_id")
+            result.append(entry)
+    return result
+
+
 # ------------------------------------------------------- artifact graph
 
 def artifact_graph(plan, ro, objective_id):
