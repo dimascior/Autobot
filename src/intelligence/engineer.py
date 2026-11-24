@@ -581,21 +581,21 @@ class EngineerService:
         # mutation boundary, not only in the reasoning policy guard.
         # This prevents any policy (reasoning, deterministic, or custom)
         # from completing an objective with unmet obligations.
-        if self.roster and hasattr(self.roster, "plan"):
-            ro = getattr(self, "_authority_ro", None)
-            if ro is None and hasattr(self.plan, "ro"):
-                ro = self.plan.ro
-            if ro is not None:
-                from .closure import can_complete_objective
-                eligible, reason = can_complete_objective(
-                    self.plan, ro, proposal["objective_id"])
-                if not eligible:
-                    proposal_id = proposal_identity(proposal)
-                    self.plan.set_proposal_status(
-                        proposal_id, "REJECTED", now,
-                        note="closure refused: %s" % reason)
-                    return [{"proposal_id": proposal_id, "class": cls,
-                             "status": "REJECTED", "reason": reason}]
+        # ro_conn is the authority reader this method already receives.
+        if ro_conn is not None:
+            from .closure import can_complete_objective
+            eligible, reason = can_complete_objective(
+                self.plan, ro_conn, proposal["objective_id"])
+            if not eligible:
+                proposal_id = proposal_identity(proposal)
+                with self.plan.transaction() as cur:
+                    self._insert_proposal(
+                        cur, proposal_id, cycle_id, proposal, now)
+                self.plan.set_proposal_status(
+                    proposal_id, "REJECTED", now,
+                    note="closure refused: %s" % reason)
+                return [{"proposal_id": proposal_id, "class": cls,
+                         "status": "REJECTED", "reason": reason}]
         proposal_id = proposal_identity(proposal)
         project = self.plan.active_project(proposal["objective_id"])
         with self.plan.transaction() as cur:

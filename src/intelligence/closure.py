@@ -21,31 +21,51 @@ from .query import (
 )
 
 
+_NODE_COMPLETION_RULES = {
+    "TASK_CONTRACT": "authority_sequence_completed",
+    "ENGINEER_REASONING": "engineering_decision_adopted",
+    "CONTROL": "always_eligible",
+}
+
+
 def can_complete_node(plan, ro, node_id):
     """Whether a node may be marked COMPLETED.
 
-    A TASK_CONTRACT node is complete when its authority sequence is
-    COMPLETED. An ENGINEER_REASONING node is complete when its
-    engineering decision is adopted. A node with no authority binding
-    and no engineering binding is not complete.
+    Completion semantics are keyed by realization_kind:
+        TASK_CONTRACT       authority sequence COMPLETED
+        ENGINEER_REASONING  EngineeringDecision adopted
+        CONTROL             always eligible (organizational marker)
+
+    Missing node identity is a refusal.
+    Missing authority context for a realization that requires it is a refusal.
 
     Returns (eligible, reason)."""
+    if not node_id:
+        return False, "missing node_id"
+
     node = plan.orchestration_node(node_id) if hasattr(
         plan, "orchestration_node") else None
     if node is None:
-        return True, "no node record"
+        return False, "node %s not found" % node_id
 
     if node["status"] == "COMPLETED":
         return True, "already completed"
 
     kind = node.get("realization_kind")
-    if kind == "TASK_CONTRACT":
+    rule = _NODE_COMPLETION_RULES.get(kind)
+
+    if rule is None:
+        return False, "realization kind %s has no registered completion rule" % kind
+
+    if rule == "authority_sequence_completed":
         binding = plan.authority_binding_for_node(node_id)
         if binding is None:
             return False, "no authority binding"
         seq_id = binding.get("sequence_id")
         if not seq_id:
             return False, "no sequence"
+        if ro is None:
+            return False, "no authority reader for sequence check"
         seq = ro.execute(
             "SELECT state FROM sequences WHERE sequence_id = ?",
             (seq_id,)).fetchone()
@@ -55,7 +75,7 @@ def can_complete_node(plan, ro, node_id):
             return False, "sequence %s is %s" % (seq_id, seq["state"])
         return True, "sequence COMPLETED"
 
-    if kind == "ENGINEER_REASONING":
+    if rule == "engineering_decision_adopted":
         binding = plan.engineering_binding_for_node(node_id)
         if binding is None:
             return False, "no engineering binding"
@@ -63,7 +83,10 @@ def can_complete_node(plan, ro, node_id):
             return False, "engineering decision not adopted"
         return True, "decision adopted"
 
-    return True, "realization kind %s has no completion gate" % kind
+    if rule == "always_eligible":
+        return True, "CONTROL node"
+
+    return False, "unrecognized rule %s" % rule
 
 
 def can_complete_run(plan, ro, orchestration_id):
@@ -127,6 +150,18 @@ def _full_obligations(plan, ro, objective_id):
     if pending_nodes:
         result["pending_nodes"] = pending_nodes
         result["eligible"] = False
+    completed_nodes = []
+    if hasattr(plan, "active_orchestration_runs"):
+        for run in plan.active_orchestration_runs(objective_id):
+            for node in plan.orchestration_nodes(
+                    run["orchestration_id"]):
+                if node["status"] == "COMPLETED":
+                    completed_nodes.append(node["node_id"])
+    if completed_nodes and not result["has_work"]:
+        result["has_work"] = True
+        if not result["unfinished_work"] and not result.get(
+                "unexamined_reviews") and not pending_nodes:
+            result["eligible"] = True
     return result
 
 

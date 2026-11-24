@@ -822,7 +822,7 @@ class OrchestrationApplicator:
                     "class": "COMPLETE_NODE",
                     "status": "SKIPPED", "note": "missing node_id"}
 
-        if self._ro and self.plan:
+        if self.plan:
             from .closure import can_complete_node
             eligible, reason = can_complete_node(
                 self.plan, self._ro, node_id)
