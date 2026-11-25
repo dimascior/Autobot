@@ -354,19 +354,22 @@ class LaunchProjectionTests(unittest.TestCase):
 class _Recorder:
     """Stands in for subprocess.run: records every argv, succeeds."""
 
-    def __init__(self, returncode=0):
+    def __init__(self, returncode=0, native_session_id="sess-test"):
         self.calls = []
         self.returncode = returncode
+        self.inputs = []
+        self.native_session_id = native_session_id
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
+        self.inputs.append(kwargs.get("input"))
         outer = self
 
         class R:
             returncode = outer.returncode
             stdout = json.dumps({"ok": outer.returncode == 0, "data": {
                 "call_id": "call_" + "a" * 32,
-                "native_session_id": "sess-test"},
+                "native_session_id": outer.native_session_id},
                 "error": {"code": "approval_not_pending",
                           "message": "no longer pending"}})
             stderr = "boom"
@@ -488,6 +491,7 @@ class WorkspaceIsolationTests(unittest.TestCase):
         if source_revision:
             constraints["source_revision"] = source_revision
         return {"call_id": self.call_id,
+                "role": "engineer",
                 "projection_address": self.projection,
                 "provider_assignment": {"provider": "claude-code",
                                         "model": "sonnet",
@@ -603,6 +607,47 @@ class WorkspaceIsolationTests(unittest.TestCase):
         self.assertFalse([a for a in again.cli()[0]
                           if a.startswith("--provider-arg=")])
         self.assertNotIn("--effort", again.cli()[0])
+
+    def test_codex_initial_prompt_carries_session_owned_handoff_context(self):
+        manifest = self._route_manifest()
+        manifest_address = "sha256:" + "d" * 64
+        manifest_bytes = json.dumps(
+            manifest, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        recorder = _Recorder()
+        with patch("autobot.autoswarm_transport.subprocess.run", recorder):
+            native = self.transport.launch_manifest(
+                manifest_address, manifest, manifest_bytes=manifest_bytes)
+        run = recorder.cli()[0]
+        cwd = run[run.index("--cwd") + 1]
+        prompt = recorder.inputs[-1]
+        marker, body = prompt.split("\n", 1)
+        payload, original_prompt = body.split(
+            "\nEND_AUTOSWARM_HANDOFF_CONTEXT_V1\n\n", 1)
+        context = json.loads(payload)
+        self.assertEqual(marker, "AUTOSWARM_HANDOFF_CONTEXT_V1")
+        self.assertEqual(context["schema"], "autobot.codex_handoff.v1")
+        self.assertEqual(context["correlation"]["autoswarm_call_id"],
+                         self.call_id)
+        self.assertEqual(context["provider"], "codex")
+        self.assertEqual(context["role"], "engineer")
+        self.assertEqual(context["parent_workspace"],
+                         str(self.workspace.resolve()))
+        self.assertEqual(context["execution_worktree"], cwd)
+        self.assertEqual(context["canonical"]["kind"], "ExecutionManifest")
+        self.assertEqual(context["canonical"]["address"], manifest_address)
+        self.assertEqual(context["canonical"]["canonical_json"],
+                         manifest_bytes.decode("utf-8"))
+        self.assertEqual(original_prompt, "Read and report.")
+        self.assertEqual(native, "sess-test")
+
+    def test_missing_native_session_id_never_falls_back_to_call_id(self):
+        manifest = self._route_manifest()
+        recorder = _Recorder(native_session_id=None)
+        with patch("autobot.autoswarm_transport.subprocess.run", recorder):
+            with self.assertRaisesRegex(RuntimeError,
+                                        "native session/thread id"):
+                self.transport.launch_manifest(
+                    "sha256:" + "d" * 64, manifest)
 
     def test_a_route_with_no_effort_or_arguments_launches_as_before(self):
         recorder, cwd = self._launch(self._route_manifest(

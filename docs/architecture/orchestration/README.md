@@ -18,6 +18,7 @@ The layer above the authority plane.
 | [PRINCIPALS.md](PRINCIPALS.md) | how the frozen `planner` and `agent_factory` principals map onto the model |
 | [PRODUCTION_PROOF.md](PRODUCTION_PROOF.md) | the production runs that demonstrate it, with their identities |
 | [RUNBOOK.md](RUNBOOK.md) | operating the `engineer` command: flags, exit codes, timeouts, provider failures, resuming, preflight, execution routing, the sandbox edge. Written, reviewed, corrected and kept current by the organization's own specialists (Pilots 2, 4, 5 and 6) |
+| [ENGINEERING_LOG_20261124.md](ENGINEERING_LOG_20261124.md) | driver instrumentation, transport fixes, operational tooling, the `--trace` flag, the session monitor, the `--supersede-sequence` command, and the decisions behind them |
 
 ## Source
 
@@ -37,6 +38,8 @@ The layer above the authority plane.
 | `intelligence/query.py` | the query layer |
 | `intelligence/driver.py` | the loop, including the form that waits |
 | `intelligence/runtime.py`, `intelligence/cli.py` | production assembly and the `autobot-authority` command |
+| `intelligence/trace.py` | the driver step tracer: real-time pipeline visibility activated with `--trace` |
+| `intelligence/monitor.py` | the session monitor: standalone read-only supervisor with section scroll |
 | `intelligence/planstore.py` | `intelligence.db`, schema v3 |
 | `intelligence/chief.py` | the import path the Engineer had when it was called the Chief Engineer |
 

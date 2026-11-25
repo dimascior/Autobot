@@ -67,6 +67,9 @@ class AutoSwarmTransport(Transport):
     # Where the accepted results a call's work depends on are placed
     # inside its isolated worktree (never tracked: see _exclude_inputs).
     INPUTS_DIR = (".autobot", "inputs")
+    HANDOFF_CONTEXT_START = "AUTOSWARM_HANDOFF_CONTEXT_V1"
+    HANDOFF_CONTEXT_END = "END_AUTOSWARM_HANDOFF_CONTEXT_V1"
+    HANDOFF_CONTEXT_SCHEMA = "autobot.codex_handoff.v1"
 
     def __init__(self, store, autoswarm_home, workspace, *,
                  gate_root=None, session_export_dir=None,
@@ -87,6 +90,109 @@ class AutoSwarmTransport(Transport):
 
     def _call_dir(self, call_id):
         return self._home / "calls" / call_id
+
+    @staticmethod
+    def _is_codex(provider):
+        return str(provider).casefold() == "codex"
+
+    def _codex_handoff_prompt(self, prompt, *, call_id, provider, role,
+                              parent_workspace, execution_worktree,
+                              canonical_kind, canonical_address,
+                              canonical_bytes):
+        """Prepend context that codex-handoff can retain from this session.
+
+        The handoff extractor reads the initial user message from the native
+        rollout. This keeps the context session-owned without sidecars or
+        provider transcript edits.
+        """
+        context = {
+            "schema": self.HANDOFF_CONTEXT_SCHEMA,
+            "correlation": {"autoswarm_call_id": call_id},
+            "provider": provider,
+            "role": role,
+            "parent_workspace": parent_workspace,
+            "execution_worktree": execution_worktree,
+            "canonical": {
+                "kind": canonical_kind,
+                "address": canonical_address,
+                "canonical_json": canonical_bytes.decode("utf-8"),
+            },
+        }
+        payload = json.dumps(context, sort_keys=True, ensure_ascii=False,
+                             indent=2)
+        return ("%s\n%s\n%s\n\n%s" % (
+            self.HANDOFF_CONTEXT_START, payload,
+            self.HANDOFF_CONTEXT_END, prompt))
+
+    def _require_native_session_id(self, info, call_id,
+                                    launch_args=None):
+        session_id = (info.get("native_session_id")
+                      if isinstance(info, dict) else None)
+        if isinstance(session_id, str) and session_id.strip():
+            return session_id
+        session_id = self._wait_for_native_session_id(call_id)
+        if isinstance(session_id, str) and session_id.strip():
+            return session_id
+        diag = self._launch_diagnostic(call_id, info, launch_args)
+        raise RuntimeError(
+            "AutoSwarm call %s did not return a native session/thread id"
+            " (waited %ds for startup record)\n%s" % (
+                call_id, self.LAUNCH_WAIT_SECONDS, diag))
+
+    def _launch_diagnostic(self, call_id, info, launch_args):
+        import sys
+        lines = ["--- launch diagnostic ---"]
+        if launch_args:
+            safe = [a for a in launch_args if not a.startswith("--input")]
+            lines.append("command: autoswarm %s" % " ".join(safe))
+        lines.append("cli response: %s" % (
+            json.dumps(info, indent=2, default=str)
+            if info else "(None)"))
+        call_dir = self._call_dir(call_id)
+        lines.append("call_dir: %s (exists=%s)" % (
+            call_dir, call_dir.is_dir()))
+        if call_dir.is_dir():
+            for f in sorted(call_dir.iterdir()):
+                size = f.stat().st_size if f.is_file() else 0
+                lines.append("  %s (%d bytes)" % (f.name, size))
+                if f.suffix == ".json" and size < 4096:
+                    try:
+                        lines.append("    %s" % f.read_text(
+                            encoding="utf-8")[:500])
+                    except Exception:
+                        pass
+        else:
+            lines.append("  (directory does not exist)")
+        lines.append("--- end diagnostic ---")
+        msg = "\n".join(lines)
+        try:
+            sys.stderr.write(msg + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        return msg
+
+    LAUNCH_WAIT_SECONDS = 15
+    LAUNCH_POLL_INTERVAL = 1.0
+
+    def _wait_for_native_session_id(self, call_id):
+        """Bounded wait for the native session ID in the call directory.
+
+        AutoSwarm writes handle.json when the provider session starts;
+        the native_session_id appears there once the session transitions
+        from startup to execution. Also check task.json as a fallback."""
+        import time
+        call_dir = self._call_dir(call_id)
+        deadline = time.monotonic() + self.LAUNCH_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            for name in ("handle.json", "task.json"):
+                record = _read_json(call_dir / name)
+                if isinstance(record, dict):
+                    sid = record.get("native_session_id")
+                    if isinstance(sid, str) and sid.strip():
+                        return sid
+            time.sleep(self.LAUNCH_POLL_INTERVAL)
+        return None
 
     def _cli(self, args, *, stdin_text=None):
         env = dict(os.environ)
@@ -114,12 +220,32 @@ class AutoSwarmTransport(Transport):
             raise RuntimeError(
                 "autoswarm %s exited %d: %s"
                 % (args[0], result.returncode, result.stderr))
-        return json.loads(result.stdout).get("data")
+        try:
+            data = json.loads(result.stdout).get("data")
+        except (json.JSONDecodeError, ValueError):
+            data = None
+        if data is None:
+            import sys
+            sys.stderr.write(
+                "autoswarm %s: stdout not JSON or missing data key\n"
+                "  stdout[:500]: %s\n  stderr[:500]: %s\n"
+                % (args[0], result.stdout[:500], result.stderr[:500]))
+            sys.stderr.flush()
+        return data
 
     def launch(self, projection_address, provider, role, call_id):
         projection_bytes = self._store.get(projection_address)
         projection = json.loads(projection_bytes)
         prompt = projection["engineering_context"]["guidance"]
+        execution_worktree = str(self._workspace)
+        if self._is_codex(provider):
+            prompt = self._codex_handoff_prompt(
+                prompt, call_id=call_id, provider=provider, role=role,
+                parent_workspace=str(self._workspace.resolve()),
+                execution_worktree=execution_worktree,
+                canonical_kind="PromptProjection",
+                canonical_address=projection_address,
+                canonical_bytes=projection_bytes)
         info = self._cli([
             "run",
             "--agent", provider,
@@ -129,7 +255,7 @@ class AutoSwarmTransport(Transport):
             "--call-id", call_id,
             "--input", "-"],
             stdin_text=prompt)
-        return info.get("native_session_id") or info["call_id"]
+        return self._require_native_session_id(info, call_id)
 
     def launch_manifest(self, manifest_address, manifest, *,
                         manifest_bytes=None):
@@ -185,6 +311,7 @@ class AutoSwarmTransport(Transport):
                      "--detach", str(worktree_dir), source_rev],
                     capture_output=True, text=True, check=True)
                 workspace = str(worktree_dir)
+            execution_worktree = workspace
             # The accepted results this work depends on, staged by the
             # caller, go into the isolated worktree and nowhere else: a
             # shared workspace is never written.
@@ -198,6 +325,15 @@ class AutoSwarmTransport(Transport):
             # session is actually launched in.
             effort, session_args = self._session_config(
                 call_id, workspace, provider)
+            if self._is_codex(provider):
+                prompt = self._codex_handoff_prompt(
+                    prompt, call_id=call_id, provider=provider,
+                    role=manifest["role"],
+                    parent_workspace=str(self._workspace.resolve()),
+                    execution_worktree=execution_worktree,
+                    canonical_kind="ExecutionManifest",
+                    canonical_address=manifest_address,
+                    canonical_bytes=manifest_bytes)
             args = ["run", "--agent", provider]
             if model:
                 args += ["--model", model]
@@ -208,17 +344,19 @@ class AutoSwarmTransport(Transport):
             args += [
                 "--no-parent",
                 "--background",
-                "--cwd", workspace,
+                "--cwd", execution_worktree,
                 "--call-id", call_id,
                 "--manifest", str(manifest_file),
                 "--input", "-"]
             info = self._cli(args, stdin_text=prompt)
+            _launch_args = list(args)
         finally:
             try:
                 manifest_file.unlink()
             except OSError:
                 pass
-        return info.get("native_session_id") or info["call_id"]
+        return self._require_native_session_id(
+            info, call_id, launch_args=_launch_args)
 
     def stage_inputs(self, call_id, files):
         """Accept the ACCEPTED results one call's work depends on, to be
@@ -462,46 +600,10 @@ class AutoSwarmTransport(Transport):
             return False
         if not wt.is_dir():
             return False
-        self._consolidate_session(call_id, wt)
         proc = subprocess.run(
             ["git", "-C", str(self._workspace), "worktree", "remove",
              "--force", str(wt)], capture_output=True, text=True)
         return proc.returncode == 0
-
-    def _consolidate_session(self, call_id, worktree_path):
-        """Copy the specialist's Claude Code session JSONL from the
-        worktree project directory to the parent project directory,
-        rewriting cwd fields so the devtools groups all sessions
-        under one project instead of splitting by worktree path."""
-        result = _read_json(self._call_dir(call_id) / "result.json")
-        if not result:
-            return
-        home = Path(os.path.expanduser("~"))
-        projects = home / ".claude" / "projects"
-        if not projects.is_dir():
-            return
-        def _encode(p):
-            s = str(p).replace("/", "-").replace("\\", "-")
-            return s if s.startswith("-") else s[0] + "-" + s[1:]
-        wt_dir = projects / _encode(worktree_path)
-        parent_dir = projects / _encode(self._workspace)
-        if not wt_dir.is_dir() or not parent_dir.is_dir():
-            return
-        parent_cwd = str(self._workspace)
-        wt_cwd = str(worktree_path)
-        for f in wt_dir.glob("*.jsonl"):
-            dest = parent_dir / f.name
-            if not dest.exists():
-                try:
-                    with open(str(f), "r", encoding="utf-8") as fh:
-                        lines = fh.readlines()
-                    with open(str(dest), "w", encoding="utf-8") as fh:
-                        for line in lines:
-                            fh.write(line.replace(
-                                json.dumps(wt_cwd)[1:-1],
-                                json.dumps(parent_cwd)[1:-1]))
-                except OSError:
-                    pass
 
     def pending_requests(self, call_id):
         """The session's undecided native permission requests, read from

@@ -2,7 +2,9 @@
 
 ## 1. Purpose and scope
 
-This runbook is for the operator who runs the `engineer` command. It also covers the three reporting commands that go with it: `objectives`, `status` and `taskforce`.
+This runbook is for the operator who runs the `engineer` command. It also covers the three reporting commands that go with it: `objectives`, `status` and `taskforce`. It also covers the monitoring tools (`--trace`, the session monitor, and the dashboard).
+
+For the problems that led to the current operational shape, the decisions made, and the full change log, see [ENGINEERING_LOG_20261124.md](ENGINEERING_LOG_20261124.md).
 
 Everything here was checked against the source:
 

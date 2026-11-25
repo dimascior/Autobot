@@ -593,7 +593,7 @@ class AuthorityRuntime:
     # -------------------------------------------------------------- driver
 
     def _ensure_driver(self, policy, coordinator_policy=None,
-                       orchestrator_policy=None):
+                       orchestrator_policy=None, tracer=None):
         if self._driver is not None:
             return self._driver
         self._driver = ContinuousDriver(
@@ -609,7 +609,8 @@ class AuthorityRuntime:
             established_threshold=self.established_threshold,
             gate_root=getattr(self.transport, "_gate_root", None),
             coordinator_policy=coordinator_policy,
-            orchestrator_policy=orchestrator_policy)
+            orchestrator_policy=orchestrator_policy,
+            tracer=tracer)
         return self._driver
 
     # -------------------------------------------------------------- public
@@ -683,12 +684,13 @@ class AuthorityRuntime:
         return driver.run_until_stable(**kwargs)
 
     def run(self, policy, coordinator_policy=None,
-            orchestrator_policy=None, **kwargs):
+            orchestrator_policy=None, tracer=None, **kwargs):
         """Run the loop to a stable quiet state, waiting for specialists
         that are still executing (``ContinuousDriver.run``)."""
         driver = self._ensure_driver(
             policy, coordinator_policy=coordinator_policy,
-            orchestrator_policy=orchestrator_policy)
+            orchestrator_policy=orchestrator_policy,
+            tracer=tracer)
         return driver.run(**kwargs)
 
     def production_coordinator_policy(self):
