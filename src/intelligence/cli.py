@@ -207,17 +207,27 @@ def cmd_reset(args):
 
     # --- Phase 1: delete databases and store ---
     deleted = []
+    failed = []
     for db_path in (intelligence_db, authority_db, coordinator_db):
         for suffix in ("", "-wal", "-shm"):
             p = Path(str(db_path) + suffix)
             if p.is_file():
-                p.unlink()
-                deleted.append(p.name)
+                try:
+                    p.unlink()
+                    deleted.append(p.name)
+                except PermissionError:
+                    failed.append(p.name)
     if store_root.is_dir():
         shutil.rmtree(str(store_root))
         deleted.append("store/")
-    print("  deleted: %s" % ", ".join(deleted) if deleted
-          else "  nothing to delete")
+    if deleted:
+        print("  deleted: %s" % ", ".join(deleted))
+    if failed:
+        print("  LOCKED (close the dashboard or driver first): %s"
+              % ", ".join(failed), file=sys.stderr)
+        return 1
+    if not deleted and not failed:
+        print("  nothing to delete")
 
     # --- Phase 2: re-seed ---
     print("\nphase 2: rebuild")

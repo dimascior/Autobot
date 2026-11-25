@@ -62,8 +62,7 @@ planner = "claude-opus-4-6[1m]"
 [routing]
 default = "luna-6-max"
 escalation = "opus-4-6-1m"
-fallback = []
-utility = ""
+# fallback and utility routes removed: only luna-6-max and opus-4-6-1m authorized
 # Capabilities (or "capability:role") whose work always runs escalated.
 escalate = []
 
