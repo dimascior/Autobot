@@ -62,8 +62,8 @@ planner = "claude-opus-4-6[1m]"
 [routing]
 default = "luna-6-max"
 escalation = "opus-4-6-1m"
-fallback = ["sonnet"]
-utility = "haiku"
+fallback = []
+utility = ""
 # Capabilities (or "capability:role") whose work always runs escalated.
 escalate = []
 
@@ -108,15 +108,8 @@ provider_args = [
 [routing.routes.opus-4-6-1m]
 agent = "claude-code"
 model = "claude-opus-4-6[1m]"
+effort = "high"
 provider_args = ["--dangerously-skip-permissions"]
-
-[routing.routes.sonnet]
-agent = "claude-code"
-model = "sonnet"
-
-[routing.routes.haiku]
-agent = "claude-code"
-model = "haiku"
 
 # Dispatch routes: each maps to a subscription CLI via `autoswarm run --agent`.
 # No API keys anywhere -- codex uses the codex CLI, claude uses the claude CLI.
