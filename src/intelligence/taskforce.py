@@ -821,6 +821,18 @@ class Taskforce:
                                            call_id, now)
             self._stage_session(call_id, view)
             self._launched.add(call_id)
+            _tf = getattr(self, "_trace_ref", None)
+            if _tf:
+                _tf.sub("LAUNCH %s" % call_id[:20], {
+                    "provider": view.get("provider"),
+                    "model": view.get("model"),
+                    "effort": view.get("effort"),
+                    "handle": view.get("handle"),
+                    "capability": view.get("capability"),
+                    "role": view.get("role"),
+                    "provider_args": str(view.get("provider_args", []))[:60],
+                    "route": view.get("route_name"),
+                })
             launch_with_manifest(
                 self.sequencer, self.transport, attempt_id, launch,
                 view["capability"])
@@ -1341,20 +1353,83 @@ class Taskforce:
 
     # --------------------------------------------------------- the sweep
 
-    def advance(self, now):
+    def advance(self, now, tracer=None):
         """One breadth-first Taskforce sweep over authority state."""
+        t = tracer
+        self._trace_ref = t
         self.roster.sync_pool(now)
+
+        if t:
+            t.sub("reconcile_dispatched (adopt sessions)")
         adopted = reconcile_dispatched(self.sequencer, self.transport)
+        if t and adopted:
+            for a in adopted:
+                t.result("adopted %s" % a.get("call_id", "?")[:20])
+
         resumed = self.resume_interrupted(now)
+
+        if t:
+            t.sub("allocate_ready (find READY sequences)")
         allocated = self.allocate_ready(now)
-        # Newly allocated seats are DISPATCHED: adopt their sessions now
-        # (same registered path a restart would take).
+        if t and allocated:
+            for a in allocated:
+                handle = a.get("specialist_handle",
+                               a.get("specialist_id", "?")[:16])
+                path = a.get("selection_path", "?")
+                seq = a.get("sequence_id", "?")[:16]
+                t.result("staffed %s (%s) -> %s" % (handle, path, seq))
+        elif t:
+            t.sub("  no READY sequences")
+
         adopted += reconcile_dispatched(self.sequencer, self.transport)
+
+        if t:
+            t.sub("supervise_running (check health)")
         supervised = self.supervise_running(now)
+
+        if t:
+            t.sub("collect_running (read results)")
         collected = self.collect_running(now)
+        if t:
+            for c in collected:
+                seq = c.get("sequence_id", "?")
+                seq = seq[:16] if isinstance(seq, str) else "?"
+                t.result("collected %s: outcome=%s state=%s" % (
+                    seq, c.get("outcome", "?"), c.get("state", "?")))
+
+        if t:
+            t.sub("verify_evidence_complete")
         verified = self.verify_evidence_complete()
+        if t:
+            for v in verified:
+                aid = v.get("attempt_id", "?")
+                aid = aid[:16] if isinstance(aid, str) else "?"
+                t.result("verified %s -> %s" % (
+                    aid, v.get("result", "?")))
+
+        if t:
+            t.sub("advance_authority_arcs")
         arcs = self.advance_authority_arcs(now)
+        if t:
+            for key in ("accepted", "released", "completed"):
+                items = arcs.get(key, [])
+                for item in (items if isinstance(items, list) else []):
+                    if isinstance(item, dict):
+                        sid = item.get("sequence_id", "?")[:16]
+                    else:
+                        sid = str(item)[:16]
+                    t.result("arc %s: %s" % (key, sid))
+
+        if t:
+            t.sub("settle_assignments (demos + completion)")
         settled = self.settle_assignments(now)
+        if t:
+            for s in settled:
+                qual = s.get("qualification", "?")
+                t.result("settled %s -> %s (%s)" % (
+                    s.get("assignment_id", "?")[:16],
+                    s.get("outcome", "?"), qual))
+
         return {"allocated": allocated + resumed,
                 "adopted": [a for a in adopted if a["action"] == "adopted"],
                 "supervised": supervised,

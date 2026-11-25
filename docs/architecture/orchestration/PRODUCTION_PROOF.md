@@ -18,6 +18,13 @@ pilots on 2026-11-18 and 2026-11-19. (The READ_ONLY authority proof of
 earlier result look better. Where a run exposed a defect, the run stays
 as it happened and the correction is a later record.
 
+The 2026-11-24 session advanced the live orchestration pilot
+(`obj-live-orch-tf-v2`) through Opus → Engineer → Taskforce joined
+execution, completing all 7 orchestration nodes and 6 project
+workstreams. The transport fixes and operational tooling built during
+that session are recorded in
+[ENGINEERING_LOG_20261124.md](ENGINEERING_LOG_20261124.md).
+
 | What is claimed | Proven by | Sections |
 |---|---|---|
 | The authority plane decides what becomes accepted state, for READ_ONLY and SOURCE_MODIFYING work | 29 sequences COMPLETED, 87 verification rows, 9 compare-and-swap receipts | 1, 22 |

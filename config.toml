@@ -90,7 +90,7 @@ model = "gpt-6-luna"
 effort = "max"
 provider_args = [
     "--sandbox", "workspace-write",
-    "--ask-for-approval", "on-request",
+    "--ask-for-approval", "never",
     "-c", "sandbox_workspace_write.writable_roots=['{gate_pending}', '{gate_pending_real}']",
     "-c", "features.apps=false",
     "-c", "features.plugins=false",
@@ -108,6 +108,7 @@ provider_args = [
 [routing.routes.opus-4-6-1m]
 agent = "claude-code"
 model = "claude-opus-4-6[1m]"
+provider_args = ["--dangerously-skip-permissions"]
 
 [routing.routes.sonnet]
 agent = "claude-code"

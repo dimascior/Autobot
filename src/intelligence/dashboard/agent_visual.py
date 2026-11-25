@@ -290,6 +290,13 @@ def _header_parts(snapshot, now, wide=True):
     if lv.journal_seq is not None:
         parts.append(P(S("   journal #%d · %s" % (
             lv.journal_seq, _ago(lv.journal_utc, now)), C["dim"])))
+    # last accepted work: newest objective completion
+    completed = [o for o in snapshot.objectives
+                 if o.completed_utc and o.status in _COMPLETE]
+    if completed:
+        newest = max(completed, key=lambda o: o.completed_utc)
+        parts.append(P(S("   last accepted work %s"
+                         % _ago(newest.completed_utc, now), C["dim"])))
     return parts, _attention_parts(snapshot)
 
 
@@ -340,16 +347,84 @@ def _active_objectives(snapshot):
 def _coord_lines(snapshot, now):
     active = _active_objectives(snapshot)
     done = len(snapshot.objectives) - len(active)
+    decisions = snapshot.coordinator_decisions
     modes = {}
-    for cd in snapshot.coordinator_decisions:
+    policies = {}
+    routes = {}
+    for cd in decisions:
         modes[cd.elevation_mode] = modes.get(cd.elevation_mode, 0) + 1
-    lines = [L(P(S("%d active" % len(active), C["bright"], True),
+        if cd.policy_id:
+            policies[cd.policy_id] = policies.get(cd.policy_id, 0) + 1
+        if cd.route:
+            routes[cd.route] = routes.get(cd.route, 0) + 1
+    lines = [L(P(S("%d decisions" % len(decisions), C["bright"], True),
+                 S(" · %d active" % len(active), C["accent"]),
                  S(" · %d complete" % done, C["dim"])),
                *_sep_parts(
             [[S("%s %d" % (MODE_SHORT.get(m, m[:3]), n),
                 MODE_COLOR.get(m, C["dim"]), True)]
              for m, n in sorted(modes.items())], first="  ", sep="  "))]
-    stamped = [cd for cd in snapshot.coordinator_decisions if cd.created_utc]
+    if policies:
+        lines.append(L(P(S("policy ", C["dim"])),
+                       *_sep_parts(
+            [[S("%s ×%d" % (k, n), C["dim"])]
+             for k, n in sorted(policies.items())], first="", sep=" · ")))
+    if routes:
+        lines.append(L(P(S("routes ", C["dim"])),
+                       *_sep_parts(
+            [[S("%s ×%d" % (k, n), C["luna"])]
+             for k, n in sorted(routes.items())], first="", sep=" · ")))
+    decision = {cd.objective_id: cd for cd in decisions}
+    working = [o for o in active if o.work_state == "working"]
+    stale_obj = [o for o in active
+                 if o.work_state in ("work finished", None)
+                 or o.work_state == ""]
+    if len(active) != len(working):
+        lines[0] = L(P(S("%d decisions" % len(decisions), C["bright"], True),
+                       S(" · %d active" % len(active), C["accent"]),
+                       S(" (%d working, %d stale)" % (
+                           len(working), len(stale_obj)), C["dim"])
+                       if stale_obj else None,
+                       S(" · %d complete" % done, C["dim"])),
+                     *_sep_parts(
+            [[S("%s %d" % (MODE_SHORT.get(m, m[:3]), n),
+                MODE_COLOR.get(m, C["dim"]), True)]
+             for m, n in sorted(modes.items())], first="  ", sep="  "))
+    for o in active:
+        cd = decision.get(o.objective_id)
+        mode = cd.elevation_mode if cd else "?"
+        feature_parts = []
+        if cd and cd.features:
+            for fk, fv in sorted(cd.features.items()):
+                if fv:
+                    feature_parts.append(fk)
+        feature_str = (" [%s]" % ", ".join(feature_parts)
+                       if feature_parts else "")
+        route_str = ""
+        if cd and cd.route:
+            route_str = " → %s" % cd.route
+        work_label = ""
+        if o.work_state:
+            wcolor = (C["accent"] if o.work_state == "working"
+                      else C["halted"] if o.work_state == "HALTED"
+                      else C["warn"] if o.work_state in (
+                          "blocked", "queued")
+                      else C["dim"])
+            work_label_text = o.work_state
+            if o.work_note:
+                work_label_text = "%s: %s" % (o.work_state, o.work_note)
+        else:
+            wcolor = C["dim"]
+            work_label_text = "no work recorded"
+        lines.append(L(
+            P(S("● ", C["active"]), S(o.objective_id, C["bright"]),
+              S("  %s" % MODE_SHORT.get(mode, mode[:3]),
+                MODE_COLOR.get(mode, C["dim"]), True),
+              S(route_str, C["luna"]),
+              S(feature_str, C["dim"]),
+              S("  %s" % _dur(_seconds(o.created_utc, now)), C["dim"])),
+            P(S("  %s" % work_label_text, wcolor))))
+    stamped = [cd for cd in decisions if cd.created_utc]
     if stamped:
         last = max(stamped, key=lambda cd: cd.created_utc)
         lines.append(L(
@@ -359,15 +434,6 @@ def _coord_lines(snapshot, now):
                                        last.elevation_mode),
                 MODE_COLOR.get(last.elevation_mode, C["dim"]), True),
               S(" %s" % _ago(last.created_utc, now), C["dim"]))))
-    decision = {cd.objective_id: cd for cd in snapshot.coordinator_decisions}
-    for o in active:
-        cd = decision.get(o.objective_id)
-        mode = cd.elevation_mode if cd else "?"
-        lines.append(L(
-            P(S("● ", C["active"]), S(o.objective_id, C["bright"]),
-              S("  %s" % MODE_SHORT.get(mode, mode[:3]),
-                MODE_COLOR.get(mode, C["dim"]), True),
-              S("  %s" % _dur(_seconds(o.created_utc, now)), C["dim"]))))
     return lines
 
 
@@ -380,31 +446,35 @@ def _effective_groups(runs):
     counts, mark = {}, {}
     for r in runs:
         k = r.effective_state or "unknown"
+        if k == "waiting" and r.effective_note:
+            k = "waiting (%s)" % r.effective_note.split(":")[0].strip()
         counts[k] = counts.get(k, 0) + 1
         mark[k] = _effective_of(r)
-    return [[S("%d %s" % (counts[k], k), mark[k][1])]
-            for k in sorted(counts, key=lambda k: mark[k][2])]
+    return [[S("%d %s" % (counts[k], k), mark.get(k, mark.get(
+                k.split(" (")[0], EFFECTIVE["unknown"]))[1])]
+            for k in sorted(counts, key=lambda k: mark.get(k, mark.get(
+                k.split(" (")[0], EFFECTIVE["unknown"]))[2])]
 
 
 def _orch_lines(snapshot, now, narrow=False):
     runs = list(snapshot.runs)
     if not runs:
         return [L(P(S("no orchestration runs", C["dim"])))]
-    recorded = {}
-    for r in runs:
-        recorded[r.status] = recorded.get(r.status, 0) + 1
-    # the recorded status, then what the runs are (the footer says why
-    # the two differ)
-    status = (" " + next(iter(recorded)) if len(recorded) == 1 else
-              ": " + " ".join("%d %s" % (n, s)
-                              for s, n in sorted(recorded.items())))
-    lines = [L(P(S("%d runs" % len(runs), C["bright"], True),
-                 S(status, C["dim"])),
+    active_obj = {o.objective_id for o in snapshot.objectives
+                  if o.status not in _COMPLETE}
+    operational = [r for r in runs if r.objective_id in active_obj]
+    stale_runs = [r for r in runs
+                  if r.status == "ACTIVE"
+                  and r.objective_id not in active_obj]
+    total_nodes = sum(len(r.nodes) for r in runs)
+    lines = [L(P(S("runs: %d total" % len(runs), C["bright"], True),
+                 S(" · %d operational" % len(operational), C["accent"]),
+                 S(" · %d stale" % len(stale_runs), C["warn"])
+                 if stale_runs else None,
+                 S(" · %d nodes" % total_nodes, C["dim"])),
                *_sep_parts(_effective_groups(runs), first=" → "))]
     o = snapshot.orchestrator
     if o is not None and o.cycles:
-        # who plans the ORC runs: the Orchestrator policy, on the
-        # Engineer's model, and how often it has reasoned
         lines.append(L(
             P(S("plans on ", C["dim"]), S(o.model or "?", C["luna"])),
             P(S(" · %s" % o.policy_id, C["dim"])),
@@ -413,9 +483,23 @@ def _orch_lines(snapshot, now, narrow=False):
             P(S(" · last %s (%s)" % (_when(o.last_utc, now),
                                      _ago(o.last_utc, now)), C["dim"]))
             if o.last_utc else None))
-        if o.not_applied and narrow:
-            # decisions the applicator skipped or rejected: their number
-            # here, by class in a wide box and the compact view
+        bd = o.decision_breakdown
+        if bd:
+            parts = []
+            for status in ("APPLIED", "CONVERGED", "SUPERSEDED",
+                           "SKIPPED", "REJECTED", "FAILED", "INVALID"):
+                n = bd.get(status, 0)
+                if n:
+                    color = (C["success"] if status == "APPLIED"
+                             else C["dim"] if status in (
+                                 "CONVERGED", "SUPERSEDED")
+                             else C["warn"])
+                    parts.append([S("%s %d" % (status.lower(), n), color)])
+            if parts:
+                lines.append(L(
+                    P(S("decisions %d " % o.decisions, C["dim"])),
+                    *_sep_parts(parts, first="", sep=" · ")))
+        elif o.not_applied and narrow:
             lines.append(L(P(S("not applied: %d of %d decisions" % (
                 sum(o.not_applied.values()), o.decisions), C["warn"]))))
         elif o.not_applied:
@@ -426,7 +510,7 @@ def _orch_lines(snapshot, now, narrow=False):
     runs.sort(key=lambda r: _effective_of(r)[2])
     done = [r for r in runs if r.effective_state == "done"]
     shown = [r for r in runs if r.effective_state != "done"]
-    ow = min(24 if narrow else 30,
+    ow = min(24 if narrow else 60,
              max(len(r.objective_id) for r in (shown or runs)))
     stale = any(r.status == "ACTIVE" and r.effective_state in ("done",
                                                                "stuck")
@@ -439,13 +523,10 @@ def _orch_lines(snapshot, now, narrow=False):
             note = r.effective_note or "in progress"
         elif r.effective_state == "stuck":
             note = "HALTED %s" % _when(since, now) if since else "HALTED"
-        elif r.effective_state == "done":  # when the objective completed
+        elif r.effective_state == "done":
             note = _when(since, now) if since else ""
         else:
             note = r.effective_note or ""
-        # one run per objective: the objective names the run here, the
-        # run id stays in the compact view and --json. In a narrow box a
-        # halt needs no state word: the mark and HALTED say it.
         head = [P(S(sym + " ", color),
                   S("%s " % MODE_SHORT.get(r.mode, r.mode[:3]),
                     MODE_COLOR.get(r.mode, C["dim"]), True),
@@ -456,9 +537,76 @@ def _orch_lines(snapshot, now, narrow=False):
             head.append(P(S("  %s" % state, color)))
             if note:
                 head.append(P(S(" · " + note, C["dim"])))
-        if not r.nodes:
+        # node summary for this run
+        if r.nodes:
+            ns = {}
+            for n in r.nodes:
+                ns[n.status] = ns.get(n.status, 0) + 1
+            node_str = " ".join("%d%s" % (v, k[0])
+                                for k, v in sorted(ns.items()))
+            head.append(P(S(" [%s]" % node_str, C["dim"])))
+        else:
             head.append(P(S(" · 0 nodes", C["dim"])))
         lines.append(L(*head))
+        # expand nodes for non-done runs (up to 8)
+        nkw = 24 if narrow else 50
+        if r.nodes and r.effective_state != "done":
+            for n in r.nodes[:8]:
+                nsym, ncolor = _state_mark(n.status)
+                binding = ""
+                if n.sequence_id:
+                    binding = " seq=%s [%s]" % (
+                        n.sequence_id, n.binding_status or "?")
+                kind_str = ""
+                if n.realization_kind:
+                    kind_str = " %s" % n.realization_kind
+                cap_str = ""
+                if n.capability:
+                    cap_str = " %s" % n.capability
+                wp_str = ""
+                if n.work_profile:
+                    wp_str = "/%s" % n.work_profile
+                specialist = ""
+                if n.specialist_handle:
+                    specialist = " · %s" % n.specialist_handle
+                output = ""
+                if n.output_kind:
+                    output = " → %s" % n.output_kind
+                lines.append(L(
+                    P(S("  %s " % nsym, ncolor),
+                      S(_short(n.node_key, nkw), C["bright"] if
+                        n.status not in ("COMPLETED", "CANCELLED",
+                                         "SUPERSEDED") else C["dim"])),
+                    P(S(kind_str, C["dim"]),
+                      S(cap_str + wp_str, C["dim"]),
+                      S(specialist, C["accent"]),
+                      S(output, C["success"] if n.output_kind else C["dim"]),
+                      S(binding, C["accent"] if n.binding_status == "ACTIVE"
+                        else C["dim"]))))
+            if len(r.nodes) > 8:
+                lines.append(L(P(S("  + %d more nodes" % (
+                    len(r.nodes) - 8), C["dim"])))
+                )
+        # edges for non-done runs
+        if r.edges and r.effective_state != "done" and not narrow:
+            ekw = 16 if narrow else 40
+            node_keys = {n.node_id: n.node_key for n in r.nodes}
+            for e in r.edges[:6]:
+                src = node_keys.get(e.source_node_id,
+                                    e.source_node_id[:12])
+                tgt = node_keys.get(e.target_node_id,
+                                    e.target_node_id[:12])
+                lines.append(L(
+                    P(S("  ╰ ", C["flow_dim"]),
+                      S("%s → %s" % (
+                          _short(src, ekw), _short(tgt, ekw)), C["dim"]),
+                      S(" %s" % e.dependency_kind, C["dim"]),
+                      S(" [%s]" % e.status,
+                        C["success"] if e.status == "RELEASED"
+                        else C["dim"]))))
+            if len(r.edges) > 4:
+                lines.append(L(P(S("  + %d more edges" % (
+                    len(r.edges) - 4), C["dim"]))))
     if done:
         newest = max(done, key=lambda r: r.effective_since_utc or "")
         lines.append(L(P(S("✦ ", C["success"]),
@@ -475,6 +623,7 @@ def _orch_lines(snapshot, now, narrow=False):
 
 def _eng_lines(snapshot, now, narrow=False):
     e = snapshot.engineer
+    t = snapshot.trust
     lines = []
     planner = snapshot.routing.planner_model
     if e.cycles:
@@ -488,6 +637,10 @@ def _eng_lines(snapshot, now, narrow=False):
                                       "" if c.proposals == 1 else "s"))))
         if planner and planner != "?":
             line.append(P(S(" · %s" % planner, C["luna"])))
+        if e.decisions_stored:
+            line.append(P(S(" · %d/%d reasoning stored"
+                            % (e.decisions_stored, e.decisions_total),
+                            C["dim"])))
         lines.append(line)
     else:
         lines.append(L(P(S("no cycles recorded", C["dim"]))))
@@ -503,6 +656,7 @@ def _eng_lines(snapshot, now, narrow=False):
                 P(S(" %s" % _ago(d.adopted_utc or d.created_utc, now),
                     C["dim"]))))
 
+    # Proposal breakdown
     if e.recent_proposals:
         by_class = {}
         for p in e.recent_proposals:
@@ -513,6 +667,20 @@ def _eng_lines(snapshot, now, narrow=False):
             [[S("%s ×%d" % (k, n), C["accent"])]
              for k, n in sorted(by_class.items())], first="", sep=" · ")))
 
+    # Findings summary
+    findings = t.findings_by_significance
+    if findings:
+        total_f = sum(findings.values())
+        f_parts = []
+        for sig in ("high", "medium", "low"):
+            if sig in findings:
+                color = (C["error"] if sig == "high" else
+                         C["warn"] if sig == "medium" else C["dim"])
+                f_parts.append([S("%d %s" % (findings[sig], sig), color)])
+        lines.append(L(P(S("findings %d " % total_f, C["dim"])),
+                       *_sep_parts(f_parts, first="", sep=" · ")))
+
+    # Projects
     projects = [p for p in snapshot.projects if p.status == "ACTIVE"]
     with_work = [p for p in projects if p.items]
     closed = len(snapshot.projects) - len(projects)
@@ -522,15 +690,58 @@ def _eng_lines(snapshot, now, narrow=False):
                     reverse=True):
         done = sum(1 for it in p.items if it.state == "COMPLETED")
         total = len(p.items)
+        halted = [it for it in p.items
+                  if it.state and it.state.startswith("HALTED")]
+        superseded = [it for it in p.items if it.state == "SUPERSEDED"]
+        status_parts = "%d/%d" % (done, total)
+        if halted:
+            status_parts += " %d HALTED" % len(halted)
+        if superseded:
+            status_parts += " %d SUPERSEDED" % len(superseded)
         lines.append(L(
             P(S("  %s " % p.project_id[:7], C["dim"]),
               S(_short(p.title or "(untitled)", 40 if narrow else 50)),
-              S("  %d/%d" % (done, total),
-                C["success"] if total and done == total else C["dim"]))))
+              S("  %s" % status_parts,
+                C["success"] if total and done == total
+                else C["halted"] if halted else C["dim"]))))
+        # closure blocker: show why project can't complete
+        if not narrow and (halted or superseded) and done < total:
+            for it in superseded:
+                replacement = None
+                for other in p.items:
+                    if (other.state == "COMPLETED"
+                            and other.workstream_key.startswith(
+                                it.workstream_key.rsplit("-", 1)[0]
+                                if "-" in it.workstream_key
+                                else it.workstream_key)
+                            and other.workstream_key != it.workstream_key):
+                        replacement = other
+                        break
+                if replacement:
+                    lines.append(L(
+                        P(S("    ⚑ ", C["warn"]),
+                          S(it.workstream_key, C["halted"]),
+                          S(" SUPERSEDED → ", C["dim"]),
+                          S(replacement.workstream_key, C["success"]),
+                          S(" COMPLETED", C["success"]))))
+                else:
+                    lines.append(L(
+                        P(S("    ⚑ ", C["warn"]),
+                          S(it.workstream_key, C["halted"]),
+                          S(" SUPERSEDED, authority resolution needed",
+                            C["warn"]))))
+            for it in halted:
+                cause = it.halt_cause or it.halt_reason or ""
+                lines.append(L(
+                    P(S("    ⚑ ", C["warn"]),
+                      S(it.workstream_key, C["halted"]),
+                      S(" HALTED", C["halted"]),
+                      S(" · %s" % cause, C["dim"]) if cause else None)))
     empty = len(projects) - len(with_work)
     if empty:
         lines.append(L(P(S("  + %d empty" % empty, C["dim"]))))
 
+    # Blocked / waiting
     if e.waiting or e.staffing_open:
         parts = []
         if e.waiting:
@@ -545,6 +756,15 @@ def _eng_lines(snapshot, now, narrow=False):
                             C["accent"])])
         lines.append(L(P(S("blocked ", C["warn"])),
                        *_sep_parts(parts, first="", sep=" · ")))
+        # Expand waiting proposals with rationale
+        if e.waiting and not narrow:
+            for p in e.waiting[:4]:
+                lines.append(L(
+                    P(S("  ⚑ ", C["warn"]),
+                      S(p.proposal_class, C["warn"]),
+                      S(" obj=%s" % (p.objective_id or "?"), C["dim"])),
+                    P(S(" %s" % _short(p.rationale or "", 60),
+                        C["dim"]))))
     return lines
 
 
@@ -553,8 +773,8 @@ def _qn(q, n):
     if q:
         parts.append("%dQ" % q)
     if n:
-        parts.append("%dN" % n)
-    return " ".join(parts)
+        parts.append("%dNQ" % n)
+    return " / ".join(parts)
 
 
 def _working_now(snapshot):
@@ -671,12 +891,75 @@ def _auth_lines(snapshot, now):
     seqs = a.sequences_by_state
     total = sum(seqs.values())
     finished = sum(n for s, n in seqs.items() if s in SEQUENCE_TERMINAL)
-    filled = int(20 * finished / total) if total else 0
-    lines = [L(P(S("sequences ", C["dim"]), S("█" * filled, C["bar_fill"]),
-                 S("░" * (20 - filled), C["bar_empty"]),
-                 S(" %d/%d finished" % (finished, total), C["bright"])),
+    lines = []
+
+    # provenance first — the trust chains operators need most
+    prov = [p for p in snapshot.sequence_provenance
+            if p.state not in ("COMPLETED", "SUPERSEDED", "ABANDONED",
+                               "DELEGATION_REVOKED", "PUBLISHED_UNVERIFIED")]
+    if not prov:
+        prov = snapshot.sequence_provenance[-5:]
+    else:
+        prov = prov[:8]
+    if prov:
+        lines.append(L(P(S("provenance:", C["dim"]))))
+        for pi, p in enumerate(prov):
+            name = p.workstream_key or p.sequence_id[:20]
+            is_last = pi == len(prov) - 1
+            branch = "└─ " if is_last else "├─ "
+            sym, color = _state_mark(p.state)
+            lines.append(L(P(
+                S("  %s" % branch, C["frame"]),
+                S("%s " % sym, color),
+                S(name, C["bright"]),
+                S("  %s" % p.state, color))))
+            indent = "     " if is_last else "  │  "
+            proposed = "cycle %d" % p.cycle_id if p.cycle_id else "?"
+            lines.append(L(P(
+                S("%s├─ " % indent, C["frame"]),
+                S("proposed by ", C["dim"]),
+                S(proposed, C["accent"]),
+                S("  %s" % p.proposal_class if p.proposal_class else "",
+                  C["dim"]))))
+            assigned = p.specialist_handle or "unassigned"
+            path = p.selection_path or ""
+            lines.append(L(P(
+                S("%s├─ " % indent, C["frame"]),
+                S("assigned  ", C["dim"]),
+                S(assigned, C["accent"]),
+                S("  %s" % path if path else "", C["dim"]),
+                S("  decided by %s" % p.decided_by if p.decided_by
+                  else "", C["dim"]))))
+            if p.provider:
+                lines.append(L(P(
+                    S("%s├─ " % indent, C["frame"]),
+                    S("route     ", C["dim"]),
+                    S("%s/%s" % (p.provider, p.model or "?"), C["luna"]),
+                    S("  %s/%s" % (p.capability or "?", p.role or "?"),
+                      C["dim"]))))
+            if p.projection_address:
+                lines.append(L(P(
+                    S("%s├─ " % indent, C["frame"]),
+                    S("prompt    ", C["dim"]),
+                    S(p.projection_address, C["dim"]))))
+            if p.assignment_outcome:
+                lines.append(L(P(
+                    S("%s└─ " % indent, C["frame"]),
+                    S("outcome   ", C["dim"]),
+                    S(p.assignment_outcome,
+                      C["success"] if "ACCEPT" in (
+                          p.assignment_outcome or "") else C["halted"]))))
+            else:
+                lines.append(L(P(
+                    S("%s└─ " % indent, C["frame"]),
+                    S("outcome   ", C["dim"]),
+                    S("pending", C["warn"]))))
+
+    # machine state
+    lines.append(L(P(S("sequences %d/%d finished" % (finished, total),
+                    C["bright"])),
                *_sep_parts(_census_groups(seqs, SEQUENCE_TERMINAL,
-                                          C["accent"]), first="  "))]
+                                          C["accent"]), first="  ")))
     attempts = _census_groups(a.attempts_by_state, ATTEMPT_TERMINAL,
                               C["accent"])
     lines.append(L(P(S("attempts  ", C["dim"])),
@@ -727,6 +1010,107 @@ def _auth_lines(snapshot, now):
                 lv.journal_seq, _when(lv.journal_utc, now),
                 _ago(lv.journal_utc, now)), C["dim"]))
             if lv.journal_seq is not None else None))
+    # health: actionable authority state
+    health = []
+    halted_n = seqs.get("HALTED", 0)
+    if halted_n:
+        health.append([S("%d HALTED" % halted_n, C["halted"], True)])
+    blocked_n = sum(seqs.get(s, 0) for s in _BLOCKED)
+    if blocked_n:
+        health.append([S("%d BLOCKED" % blocked_n, C["blocked"])])
+    incomplete = a.attempts_by_state
+    ec = incomplete.get("EVIDENCE_COMPLETE", 0)
+    if ec:
+        health.append([S("%d awaiting reconciliation" % ec, C["warn"])])
+    if health:
+        lines.append(L(P(S("health ", C["dim"])), *_sep_parts(
+            health, first="", sep=" · ")))
+
+    # principal attribution — tree format
+    _PRINCIPAL_LABEL = {
+        "coordinator": ("Coordinator", C["coord"]),
+        "orchestrator": ("Orchestrator", C["orch"]),
+        "planner": ("Engineer", C["eng"]),
+        "agent_factory": ("Taskforce dispatch", C["tf"]),
+        "collector": ("Taskforce collection", C["tf"]),
+    }
+    principals = snapshot.principal_activity
+    if principals:
+        lines.append(L(P(S("principals:", C["dim"]))))
+        pkeys = sorted(principals)
+        for pi, principal in enumerate(pkeys):
+            acts = principals[principal]
+            is_last_p = pi == len(pkeys) - 1
+            branch = "└─ " if is_last_p else "├─ "
+            total = 0
+            for v in acts.values():
+                if isinstance(v, dict):
+                    total += v.get("n", 0)
+                else:
+                    total += v
+            label, lcolor = _PRINCIPAL_LABEL.get(
+                principal, (principal, C["bright"]))
+            lines.append(L(P(
+                S("  %s" % branch, C["frame"]),
+                S(label, lcolor, True),
+                S("  %d total" % total, C["dim"]))))
+            items = [(k, v) for k, v in sorted(acts.items())
+                     if (isinstance(v, dict) and v.get("n"))
+                     or (not isinstance(v, dict) and v)]
+            for ai, (k, v) in enumerate(items):
+                is_last_a = ai == len(items) - 1
+                indent = "     " if is_last_p else "  │  "
+                sub_branch = "└─ " if is_last_a else "├─ "
+                if isinstance(v, dict):
+                    n = v.get("n", 0)
+                    detail_items = v.get("items", [])
+                else:
+                    n = v
+                    detail_items = []
+                lines.append(L(P(
+                    S("%s%s" % (indent, sub_branch), C["frame"]),
+                    S("%s" % k, C["dim"]),
+                    S("  %d" % n, C["accent"]))))
+                # third level: every item
+                if detail_items:
+                    sub_indent = (indent +
+                                  ("     " if is_last_a else "  │  "))
+                    for di, item in enumerate(detail_items):
+                        is_last_d = di == len(detail_items) - 1
+                        d_branch = "└─ " if is_last_d else "├─ "
+                        lines.append(L(P(
+                            S("%s%s" % (sub_indent, d_branch), C["frame"]),
+                            S(str(item), C["dim"]))))
+
+    # budget gauges — active objectives only
+    active_obj = {o.objective_id for o in snapshot.objectives
+                  if o.status not in _COMPLETE}
+    active_budgets = [b for b in snapshot.budget_state
+                      if b["objective_id"] in active_obj]
+    if active_budgets:
+        lines.append(L(P(S("budgets:", C["dim"]))))
+        for bi, b in enumerate(active_budgets):
+            cu, cm = b["contracts_used"], b["contracts_max"]
+            au, am = b["attempts_used"], b["attempts_max"]
+            is_last = bi == len(active_budgets) - 1
+            branch = "└─ " if is_last else "├─ "
+            lines.append(L(P(
+                S("  %s" % branch, C["frame"]),
+                S(b["objective_id"], C["bright"]))))
+            indent = "     " if is_last else "  │  "
+            lines.append(L(P(
+                S("%s├─ " % indent, C["frame"]),
+                S("contracts ", C["dim"]),
+                S("%d/%d" % (cu, cm),
+                  C["error"] if cu >= cm else
+                  C["warn"] if cu >= cm - 1 else C["dim"]))))
+            lines.append(L(P(
+                S("%s└─ " % indent, C["frame"]),
+                S("attempts  ", C["dim"]),
+                S("%d/%d" % (au, am),
+                  C["error"] if au >= am else
+                  C["warn"] if au >= am - 2 else C["dim"]))))
+
     return lines
 
 
@@ -742,6 +1126,13 @@ def _activity_part(s, now):
             bits.append("task complete")
         elif s.activity_doing:
             bits.append(_short(s.activity_doing, 40))
+        if s.recent_tools:
+            last_tools = s.recent_tools[-3:]
+            bits.append("recent: %s" % ", ".join(last_tools))
+        if s.recent_files:
+            last_file = s.recent_files[-1]
+            name = last_file.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            bits.append("wrote %s" % name)
         if s.activity_utc:
             bits.append("last %s" % _ago(s.activity_utc, now))
         return P(S(" · " + " · ".join(bits)))
@@ -831,6 +1222,42 @@ def _item_line(it, lead, kw, now, wide=True):
     if it.holder:
         how = HOW.get(it.selection_path, "")
         parts.append(P(S("   %s%s" % (it.holder, " · " + how if how else ""))))
+    # orchestration node metadata — specific details
+    if it.kind == "node":
+        meta = []
+        if it.realization_kind:
+            _KIND_LABEL = {
+                "TASK_CONTRACT": "contract",
+                "ENGINEER_REASONING": "engineer reasoning",
+                "CONTROL": "control node",
+            }
+            meta.append(_KIND_LABEL.get(it.realization_kind,
+                                        it.realization_kind))
+        if it.capability:
+            meta.append(it.capability)
+        if it.work_profile:
+            _PROFILE_LABEL = {
+                "RESEARCH": "read-only research",
+                "IMPLEMENTATION": "source-modifying",
+                "ENGINEERING": "engineering design",
+            }
+            meta.append(_PROFILE_LABEL.get(it.work_profile,
+                                           it.work_profile))
+        if it.output_kind:
+            _OUTPUT_LABEL = {
+                "RESEARCH_ARTIFACT": "produced research artifact",
+                "ENGINEERING_DECISION": "produced engineering decision",
+                "ACCEPTED_ARTIFACT": "produced accepted artifact",
+                "REVIEW_RESULT": "produced review result",
+                "EFFECT_RESULT": "produced effect result",
+            }
+            meta.append(_OUTPUT_LABEL.get(it.output_kind, it.output_kind))
+        if it.output_sha256:
+            meta.append("CAS %s" % it.output_sha256[:20])
+        if it.sequence_id:
+            meta.append("seq %s" % it.sequence_id[:20])
+        if meta:
+            parts.append(P(S("   [%s]" % " · ".join(meta), C["dim"])))
     state = it.state or ""
     if state == "PLANNED":
         parts.append(P(S(" · not started", C["dim"])))
@@ -853,6 +1280,8 @@ def _item_line(it, lead, kw, now, wide=True):
                 C["blocked"])))
     elif it.attempt_state:
         parts.append(P(S(" · attempt %s" % it.attempt_state, C["accent"])))
+    elif state == "SUPERSEDED":
+        parts.append(P(S(" · replaced", C["dim"])))
     elif state == "COMPLETED" and it.assignment_outcome:
         parts.append(P(S(" · " + OUTCOME_LABEL.get(it.assignment_outcome, (
             "", it.assignment_outcome.lower()))[1], C["success"])))
@@ -864,6 +1293,25 @@ def _item_line(it, lead, kw, now, wide=True):
 
 def _item_key(it):
     return it.item_id or it.sequence_id
+
+
+def _find_replacement(superseded_it, items):
+    """Find a replacement workstream for a SUPERSEDED item by name pattern."""
+    base = superseded_it.workstream_key
+    for it in items:
+        if it.workstream_key == base:
+            continue
+        if (it.workstream_key.startswith(base)
+                and it.state in ("COMPLETED", "EXECUTING", "READY",
+                                 "DECLARED")):
+            return it
+        prefix = base.rsplit("-", 1)[0] if "-" in base else base
+        if (it.workstream_key.startswith(prefix)
+                and it.workstream_key != base
+                and it.state in ("COMPLETED", "EXECUTING", "READY",
+                                 "DECLARED")):
+            return it
+    return None
 
 
 def _project_tree(project, now, wide=True):
@@ -884,6 +1332,7 @@ def _project_tree(project, now, wide=True):
         else:
             roots.append(it)
     lines, seen = [], set()
+    replacement_shown = set()
 
     def emit(it, lead, is_last, depth):
         if id(it) in seen:
@@ -891,6 +1340,23 @@ def _project_tree(project, now, wide=True):
         seen.add(id(it))
         branch = "" if depth == 0 else ("└▶ " if is_last else "├▶ ")
         lines.append(_item_line(it, lead + branch, kw, now, wide))
+        if it.state == "SUPERSEDED":
+            repl = _find_replacement(it, project.items)
+            if repl:
+                replacement_shown.add(id(repl))
+                indent = lead + ("   " if is_last or depth == 0
+                                 else "│  ")
+                rsym, rcolor = _state_mark(repl.state)
+                outcome = ""
+                if repl.assignment_outcome:
+                    outcome = " / %s" % OUTCOME_LABEL.get(
+                        repl.assignment_outcome,
+                        ("", repl.assignment_outcome.lower()))[1]
+                lines.append(L(P(
+                    S("   %s↳ " % indent, C["flow_lit"]),
+                    S(repl.workstream_key, C["bright"]),
+                    S(" %s%s" % (repl.state or "?", outcome),
+                      rcolor))))
         kids = children.get(_item_key(it), [])
         for i, kid in enumerate(kids):
             emit(kid, lead + ("" if depth == 0 else (
@@ -898,7 +1364,7 @@ def _project_tree(project, now, wide=True):
 
     for i, it in enumerate(roots):
         emit(it, "", i == len(roots) - 1, 0)
-    for it in project.items:  # whatever a cycle of edges left out
+    for it in project.items:
         if id(it) not in seen:
             emit(it, "", True, 0)
     return lines
@@ -999,9 +1465,9 @@ def _activity_lines(snapshot, now):
 
 # ── the ACTIVITY band: a window over the history, scrolled by keys ──────
 
-SECTION_NAMES = ("coord", "orch", "eng", "tf", "dag")
-SECTION_KEYS = {"1": "coord", "2": "orch", "3": "eng", "4": "tf",
-                "5": "dag"}
+SECTION_NAMES = ("tf", "eng", "orch", "coord", "auth", "dag", "activity")
+SECTION_KEYS = {"1": "tf", "2": "eng", "3": "orch", "4": "coord",
+                "5": "auth", "6": "dag", "7": "activity"}
 
 
 class ActivityView:
@@ -1020,7 +1486,10 @@ class ActivityView:
         self.section_offsets = {s: 0 for s in SECTION_NAMES}
 
     def scroll(self, events):
-        if self.focus and self.focus in self.section_offsets:
+        if self.focus == "activity":
+            self.top = max(0, self.top + events)
+            self.anchor = None
+        elif self.focus and self.focus in self.section_offsets:
             self.section_offsets[self.focus] = max(
                 0, self.section_offsets[self.focus] + events)
         else:
@@ -1028,7 +1497,9 @@ class ActivityView:
             self.anchor = None
 
     def newest(self):
-        if self.focus:
+        if self.focus == "activity":
+            self.top, self.anchor = 0, None
+        elif self.focus:
             self.section_offsets[self.focus] = 0
         else:
             self.top, self.anchor = 0, None
@@ -1037,7 +1508,7 @@ class ActivityView:
         return self.section_offsets.get(name, 0)
 
 
-KEY_HELP = ("1-5 focus section · ↑↓ scroll "
+KEY_HELP = ("1-7 focus section · ↑↓ scroll "
             "· a expand · Esc back · q quit")
 
 
@@ -1227,6 +1698,101 @@ FOUR_ACROSS = 200
 
 # ── compose frame ─────────────────────────────────────────────────────
 
+def _primary_objective_lines(snapshot, now):
+    """Cross-layer status of the newest active objective."""
+    active = _active_objectives(snapshot)
+    if not active:
+        return []
+    obj = active[0]
+    oid = obj.objective_id
+    lines = []
+    lines.append([S("PRIMARY OBJECTIVE  ", C["bright"], True),
+                  S(oid, C["accent"], True)])
+
+    # Coordinator layer
+    cd = None
+    for d in snapshot.coordinator_decisions:
+        if d.objective_id == oid:
+            cd = d
+    if cd:
+        lines.append([S("  Coordinator     ", C["coord"]),
+                      S(MODE_SHORT.get(cd.elevation_mode,
+                                       cd.elevation_mode), C["bright"]),
+                      S(" → %s" % cd.route if cd.route else "", C["luna"])])
+
+    # Orchestrator layer
+    obj_runs = [r for r in snapshot.runs if r.objective_id == oid]
+    if obj_runs:
+        r = obj_runs[0]
+        ns = {}
+        for n in r.nodes:
+            ns[n.status] = ns.get(n.status, 0) + 1
+        node_parts = " ".join("%d %s" % (v, k)
+                              for k, v in sorted(ns.items()))
+        lines.append([S("  Orchestrator    ", C["orch"]),
+                      S("%d/%d nodes" % (ns.get("COMPLETED", 0),
+                                         len(r.nodes)), C["bright"]),
+                      S("  %s" % node_parts if len(ns) > 1 else "",
+                        C["dim"])])
+
+    # Engineer layer
+    obj_projects = [p for p in snapshot.projects
+                    if p.objective_id == oid and p.status == "ACTIVE"]
+    if obj_projects:
+        prj = obj_projects[0]
+        done = sum(1 for it in prj.items if it.state == "COMPLETED")
+        halted = sum(1 for it in prj.items
+                     if it.state and it.state.startswith("HALTED"))
+        superseded = sum(1 for it in prj.items if it.state == "SUPERSEDED")
+        parts = ["%d COMPLETED" % done] if done else []
+        if superseded:
+            parts.append("%d SUPERSEDED" % superseded)
+        if halted:
+            parts.append("%d HALTED" % halted)
+        lines.append([S("  Engineer        ", C["eng"]),
+                      S(" · ".join(parts) if parts else "no workstreams",
+                        C["bright"] if not halted else C["halted"])])
+
+    # Taskforce layer
+    working = _working_now(snapshot)
+    obj_working = []
+    for handle, work, how in working:
+        for prj in obj_projects:
+            if any(it.workstream_key == work or
+                   (it.holder and it.holder == handle)
+                   for it in prj.items):
+                obj_working.append(handle)
+                break
+    if obj_working:
+        lines.append([S("  Taskforce       ", C["tf"]),
+                      S(", ".join(obj_working) + " working", C["accent"])])
+    else:
+        lines.append([S("  Taskforce       ", C["tf"]),
+                      S("idle", C["dim"])])
+
+    # Closure status
+    waiting = [p for p in snapshot.engineer.waiting
+               if p.objective_id == oid]
+    if waiting:
+        reasons = set(p.proposal_class for p in waiting)
+        if "WAIT_FOR_AUTHORITY" in reasons:
+            lines.append([S("  Closure         ", C["warn"], True),
+                          S("WAITING FOR AUTHORITY", C["halted"], True)])
+        else:
+            lines.append([S("  Closure         ", C["warn"], True),
+                          S("BLOCKED: %s" % ", ".join(reasons),
+                            C["warn"])])
+    elif obj.work_state == "work finished":
+        lines.append([S("  Closure         ", C["success"]),
+                      S("ready to close", C["success"])])
+    else:
+        state_label = obj.work_state or "in progress"
+        lines.append([S("  Closure         ", C["dim"]),
+                      S(state_label, C["dim"])])
+
+    return [L(P(*row)) for row in lines]
+
+
 def compose(scr, snapshot, tick=0, routing=None, view=None):
     """Write the whole frame into the screen's back buffer. ``view`` is the
     live loop's ActivityView (scroll position, expanded): None draws the
@@ -1276,36 +1842,41 @@ def compose(scr, snapshot, tick=0, routing=None, view=None):
 
     boxes = None
     aw = w - 8
+    fw = w - 4  # full-width box width
     if w >= FOUR_ACROSS:
-        pw = (w - 10) // 4
+        pw = (w - 8) // 3
         iw = pw - 4
-        row = [_layout(_coord_lines(snapshot, now), iw),
-               _layout(_orch_lines(snapshot, now, narrow=True), iw),
-               _layout(_eng_lines(snapshot, now, narrow=True), iw),
-               _layout(_tf_lines(snapshot, now, narrow=True), iw)]
+        trio = [_layout(_tf_lines(snapshot, now, narrow=True), iw),
+                _layout(_eng_lines(snapshot, now, narrow=True), iw),
+                _layout(_orch_lines(snapshot, now, narrow=True), iw)]
+        coord = _layout(_coord_lines(snapshot, now), aw)
         auth = _layout(_auth_lines(snapshot, now), aw)
-        for cap, acap in ((16, 6), (14, 5), (12, 5), (10, 4), (8, 4),
-                          (6, 3), (4, 3)):
-            heights = [2 + min(max(len(b) for b in row), cap),
+        for tcap, ccap, acap in ((16, 8, 6), (14, 7, 5), (12, 6, 5),
+                                  (10, 5, 4), (8, 5, 4), (6, 4, 3),
+                                  (4, 3, 3)):
+            heights = [2 + min(max(len(b) for b in trio), tcap),
+                       2 + min(len(coord), ccap),
                        2 + min(len(auth), acap)]
             if y + sum(heights) + band_floor <= h:
-                boxes = ("row", pw, row, auth, heights)
+                boxes = ("trio", pw, trio, coord, auth, heights)
                 break
     if boxes is None and w >= 100:
         pw = (w - 6) // 2
         iw = pw - 4
-        pairs = ((_layout(_coord_lines(snapshot, now), iw),
-                  _layout(_orch_lines(snapshot, now), iw)),
-                 (_layout(_eng_lines(snapshot, now), iw),
-                  _layout(_tf_lines(snapshot, now), iw)))
+        pair = (_layout(_tf_lines(snapshot, now), iw),
+                _layout(_eng_lines(snapshot, now), iw))
+        orch_rows = _layout(_orch_lines(snapshot, now), aw)
+        coord = _layout(_coord_lines(snapshot, now), aw)
         auth = _layout(_auth_lines(snapshot, now), aw)
-        for caps in ((10, 13, 6), (8, 11, 5), (6, 8, 5), (5, 6, 4),
-                     (4, 5, 4), (3, 4, 3)):
-            heights = [2 + min(max(len(a), len(b)), caps[i])
-                       for i, (a, b) in enumerate(pairs)]
-            heights.append(2 + min(len(auth), caps[2]))
+        for pcap, ocap, ccap, acap in (
+                (10, 10, 8, 6), (8, 8, 7, 5), (6, 6, 6, 5),
+                (5, 5, 5, 4), (4, 4, 4, 4), (3, 3, 3, 3)):
+            heights = [2 + min(max(len(pair[0]), len(pair[1])), pcap),
+                       2 + min(len(orch_rows), ocap),
+                       2 + min(len(coord), ccap),
+                       2 + min(len(auth), acap)]
             if y + sum(heights) + band_floor <= h:
-                boxes = ("pairs", pw, pairs, auth, heights)
+                boxes = ("stack", pw, pair, orch_rows, coord, auth, heights)
                 break
 
     def _soff(name):
@@ -1314,35 +1885,35 @@ def compose(scr, snapshot, tick=0, routing=None, view=None):
     def _sfoc(name):
         return view is not None and getattr(view, "focus", None) == name
 
-    if boxes and boxes[0] == "row":
-        _, pw, row, auth, heights = boxes
-        for i, (key, rows) in enumerate(zip(("coord", "orch", "eng", "tf"),
-                                            row)):
+    if boxes and boxes[0] == "trio":
+        _, pw, trio, coord, auth, heights = boxes
+        for i, (key, rows) in enumerate(zip(("tf", "eng", "orch"), trio)):
             _draw_box(scr, 2 + i * (pw + 2), y, pw, heights[0], key, rows,
                        offset=_soff(key), focused=_sfoc(key))
         y += heights[0]
-        _draw_box(scr, 2, y, w - 4, heights[1], "auth", auth)
+        _draw_box(scr, 2, y, fw, heights[1], "coord", coord,
+                   offset=_soff("coord"), focused=_sfoc("coord"))
         y += heights[1]
-    elif boxes:
-        _, pw, pairs, auth, heights = boxes
-        x1, x2 = 2, 2 + pw + 2
-        spare = h - (y + sum(heights) + band_floor)
-        keys = (("coord", "orch"), ("eng", "tf"))
-        for i, (a, b) in enumerate(pairs):
-            _draw_box(scr, x1, y, pw, heights[i], keys[i][0], a,
-                       offset=_soff(keys[i][0]),
-                       focused=_sfoc(keys[i][0]))
-            _draw_box(scr, x2, y, pw, heights[i], keys[i][1], b,
-                       offset=_soff(keys[i][1]),
-                       focused=_sfoc(keys[i][1]))
-            y += heights[i]
-            if spare > 8:  # the flow connector between the layers
-                scr.put(x1 + pw // 2, y, "│", C["flow_dim"])
-                scr.put(x2 + pw // 2, y, "│", C["flow_dim"])
-                y += 1
-                spare -= 1
-        _draw_box(scr, 2, y, w - 4, heights[2], "auth", auth)
+        _draw_box(scr, 2, y, fw, heights[2], "auth", auth,
+                   offset=_soff("auth"), focused=_sfoc("auth"))
         y += heights[2]
+    elif boxes and boxes[0] == "stack":
+        _, pw, pair, orch_rows, coord, auth, heights = boxes
+        x1, x2 = 2, 2 + pw + 2
+        _draw_box(scr, x1, y, pw, heights[0], "tf", pair[0],
+                   offset=_soff("tf"), focused=_sfoc("tf"))
+        _draw_box(scr, x2, y, pw, heights[0], "eng", pair[1],
+                   offset=_soff("eng"), focused=_sfoc("eng"))
+        y += heights[0]
+        _draw_box(scr, 2, y, fw, heights[1], "orch", orch_rows,
+                   offset=_soff("orch"), focused=_sfoc("orch"))
+        y += heights[1]
+        _draw_box(scr, 2, y, fw, heights[2], "coord", coord,
+                   offset=_soff("coord"), focused=_sfoc("coord"))
+        y += heights[2]
+        _draw_box(scr, 2, y, fw, heights[3], "auth", auth,
+                   offset=_soff("auth"), focused=_sfoc("auth"))
+        y += heights[3]
     else:
         for row in _layout(_summary_lines(snapshot, now), w - 4, indent=9):
             if y >= h:

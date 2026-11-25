@@ -104,6 +104,7 @@ class OrchestratorView:
     # decisions the applicator did not apply (status SKIPPED, REJECTED,
     # FAILED or INVALID in application_results), by decision class
     not_applied: Dict[str, int] = field(default_factory=dict)
+    decision_breakdown: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -200,6 +201,27 @@ class AuthorityCensus:
 
 
 @dataclass(frozen=True)
+class SequenceProvenanceView:
+    """Full provenance chain for one sequence."""
+    sequence_id: str
+    state: str
+    proposal_class: Optional[str] = None
+    cycle_id: Optional[int] = None
+    objective_id: Optional[str] = None
+    proposed_utc: Optional[str] = None
+    specialist_handle: Optional[str] = None
+    selection_path: Optional[str] = None
+    decided_by: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    projection_address: Optional[str] = None
+    capability: Optional[str] = None
+    role: Optional[str] = None
+    assignment_outcome: Optional[str] = None
+    workstream_key: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class RoutingView:
     default_route: str = "?"
     escalation_route: str = "?"
@@ -260,6 +282,8 @@ class SessionView:
     activity_utc: Optional[str] = None
     activity_doing: Optional[str] = None
     activity_done: bool = False
+    recent_tools: List[str] = field(default_factory=list)
+    recent_files: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -386,6 +410,12 @@ class WorkItemView:
     next_staffing: Optional[str] = None
     # derived: the halt in words (what a t-s12 reason code means)
     halt_cause: Optional[str] = None
+    # orchestration node metadata
+    realization_kind: Optional[str] = None
+    capability: Optional[str] = None
+    work_profile: Optional[str] = None
+    output_kind: Optional[str] = None
+    output_sha256: Optional[str] = None
     # workstream | node; item_id links predecessor edges inside a tree
     kind: str = "workstream"
     item_id: Optional[str] = None
@@ -468,6 +498,11 @@ class ActivitySnapshot:
     projects: List[ProjectView] = field(default_factory=list)
     trust: TrustView = field(default_factory=TrustView)
     attention: List[AttentionItem] = field(default_factory=list)
+
+    # authority provenance
+    sequence_provenance: List[SequenceProvenanceView] = field(default_factory=list)
+    principal_activity: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    budget_state: list = field(default_factory=list)
 
     # the Orchestrator's plans bound to no project, its reasoning, and the
     # attempts in flight that have no live session: past it (by state)

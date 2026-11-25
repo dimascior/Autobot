@@ -86,7 +86,8 @@ class ContinuousDriver:
                  freeze_prompts=False, established_threshold=3,
                  gate_root=None, isolate_read_only=False,
                  orchestrator_policy=None,
-                 coordinator_policy=None):
+                 coordinator_policy=None,
+                 tracer=None):
         """``pool`` is the specialist catalog (``SpecialistPool``): the
         workers that exist, whether or not any is a Taskforce member.
         ``freeze_prompts`` makes every contract
@@ -124,6 +125,8 @@ class ContinuousDriver:
             plan=plan,
             policy=coordinator_policy or PassthroughCoordinatorPolicy(),
             clock=clock)
+        self._tracer = tracer
+        self._step_count = 0
         self._acquire()
         # The organization the Engineer reasons over exists before its
         # first cycle: mirror the specialist catalog now.
@@ -165,33 +168,117 @@ class ContinuousDriver:
         cycle, a planning cycle (when something new woke the planner),
         and one Taskforce sweep. Returns the step report; ``quiet``
         means the step changed nothing and proposed nothing."""
-        self._acquire()  # renew; refuses if another driver took over
+        self._acquire()
         self._renew_authority_lease()
         now = instant(self.clock.now())
+        t = self._tracer
+        self._step_count += 1
+        if t:
+            t.step_begin(self._step_count)
+
+        if t:
+            t.phase("coordinator_admit")
         coordinator_report = self._coordinator_admit(now)
+        if t:
+            adm = coordinator_report.get("admitted", [])
+            if adm:
+                for a in adm:
+                    t.result("admitted %s -> %s" % (
+                        a.get("objective_id", "?"), a.get("mode", "?")))
+            else:
+                t.sub("no new objectives to admit")
+
+        if t:
+            t.phase("orchestrator_cycles")
         orchestration = self._run_orchestration_cycles(now)
+        if t:
+            decs = orchestration.get("decisions", [])
+            if decs:
+                t.result("%d decisions" % len(decs))
+            else:
+                t.sub("no new decisions")
+
         self._repair_incomplete_bindings(now)
+
+        if t:
+            t.phase("realize_engineer_nodes")
         engineer_nodes = self._realize_engineer_nodes(now)
+        if t:
+            if engineer_nodes:
+                for en in engineer_nodes:
+                    t.result("realized %s" % en.get("node_id", "?")[:20])
+            else:
+                t.sub("no ENGINEER_REASONING nodes pending")
+
+        if t:
+            t.phase("admit_ready_nodes")
         admitted = self._admit_ready_workstreams(now)
         node_admitted = self._admit_ready_nodes(now)
+        if t:
+            ws_count = len(admitted) if admitted else 0
+            nd_count = len(node_admitted) if node_admitted else 0
+            if node_admitted:
+                for na in node_admitted:
+                    nid = na.get("node_id", "?")[:20]
+                    seq = (na.get("result") or {}).get("sequence_id", "?")
+                    t.result("admitted %s -> seq %s" % (nid, seq[:16]))
+            if not node_admitted and not admitted:
+                t.sub("no PENDING nodes ready (all bound or waiting on predecessors)")
+            elif admitted and not node_admitted:
+                t.sub("%d workstreams admitted, 0 nodes" % ws_count)
+
         if engineer_nodes:
             orchestration["engineer_nodes"] = engineer_nodes
         if admitted:
             orchestration["admitted_workstreams"] = admitted
         if node_admitted:
             orchestration["admitted_nodes"] = node_admitted
+
+        if t:
+            t.phase("engineer.run_cycle (calling Opus 4.6 [1M]...)")
         planning = self.engineer.run_cycle(self.ro, project_state, now)
-        sweep = self.taskforce.advance(now)
+        if t:
+            cid = planning.get("cycle_id")
+            props = planning.get("disposed", [])
+            if cid:
+                classes = {}
+                for p in props:
+                    cls = p.get("class", "?")
+                    classes[cls] = classes.get(cls, 0) + 1
+                if classes:
+                    t.result("cycle %s: %s" % (
+                        cid, ", ".join("%s x%d" % (k, n)
+                                       for k, n in sorted(classes.items()))))
+                else:
+                    t.sub("cycle %s: 0 proposals" % cid)
+            else:
+                t.sub("no cycle (nothing to reason about)")
+
+        self._renew_authority_lease()
+        if t:
+            t.phase("taskforce.advance")
+        sweep = self.taskforce.advance(now, tracer=t)
+
+        if t:
+            t.phase("release_dependencies")
         released = self._release_accepted_dependencies(now)
         edge_releases = self._release_orchestration_edges(now)
+        if t and (released or edge_releases):
+            t.result("%d workstream + %d edge releases" % (
+                len(released), len(edge_releases)))
+
+        quiet = not _any_activity(
+            planning, sweep, orchestration=orchestration,
+            coordinator=coordinator_report)
+        if t:
+            t.step_end(quiet)
+
         return {"coordinator": coordinator_report,
                 "orchestration": orchestration,
                 "planning": planning, "sweep": sweep,
                 "dependency_releases": released,
                 "edge_releases": edge_releases,
-                "quiet": not _any_activity(
-                    planning, sweep, orchestration=orchestration,
-                    coordinator=coordinator_report)}
+                "quiet": quiet}
 
     def _coordinator_admit(self, now):
         """Admit ACTIVE objectives that have no current OrchestrationRun.
@@ -276,6 +363,10 @@ class ContinuousDriver:
                     run_bindings.append(ab)
                 run_outputs.extend(
                     self.plan.outputs_for_node(nd["node_id"]))
+            t = self._tracer
+            if t:
+                t.sub("orchestrate %s (%d nodes)" % (
+                    run["objective_id"][:24], len(run_nodes)))
             orch = self.orchestrator.run_cycle(
                 objectives=[obj],
                 projects=self.plan.projects(run["objective_id"]),
@@ -285,6 +376,13 @@ class ContinuousDriver:
                 node_outputs=run_outputs)
             if orch.get("decisions") and \
                     not orch.get("already_applied"):
+                if t:
+                    kinds = {}
+                    for d in orch["decisions"]:
+                        k = d.get("action", "?")
+                        kinds[k] = kinds.get(k, 0) + 1
+                    t.result("opus decisions: %s" % ", ".join(
+                        "%s x%d" % (k, n) for k, n in sorted(kinds.items())))
                 applicator = OrchestrationApplicator(
                     self.plan, orchestration_id=run_id,
                     ro=self.ro)
@@ -542,6 +640,7 @@ class ContinuousDriver:
 
         Returns a list of admission results."""
         results = []
+        t = self._tracer
         for run in self.plan.active_orchestration_runs():
             run_id = run["orchestration_id"]
             objective = self.plan.objective(run["objective_id"])
@@ -564,9 +663,15 @@ class ContinuousDriver:
                         e["source_node_id"]) is not None
                     for e in inbound)
                 if not all_bound:
+                    if t:
+                        t.sub("node %s: waiting on predecessor bindings"
+                              % node.get("node_key", "?"))
                     continue
 
                 pred_edges = self._compile_node_predecessors(node)
+                if t:
+                    t.sub("node %s: predecessors compiled (%d edges)"
+                          % (node.get("node_key", "?"), len(pred_edges)))
 
                 proposal = node_to_proposal(
                     node, objective["text"],
@@ -579,10 +684,17 @@ class ContinuousDriver:
                     if result and result.get("sequence_id"):
                         self._create_full_authority_binding(
                             node, result, now)
+                        if t:
+                            t.result("admitted %s -> seq %s (6 tiers bound)"
+                                     % (node.get("node_key", "?"),
+                                        result["sequence_id"][:16]))
                     results.append({
                         "node_id": node["node_id"],
                         "result": result})
                 except Exception as exc:
+                    if t:
+                        t.warn("node %s: %s" % (
+                            node.get("node_key", "?"), exc))
                     results.append({
                         "node_id": node["node_id"],
                         "error": "%s: %s" % (type(exc).__name__, exc),
@@ -844,7 +956,7 @@ class ContinuousDriver:
                 % max_steps)
         return self._closing(steps)
 
-    def run(self, max_wall_seconds=3600.0, poll_seconds=2.0,
+    def run(self, max_wall_seconds=3600.0, poll_seconds=15.0,
             quiet_steps=2, max_active_steps=512, sleep=None,
             on_step=None):
         """The production loop: step until a STABLE QUIET STATE — nothing

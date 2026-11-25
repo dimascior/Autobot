@@ -20,7 +20,7 @@ from .views import (
     LivenessView, CycleView, ProposalView, StaffingView, EngineerView,
     EngineeringDecisionView, RecentProposalView,
     EdgeRefView, WorkItemView, ProjectView, TrustView, AttentionItem,
-    OrchestratorView,
+    OrchestratorView, SequenceProvenanceView,
 )
 from .events import (
     events_from_transitions, events_from_workforce, events_from_cycles,
@@ -318,6 +318,14 @@ def _not_applied(raw, into):
             into[klass] = into.get(klass, 0) + 1
 
 
+def _decision_breakdown(raw, into):
+    """Count every application_results entry by its status."""
+    for res in _objectives_of(raw):
+        if isinstance(res, dict):
+            status = res.get("status") or "UNKNOWN"
+            into[status] = into.get(status, 0) + 1
+
+
 DEFAULT_HISTORY = 200
 
 
@@ -538,6 +546,8 @@ def build_snapshot(intelligence, authority, step_reader=None,
                 predecessor_item_id=e["source_node_id"])
                 for e in edges_by_run.get(rid, [])
                 if e.get("target_node_id") == nid]
+            node_outs = outputs_by_node.get(nid, [])
+            latest_node_out = node_outs[-1] if node_outs else {}
             item = WorkItemView(
                 workstream_key=key_of[nid], sequence_id=sid,
                 state=own_state(nid),
@@ -557,6 +567,11 @@ def build_snapshot(intelligence, authority, step_reader=None,
                 halt_cause=_halt_cause(halt.get("rule"), halt.get("reason"),
                                        halt.get("completeness"))
                 if halt else None,
+                realization_kind=n.get("realization_kind"),
+                capability=n.get("capability"),
+                work_profile=n.get("work_profile"),
+                output_kind=latest_node_out.get("output_kind"),
+                output_sha256=latest_node_out.get("content_sha256"),
                 kind="node", item_id=nid)
             if project and project in project_ids:
                 bound.setdefault(project, []).append(item)
@@ -634,12 +649,16 @@ def build_snapshot(intelligence, authority, step_reader=None,
     if reasoning:
         policies = {}
         not_applied = {}
+        decision_breakdown = {}
         for r in reasoning:
             pid = r.get("policy_id") or "?"
             policies[pid] = policies.get(pid, 0) + 1
             _not_applied(r.get("application_results"), not_applied)
+            _decision_breakdown(r.get("application_results"),
+                                decision_breakdown)
         orchestrator = OrchestratorView(
             not_applied=not_applied,
+            decision_breakdown=decision_breakdown,
             policy_id=max(sorted(policies), key=lambda k: policies[k]),
             model=config_reader.planner_model() if config_reader else None,
             cycles=len(reasoning),
@@ -860,9 +879,6 @@ def build_snapshot(intelligence, authority, step_reader=None,
         for entry in step_reader.new_entries():
             events.extend(events_from_step(entry))
 
-    events.sort(key=lambda e: e.timestamp or "", reverse=True)
-    events = collapse_repeats(events)[:history]
-
     # --- active sequences and attempts ---
     active_sequences = [
         SequenceView(
@@ -932,7 +948,40 @@ def build_snapshot(intelligence, authority, step_reader=None,
             activity_tools=activity.get("tool_calls") or 0,
             activity_utc=activity.get("last_utc"),
             activity_doing=activity.get("doing"),
-            activity_done=bool(activity.get("finished"))))
+            activity_done=bool(activity.get("finished")),
+            recent_tools=activity.get("recent_tools") or [],
+            recent_files=activity.get("recent_files") or []))
+
+    # session-level activity: tool calls and file operations from live
+    # sessions, injected as activity events so they appear in the stream
+    for s_view in sessions:
+        handle = s_view.specialist_handle or "?"
+        wk = s_view.workstream_key or s_view.sequence_id[:16]
+        if s_view.recent_tools:
+            tool_counts = {}
+            for t in s_view.recent_tools:
+                tool_counts[t] = tool_counts.get(t, 0) + 1
+            tool_summary = ", ".join(
+                "%s ×%d" % (t, n) if n > 1 else t
+                for t, n in tool_counts.items())
+            events.append(ActivityEvent(
+                timestamp=s_view.activity_utc or s_view.started_utc or "",
+                layer="taskforce",
+                kind="session_tools",
+                subject_id=wk,
+                summary="%s %s tools: %s" % (
+                    handle, wk, tool_summary)))
+        if s_view.recent_files:
+            for fpath in s_view.recent_files[-5:]:
+                events.append(ActivityEvent(
+                    timestamp=s_view.activity_utc or s_view.started_utc or "",
+                    layer="taskforce",
+                    kind="session_file",
+                    subject_id=wk,
+                    summary="%s %s wrote %s" % (handle, wk, fpath)))
+
+    events.sort(key=lambda e: e.timestamp or "", reverse=True)
+    events = collapse_repeats(events)[:history]
 
     # --- active AutoSwarm sessions (call directories) ---
     active_sessions = []
@@ -1134,6 +1183,43 @@ def build_snapshot(intelligence, authority, step_reader=None,
             planner_model=config_reader.planner_model(),
             routes=routes_dict)
 
+    # --- authority provenance ---
+    seq_states = _call(authority, "sequence_states", {})
+    raw_provenance = _call(intelligence, "sequence_provenance", [])
+    name_index = {}
+    for ws in _call(intelligence, "workstreams", []):
+        sid = ws.get("sequence_id")
+        if sid:
+            name_index[sid] = ws.get("workstream_key") or sid[:16]
+    provenance = []
+    seen_prov = set()
+    for rp in raw_provenance:
+        sid = rp.get("sequence_id")
+        if not sid or sid in seen_prov:
+            continue
+        seen_prov.add(sid)
+        st = seq_states.get(sid, {})
+        provenance.append(SequenceProvenanceView(
+            sequence_id=sid,
+            state=st.get("state", "?"),
+            proposal_class=rp.get("proposal_class"),
+            cycle_id=rp.get("cycle_id"),
+            objective_id=rp.get("objective_id"),
+            proposed_utc=rp.get("proposed_utc"),
+            specialist_handle=rp.get("specialist_handle"),
+            selection_path=rp.get("selection_path"),
+            decided_by=rp.get("decided_by"),
+            provider=rp.get("provider"),
+            model=rp.get("model"),
+            projection_address=rp.get("projection_address"),
+            capability=rp.get("capability"),
+            role=rp.get("role"),
+            assignment_outcome=rp.get("assignment_outcome"),
+            workstream_key=name_index.get(sid)))
+
+    principal_act = _call(intelligence, "principal_activity", {})
+    budget_st = _call(intelligence, "budget_state", [])
+
     return ActivitySnapshot(
         captured_utc=now,
         objectives=objectives,
@@ -1153,6 +1239,9 @@ def build_snapshot(intelligence, authority, step_reader=None,
         projects=project_views,
         trust=trust,
         attention=attention,
+        sequence_provenance=provenance,
+        principal_activity=principal_act,
+        budget_state=budget_st,
         plans=plan_views,
         orchestrator=orchestrator,
         after_session=after_session,

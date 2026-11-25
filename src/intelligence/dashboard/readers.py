@@ -574,6 +574,319 @@ class IntelligenceReader:
                      " FROM cycles ORDER BY cycle_id DESC LIMIT ?",
                      (limit,))
 
+    def sequence_provenance(self):
+        """Full provenance chain per sequence: who proposed it, who was
+        assigned, through which path, the projection address, and the
+        cycle that created it."""
+        try:
+            return _rows(self.conn,
+                         "SELECT p.sequence_id, p.class AS proposal_class,"
+                         " p.cycle_id, p.objective_id,"
+                         " p.created_utc AS proposed_utc,"
+                         " a.specialist_id, a.selection_path, a.decided_by,"
+                         " a.provider, a.model, a.call_id,"
+                         " a.status AS assignment_status,"
+                         " a.outcome AS assignment_outcome,"
+                         " s.handle AS specialist_handle,"
+                         " se.projection_address,"
+                         " se.capability, se.role"
+                         " FROM proposals p"
+                         " LEFT JOIN project_assignments a"
+                         "   ON a.sequence_id = p.sequence_id"
+                         " LEFT JOIN specialists s"
+                         "   ON s.specialist_id = a.specialist_id"
+                         " LEFT JOIN seats se"
+                         "   ON se.sequence_id = p.sequence_id"
+                         " WHERE p.sequence_id IS NOT NULL"
+                         " ORDER BY p.created_utc DESC")
+        except sqlite3.OperationalError:
+            return []
+
+    def principal_activity(self):
+        """Counts of what each principal role has done, with timestamps
+        and current state on every item."""
+        result = {}
+        # Engineer (planner): proposals with timestamp and state
+        try:
+            rows = _rows(self.conn,
+                         "SELECT status, class, objective_id,"
+                         " created_utc, decided_utc, sequence_id"
+                         " FROM proposals ORDER BY created_utc")
+            if rows:
+                eng = {}
+                for r in rows:
+                    key = "proposals %s" % r["status"]
+                    eng.setdefault(key, {"n": 0, "items": []})
+                    eng[key]["n"] += 1
+                    ts = r.get("decided_utc") or r.get("created_utc") or ""
+                    if ts and len(ts) > 19:
+                        ts = ts[:19]
+                    seq = ""
+                    if r.get("sequence_id"):
+                        seq = "  seq=%s" % r["sequence_id"][:16]
+                    eng[key]["items"].append(
+                        "%s  %s  obj=%s%s" % (
+                            ts, r["class"],
+                            r["objective_id"] or "?", seq))
+                result.setdefault("planner", {}).update(eng)
+        except sqlite3.OperationalError:
+            pass
+        # projects with timestamp and state
+        try:
+            rows = _rows(self.conn,
+                         "SELECT status, project_id, title,"
+                         " objective_id, opened_utc, closed_utc"
+                         " FROM projects ORDER BY opened_utc")
+            if rows:
+                for r in rows:
+                    key = "projects %s" % r["status"]
+                    result.setdefault("planner", {}).setdefault(
+                        key, {"n": 0, "items": []})
+                    result["planner"][key]["n"] += 1
+                    ts = r.get("closed_utc") or r.get("opened_utc") or ""
+                    if ts and len(ts) > 19:
+                        ts = ts[:19]
+                    result["planner"][key]["items"].append(
+                        "%s  %s  %s" % (ts, r["project_id"][:12],
+                                        r["title"] or "?"))
+        except sqlite3.OperationalError:
+            pass
+        try:
+            row = _one(self.conn,
+                       "SELECT COUNT(*) AS n FROM cycles")
+            if row and row["n"]:
+                result.setdefault("planner", {})
+                result["planner"]["reasoning_cycles"] = {
+                    "n": row["n"], "items": []}
+        except sqlite3.OperationalError:
+            pass
+        # retention decisions with timestamp
+        try:
+            rows = _rows(self.conn,
+                         "SELECT kind, s.handle, rd.capability, rd.role,"
+                         " rd.decided_utc"
+                         " FROM retention_decisions rd"
+                         " JOIN specialists s"
+                         "   ON s.specialist_id = rd.specialist_id"
+                         " ORDER BY rd.decided_utc")
+            if rows:
+                result.setdefault("planner", {})
+                rd = {"n": len(rows), "items": []}
+                for r in rows:
+                    ts = r.get("decided_utc") or ""
+                    if ts and len(ts) > 19:
+                        ts = ts[:19]
+                    rd["items"].append(
+                        "%s  %s  %s  %s/%s" % (
+                            ts, r["kind"], r["handle"],
+                            r["capability"], r["role"]))
+                result["planner"]["retention_decisions"] = rd
+        except sqlite3.OperationalError:
+            pass
+        # Coordinator: with timestamp and objective text
+        try:
+            rows = _rows(self.conn,
+                         "SELECT d.elevation_mode, d.objective_id,"
+                         " d.created_utc, d.route,"
+                         " o.text, o.status AS obj_status"
+                         " FROM coordinator_decisions d"
+                         " LEFT JOIN objectives o"
+                         "   ON o.objective_id = d.objective_id"
+                         " ORDER BY d.created_utc")
+            if rows:
+                coord = {}
+                for r in rows:
+                    key = "admitted → %s" % r["elevation_mode"]
+                    coord.setdefault(key, {"n": 0, "items": []})
+                    coord[key]["n"] += 1
+                    ts = r.get("created_utc") or ""
+                    if ts and len(ts) > 19:
+                        ts = ts[:19]
+                    state = " [%s]" % r["obj_status"] if r.get(
+                        "obj_status") else ""
+                    route = " → %s" % r["route"] if r.get("route") else ""
+                    text = ""
+                    if r.get("text"):
+                        text = "  %s" % r["text"][:80]
+                    coord[key]["items"].append(
+                        "%s  %s%s%s%s" % (
+                            ts, r["objective_id"], state, route, text))
+                result["coordinator"] = coord
+        except sqlite3.OperationalError:
+            pass
+        # Orchestrator: nodes with timestamp, state, objective
+        try:
+            rows = _rows(self.conn,
+                         "SELECT n.status, n.node_key, n.title,"
+                         " n.created_utc, n.completed_utc,"
+                         " n.realization_kind, n.capability,"
+                         " r.objective_id"
+                         " FROM orchestration_nodes n"
+                         " JOIN orchestration_runs r"
+                         "   ON r.orchestration_id = n.orchestration_id"
+                         " ORDER BY n.created_utc")
+            if rows:
+                orch = {}
+                for r in rows:
+                    key = "nodes %s" % r["status"]
+                    orch.setdefault(key, {"n": 0, "items": []})
+                    orch[key]["n"] += 1
+                    ts = r.get("completed_utc") or r.get("created_utc") or ""
+                    if ts and len(ts) > 19:
+                        ts = ts[:19]
+                    name = r.get("title") or r["node_key"]
+                    kind = ""
+                    if r.get("realization_kind"):
+                        kind = "  %s" % r["realization_kind"]
+                    cap = ""
+                    if r.get("capability"):
+                        cap = "  %s" % r["capability"]
+                    orch[key]["items"].append(
+                        "%s  %s%s%s  obj=%s" % (
+                            ts, name, kind, cap,
+                            r["objective_id"][:24]))
+                result.setdefault("orchestrator", {}).update(orch)
+        except sqlite3.OperationalError:
+            pass
+        # orchestrator runs with timestamp and state
+        try:
+            rows = _rows(self.conn,
+                         "SELECT r.orchestration_id, r.objective_id,"
+                         " r.status, r.mode, r.created_utc"
+                         " FROM orchestration_runs r"
+                         " ORDER BY r.created_utc")
+            if rows:
+                result.setdefault("orchestrator", {})
+                rd = {"n": len(rows), "items": []}
+                for r in rows:
+                    ts = r.get("created_utc") or ""
+                    if ts and len(ts) > 19:
+                        ts = ts[:19]
+                    rd["items"].append(
+                        "%s  %s  [%s]  %s  obj=%s" % (
+                            ts, r["orchestration_id"][:16],
+                            r["status"], r["mode"],
+                            r["objective_id"][:24]))
+                result["orchestrator"]["runs"] = rd
+        except sqlite3.OperationalError:
+            pass
+        try:
+            rows = _rows(self.conn,
+                         "SELECT orchestration_cycle_id, policy_id,"
+                         " recorded_utc"
+                         " FROM orchestration_reasoning"
+                         " ORDER BY orchestration_cycle_id")
+            if rows:
+                result.setdefault("orchestrator", {})
+                rd = {"n": len(rows), "items": []}
+                for r in rows:
+                    ts = r.get("recorded_utc") or ""
+                    if ts and len(ts) > 19:
+                        ts = ts[:19]
+                    rd["items"].append(
+                        "%s  cycle %d  %s" % (
+                            ts, r["orchestration_cycle_id"],
+                            r["policy_id"]))
+                result["orchestrator"]["reasoning_cycles"] = rd
+        except sqlite3.OperationalError:
+            pass
+        # Taskforce dispatch: assignments with timestamp, specialist, work
+        try:
+            rows = _rows(self.conn,
+                         "SELECT COALESCE(a.outcome, a.status) AS k,"
+                         " s.handle, w.workstream_key,"
+                         " a.selected_utc, a.settled_utc,"
+                         " a.provider, a.model, a.selection_path"
+                         " FROM project_assignments a"
+                         " JOIN specialists s"
+                         "   ON s.specialist_id = a.specialist_id"
+                         " LEFT JOIN project_workstreams w"
+                         "   ON w.workstream_id = a.workstream_id"
+                         " ORDER BY a.selected_utc")
+            if rows:
+                dispatch = {}
+                for r in rows:
+                    key = r["k"]
+                    dispatch.setdefault(key, {"n": 0, "items": []})
+                    dispatch[key]["n"] += 1
+                    ts = r.get("settled_utc") or r.get("selected_utc") or ""
+                    if ts and len(ts) > 19:
+                        ts = ts[:19]
+                    work = r.get("workstream_key") or "?"
+                    path = r.get("selection_path") or ""
+                    route = ""
+                    if r.get("provider"):
+                        route = "  on %s/%s" % (
+                            r["provider"], r.get("model") or "?")
+                    dispatch[key]["items"].append(
+                        "%s  %s → %s  %s%s" % (
+                            ts, r["handle"], work, path, route))
+                result["agent_factory"] = dispatch
+        except sqlite3.OperationalError:
+            pass
+        # Taskforce collection: demonstrations with timestamp
+        try:
+            rows = _rows(self.conn,
+                         "SELECT d.outcome, s.handle,"
+                         " d.capability, d.role, d.environment,"
+                         " d.recorded_utc, d.sequence_id"
+                         " FROM capability_demonstrations d"
+                         " JOIN specialists s"
+                         "   ON s.specialist_id = d.specialist_id"
+                         " ORDER BY d.recorded_utc")
+            if rows:
+                coll = {}
+                for r in rows:
+                    key = r["outcome"]
+                    coll.setdefault(key, {"n": 0, "items": []})
+                    coll[key]["n"] += 1
+                    ts = r.get("recorded_utc") or ""
+                    if ts and len(ts) > 19:
+                        ts = ts[:19]
+                    coll[key]["items"].append(
+                        "%s  %s  %s/%s  %s  seq=%s" % (
+                            ts, r["handle"], r["capability"],
+                            r["role"], r["environment"],
+                            r["sequence_id"][:16]))
+                result["collector"] = coll
+        except sqlite3.OperationalError:
+            pass
+        return result
+
+    def budget_state(self):
+        """Budget limits and usage per objective."""
+        try:
+            budgets = _rows(self.conn,
+                            "SELECT * FROM objective_budgets"
+                            " ORDER BY set_utc")
+        except sqlite3.OperationalError:
+            return []
+        result = []
+        for b in budgets:
+            oid = b["objective_id"]
+            try:
+                contracts = _one(self.conn,
+                    "SELECT COUNT(DISTINCT sequence_id) AS n FROM proposals"
+                    " WHERE objective_id = ? AND status = 'ADMITTED'"
+                    " AND sequence_id IS NOT NULL"
+                    " AND class IN ('CREATE_TASK','INVESTIGATE',"
+                    "'REQUEST_REVIEW')", (oid,))
+                attempts = _one(self.conn,
+                    "SELECT COUNT(*) AS n FROM project_assignments"
+                    " WHERE objective_id = ? AND status != 'ABANDONED'",
+                    (oid,))
+            except sqlite3.OperationalError:
+                contracts = {"n": 0}
+                attempts = {"n": 0}
+            result.append({
+                "objective_id": oid,
+                "contracts_used": contracts["n"] if contracts else 0,
+                "contracts_max": b["max_contracts"],
+                "attempts_used": attempts["n"] if attempts else 0,
+                "attempts_max": b["max_attempts"],
+            })
+        return result
+
 
 class AuthorityReader:
     """Read-only over autobot.db — authority state."""
@@ -946,7 +1259,8 @@ class AutoSwarmReader:
             if st is None or size < st["offset"]:  # new, or rewritten
                 st = {"offset": 0, "rest": b"", "events": 0,
                       "tool_calls": 0, "last_utc": None, "doing": None,
-                      "finished": False}
+                      "finished": False,
+                      "recent_tools": [], "recent_files": []}
                 self._parsed[key] = st
             if size > st["offset"]:
                 with open(key, "rb") as fh:
@@ -960,8 +1274,11 @@ class AutoSwarmReader:
         except OSError:
             if st is None:
                 return None
-        return {k: st[k] for k in ("events", "tool_calls", "last_utc",
-                                   "doing", "finished")}
+        result = {k: st[k] for k in ("events", "tool_calls", "last_utc",
+                                     "doing", "finished")}
+        result["recent_tools"] = st.get("recent_tools", [])
+        result["recent_files"] = st.get("recent_files", [])
+        return result
 
     @staticmethod
     def _codex_event(st, raw):
@@ -982,6 +1299,25 @@ class AutoSwarmReader:
         if event.get("type") == "response_item":
             if kind in _CODEX_TOOL_CALLS:
                 st["tool_calls"] += 1
+                name = payload.get("name") or payload.get("tool_name") or ""
+                if name:
+                    tools = st.setdefault("recent_tools", [])
+                    tools.append(name)
+                    if len(tools) > 10:
+                        tools[:] = tools[-10:]
+                    # track file writes
+                    if name in ("write", "create", "edit",
+                                "write_file", "create_file"):
+                        path = (payload.get("arguments") or {}).get("path")
+                        if not path:
+                            path = (payload.get("arguments") or {}).get(
+                                "file_path")
+                        if isinstance(path, str) and path:
+                            files = st.setdefault("recent_files", [])
+                            if not files or files[-1] != path:
+                                files.append(path)
+                                if len(files) > 10:
+                                    files[:] = files[-10:]
             elif kind == "reasoning":
                 for item in payload.get("summary") or []:
                     text = item.get("text") if isinstance(item, dict) else None
