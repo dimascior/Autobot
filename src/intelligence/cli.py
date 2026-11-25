@@ -2,6 +2,8 @@
 
     autobot-authority seed          # admit the canonical authority objects
     autobot-authority bootstrap     # validate assembly, print readiness
+    autobot-authority reset         # full reset: wipe all state, re-seed,
+                                    # validate (Option 3)
     autobot-authority status        # objectives, sequences, projects,
                                     # Taskforce
     autobot-authority engineer      # give the Engineer an objective and
@@ -24,6 +26,7 @@ components and never introduces new protocol semantics.
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -117,6 +120,124 @@ def cmd_seed(args):
             print("  %s (%s): %s" % (name, kind, reason),
                   file=sys.stderr)
         return 1
+    return 0
+
+
+def cmd_reset(args):
+    """Full organizational reset: delete all databases and the content
+    store, then re-seed the authority trust chain from scratch.
+
+    Phase 1 (tear down):
+      - Cancel in-flight AutoSwarm sessions
+      - Delete intelligence.db (planning: objectives, proposals,
+        projects, orchestration, Taskforce membership, findings)
+      - Delete autobot.db (authority: sequences, admissions,
+        transitions, witnesses, permits, registered objects)
+      - Delete coordinator.db (outer coordinator ledger)
+      - Delete the content store (CAS)
+
+    Phase 2 (rebuild):
+      - Re-seed: admit declaration, delegation, verifiers, transforms,
+        closure bytes (production_seed.all_seed_objects)
+      - Validate: bootstrap the full runtime and check readiness
+
+    The result is a system ready for ``run --coordinator --orchestrator
+    --objective "..."`` with zero historical context."""
+    import shutil
+
+    if not args.confirm:
+        print("reset requires --confirm (this deletes all databases"
+              " and the content store)", file=sys.stderr)
+        return 1
+
+    project_root = args.root or _project_root()
+    config = _load_seed_config(project_root)
+    authority_section = config.get("authority", {})
+    paths_section = config.get("paths", {})
+    data_dir = Path(authority_section.get("data_dir", str(project_root)))
+
+    authority_db = data_dir / authority_section.get(
+        "authority_db", "autobot.db")
+    intelligence_db = data_dir / authority_section.get(
+        "intelligence_db", "intelligence.db")
+    store_root = data_dir / authority_section.get("store_root", "store")
+    coordinator_db = data_dir / paths_section.get(
+        "ledger_db", "coordinator.db")
+
+    # --- Phase 1: cancel in-flight sessions ---
+    print("phase 1: tear down")
+    cancelled = 0
+    if authority_db.is_file():
+        try:
+            from autobot import Database
+            db = Database(authority_db)
+            rows = db.conn.execute(
+                "SELECT ac.call_id FROM attempt_calls ac"
+                " JOIN attempts a ON a.attempt_id = ac.attempt_id"
+                " WHERE a.state IN ('DISPATCHED', 'RUNNING')"
+            ).fetchall()
+            db.close()
+            if rows:
+                autoswarm_home = paths_section.get("autoswarm_home", "")
+                if not autoswarm_home:
+                    autoswarm_home = os.environ.get("AUTOSWARM_HOME", "")
+                if autoswarm_home:
+                    import subprocess
+                    for row in rows:
+                        call_id = row["call_id"]
+                        try:
+                            subprocess.run(
+                                [sys.executable, "-m", "autoswarm",
+                                 "cancel", call_id],
+                                capture_output=True, text=True,
+                                env={**os.environ,
+                                     "AUTOSWARM_HOME": autoswarm_home},
+                                timeout=30)
+                            print("  cancelled session %s" % call_id)
+                            cancelled += 1
+                        except Exception as exc:
+                            print("  cancel %s failed: %s" % (
+                                call_id, exc))
+                else:
+                    print("  %d in-flight sessions (no AUTOSWARM_HOME"
+                          " to cancel them)" % len(rows))
+        except Exception as exc:
+            print("  could not read in-flight sessions: %s" % exc)
+    print("  cancelled %d sessions" % cancelled)
+
+    # --- Phase 1: delete databases and store ---
+    deleted = []
+    for db_path in (intelligence_db, authority_db, coordinator_db):
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(str(db_path) + suffix)
+            if p.is_file():
+                p.unlink()
+                deleted.append(p.name)
+    if store_root.is_dir():
+        shutil.rmtree(str(store_root))
+        deleted.append("store/")
+    print("  deleted: %s" % ", ".join(deleted) if deleted
+          else "  nothing to delete")
+
+    # --- Phase 2: re-seed ---
+    print("\nphase 2: rebuild")
+    print("  seeding authority objects...")
+    rc = cmd_seed(args)
+    if rc != 0:
+        print("RESET FAILED: seed did not complete", file=sys.stderr)
+        return rc
+
+    # --- Phase 2: bootstrap validation ---
+    print("  validating assembly...")
+    rc = cmd_bootstrap(args)
+    if rc != 0:
+        print("RESET WARNING: bootstrap validation failed"
+              " (seed succeeded; check config)", file=sys.stderr)
+        return rc
+
+    print("\nreset complete: all state cleared, trust chain rebuilt")
+    print("next: autobot-authority run --coordinator --orchestrator"
+          " --objective \"...\"")
     return 0
 
 
@@ -1686,6 +1807,13 @@ def main():
                    help="admit canonical production objects")
     sub.add_parser("bootstrap",
                    help="validate assembly and print readiness")
+    reset_p = sub.add_parser(
+        "reset",
+        help="full reset: delete all databases + store, re-seed"
+             " the trust chain, validate assembly")
+    reset_p.add_argument("--confirm", action="store_true",
+                         help="required: confirms intent to destroy"
+                              " all state and rebuild")
     sub.add_parser("status",
                    help="show objectives, sequences and the Taskforce")
     pre_p = sub.add_parser(
@@ -1816,6 +1944,7 @@ def main():
     commands = {
         "seed": cmd_seed,
         "bootstrap": cmd_bootstrap,
+        "reset": cmd_reset,
         "preflight": cmd_preflight,
         "status": cmd_status,
         "engineer": cmd_engineer,
